@@ -35,9 +35,9 @@ class _OneLineExceptionFormatter(logging.Formatter):
         return ""
 
 
-def _configure_logging() -> None:
+def _configure_logging(debug: bool = False) -> None:
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if debug else logging.INFO,
         format="%(levelname)s:%(name)s:%(message)s",
         force=True,
     )
@@ -59,6 +59,11 @@ def _parse_args() -> argparse.Namespace:
         "--signer",
         default=None,
         help="Remote signer URL (no path). If omitted, runs in offchain mode.",
+    )
+    p.add_argument(
+        "--discovery",
+        default=None,
+        help="Discovery endpoint for orchestrators.",
     )
     p.add_argument(
         "--model",
@@ -92,6 +97,11 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=3.5,
         help="Moving average window in seconds for latency metrics (default: 3.5).",
+    )
+    p.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging.",
     )
     return p.parse_args()
 
@@ -170,8 +180,8 @@ def _draw_labels(img, lines):
 
 
 async def main() -> None:
-    _configure_logging()
     args = _parse_args()
+    _configure_logging(debug=args.debug)
 
     try:
         import cv2  # type: ignore[import-not-found]
@@ -369,6 +379,7 @@ async def main() -> None:
             args.orchestrator,
             StartJobRequest(model_id=args.model),
             signer_url=args.signer,
+            discovery_url=args.discovery,
         )
 
         print("=== LiveVideoToVideo ===")
