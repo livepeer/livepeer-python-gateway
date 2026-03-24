@@ -57,12 +57,26 @@ def _parse_token(token: str) -> dict[str, Any]:
 
     signer_headers = payload.get("signer_headers")
     discovery_headers = payload.get("discovery_headers")
+    orchestrators = payload.get("orchestrators")
     if signer_headers is not None and not _is_str_dict(signer_headers):
         raise LivepeerGatewayError("Invalid token: signer_headers must be a {string: string} object")
     if discovery_headers is not None and not _is_str_dict(discovery_headers):
         raise LivepeerGatewayError("Invalid token: discovery_headers must be a {string: string} object")
+    if orchestrators is not None and not isinstance(orchestrators, list):
+        raise LivepeerGatewayError("Invalid token: orchestrators must be an array of strings")
+
+    normalized_orchestrators: Optional[list[str]] = None
+    if isinstance(orchestrators, list):
+        normalized_orchestrators = []
+        for item in orchestrators:
+            if not isinstance(item, str) or not item.strip():
+                raise LivepeerGatewayError(
+                    "Invalid token: orchestrators must contain only non-empty strings"
+                )
+            normalized_orchestrators.append(item.strip())
 
     return {
+        "orchestrators": normalized_orchestrators,
         "signer": signer,
         "discovery": discovery,
         "signer_headers": signer_headers,
@@ -307,13 +321,14 @@ def start_lv2v(
     via ``job.start_payment_sender()``.
 
     Optional ``token`` can be provided as a base64-encoded JSON object.
-    Explicit keyword arguments taken precedence over token values.
+    Explicit keyword arguments take precedence over token values.
 
-    Discovery precedence (highest -> lowest):
+    Orchestrator selection/discovery precedence (highest -> lowest):
     1) explicit ``orch_url`` list
-    2) explicit ``discovery_url`` argument
-    3) token ``discovery`` value
-    4) remote signer discovery endpoint derived from the resolved signer URL
+    2) token ``orchestrators`` value
+    3) explicit ``discovery_url`` argument
+    4) token ``discovery`` value
+    5) remote signer discovery endpoint derived from the resolved signer URL
 
     ``timeout`` controls only the initial HTTP POST to
     ``/live-video-to-video`` after an orchestrator has been selected.
@@ -326,12 +341,15 @@ def start_lv2v(
     if not req.model_id:
         raise LivepeerGatewayError("start_lv2v requires model_id")
 
+    resolved_orch_url = orch_url
     resolved_signer_url = signer_url
     resolved_signer_headers = signer_headers
     resolved_discovery_url = discovery_url
     resolved_discovery_headers = discovery_headers
     if token is not None:
         token_data = _parse_token(token)
+        if resolved_orch_url is None:
+            resolved_orch_url = token_data.get("orchestrators")
         if resolved_signer_url is None:
             resolved_signer_url = token_data.get("signer")
         if resolved_signer_headers is None:
@@ -343,9 +361,9 @@ def start_lv2v(
 
     capabilities = build_capabilities(CapabilityId.LIVE_VIDEO_TO_VIDEO, req.model_id)
     # Orchestrator discovery precedence:
-    # orch_url -> discovery_url -> signer_url
+    # orch_url -> token orchestrators -> discovery_url -> token discovery -> signer_url
     cursor = orchestrator_selector(
-        orch_url,
+        resolved_orch_url,
         signer_url=resolved_signer_url,
         signer_headers=resolved_signer_headers,
         discovery_url=resolved_discovery_url,
