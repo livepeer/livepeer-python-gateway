@@ -290,7 +290,10 @@ class TricklePublisher:
         try:
             resp = await self._session.delete(self.url)
             resp.release()
-        # Suppress any shutdown-time exceptions, including cancellation.
+        except aiohttp.ClientConnectorError as exc:
+            # Orchestrator already unreachable — suppress, no need to log at ERROR.
+            _LOG.debug("Trickle DELETE: orchestrator unreachable (suppressed) url=%s: %s", self.url, exc)
+        # Suppress any other shutdown-time exceptions, including cancellation.
         except BaseException:
             _LOG.error("Trickle DELETE exception url=%s", self.url, exc_info=True)
 

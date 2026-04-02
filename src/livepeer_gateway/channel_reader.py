@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, AsyncIterator
+
+import aiohttp
 
 from .errors import LivepeerGatewayError
 from .trickle_subscriber import TrickleSubscriber
+
+_LOG = logging.getLogger(__name__)
 
 
 class ChannelReader:
@@ -74,6 +79,12 @@ class ChannelReader:
                         yield data
             except LivepeerGatewayError:
                 raise
+            except aiohttp.ClientPayloadError as e:
+                # Orchestrator truncated the transfer mid-stream (e.g. TransferEncodingError 400)
+                # or went unreachable. Treat as a clean network disconnect — stop iterating
+                # rather than propagating as an application error.
+                _LOG.warning("Trickle events channel disconnected (network): %s: %s", e.__class__.__name__, e)
+                return
             except Exception as e:
                 raise LivepeerGatewayError(
                     f"Trickle events subscription error: {e.__class__.__name__}: {e}"
@@ -167,6 +178,12 @@ class JSONLReader:
                             await segment.close()
             except LivepeerGatewayError:
                 raise
+            except aiohttp.ClientPayloadError as e:
+                # Orchestrator truncated the transfer mid-stream (e.g. TransferEncodingError 400)
+                # or went unreachable. Treat as a clean network disconnect — stop iterating
+                # rather than propagating as an application error.
+                _LOG.warning("Trickle JSONL channel disconnected (network): %s: %s", e.__class__.__name__, e)
+                return
             except Exception as e:
                 raise LivepeerGatewayError(
                     f"Trickle JSONL subscription error: {e.__class__.__name__}: {e}"
