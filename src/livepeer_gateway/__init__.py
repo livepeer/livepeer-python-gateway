@@ -2,6 +2,7 @@ from .capabilities import CapabilityId, build_capabilities
 from .channel_reader import ChannelReader, JSONLReader
 from .channel_writer import ChannelWriter, JSONLWriter
 from .control import Control, ControlConfig, ControlMode
+from .byoc import ByocJobRequest, ByocJobResponse, submit_byoc_job, list_capabilities as list_byoc_capabilities
 from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, PaymentError
 from .events import Events
 from .media_publish import MediaPublish, MediaPublishConfig, MediaPublishStats
