@@ -177,12 +177,17 @@ def _create_byoc_payment(
         "Livepeer": livepeer_hdr,
         "Livepeer-Capability": capability,
     }
-    if signer_material.address:
-        token_headers["Livepeer-Eth-Address"] = "0x" + signer_material.address.hex()
-    if signer_material.sig:
-        token_headers["Livepeer-Eth-Signature"] = "0x" + signer_material.sig.hex()
+    if signer_material.address and signer_material.sig:
+        # BYOC orch expects base64-encoded JSON: {"addr": "0x...", "sig": "0x..."}
+        # Must use original hex casing from signer (EIP-55) since the sig was over that string
+        addr_str = signer_material.address_hex or ("0x" + signer_material.address.hex())
+        job_sender = json.dumps({
+            "addr": addr_str,
+            "sig": "0x" + signer_material.sig.hex(),
+        })
+        token_headers["Livepeer-Eth-Address"] = base64.b64encode(job_sender.encode()).decode()
 
-    token_req = Request(token_url, data=b"{}", headers=token_headers, method="POST")
+    token_req = Request(token_url, headers=token_headers, method="GET")
     try:
         with urlopen(token_req, timeout=timeout, context=_ssl_ctx) as resp:
             token_data = json.loads(resp.read())
@@ -235,16 +240,60 @@ def _create_byoc_payment(
     return result
 
 
-def _build_livepeer_header(req: ByocJobRequest, job_id: str) -> str:
+def _sign_byoc_job(
+    signer_url: str,
+    signer_headers: Optional[dict[str, str]],
+    job_id: str,
+    capability: str,
+    request_json: str,
+    parameters_json: str,
+    timeout_seconds: int,
+) -> dict:
+    """Call signer /sign-byoc-job to get sender + signature for the BYOC header."""
+    from .orchestrator import _http_origin
+
+    url = f"{_http_origin(signer_url)}/sign-byoc-job"
+    payload = {
+        "id": job_id,
+        "capability": capability,
+        "request": request_json,
+        "parameters": parameters_json,
+        "timeout_seconds": timeout_seconds,
+    }
+    headers = {"Content-Type": "application/json"}
+    if signer_headers:
+        headers.update(signer_headers)
+
+    req = Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=30.0) as resp:
+            return json.loads(resp.read())
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:200]
+        raise LivepeerGatewayError(f"sign-byoc-job failed: HTTP {e.code}: {body}") from e
+
+
+def _build_livepeer_header(
+    req: ByocJobRequest,
+    job_id: str,
+    sender: str = "",
+    sig: str = "",
+) -> str:
     """Build the base64-encoded Livepeer job request header."""
+    request_json = json.dumps(req.payload)
+    parameters_json = json.dumps(req.parameters) if req.parameters else ""
     job_request = {
         "id": job_id,
-        "request": json.dumps(req.payload),
+        "request": request_json,
         "capability": req.capability,
         "timeout_seconds": req.timeout_seconds,
     }
-    if req.parameters:
-        job_request["parameters"] = json.dumps(req.parameters)
+    if parameters_json:
+        job_request["parameters"] = parameters_json
+    if sender:
+        job_request["sender"] = sender
+    if sig:
+        job_request["sig"] = sig
     return base64.b64encode(json.dumps(job_request).encode()).decode()
 
 
@@ -298,8 +347,30 @@ def submit_byoc_job(
 
     _LOG.info("BYOC job %s: capability=%s, orchestrators=%s", job_id, req.capability, orch_list)
 
+    # Sign the job request if signer is available (on-chain)
+    sender = ""
+    sig = ""
+    if signer_url:
+        try:
+            request_json = json.dumps(req.payload)
+            parameters_json = json.dumps(req.parameters) if req.parameters else ""
+            sign_resp = _sign_byoc_job(
+                signer_url=signer_url,
+                signer_headers=signer_headers,
+                job_id=job_id,
+                capability=req.capability,
+                request_json=request_json,
+                parameters_json=parameters_json,
+                timeout_seconds=req.timeout_seconds,
+            )
+            sender = sign_resp.get("sender", "")
+            sig = sign_resp.get("signature", "")
+            _LOG.info("BYOC job %s: signed by sender=%s", job_id, sender[:12] + "..." if sender else "none")
+        except Exception as e:
+            _LOG.warning("BYOC job %s: signing failed: %s", job_id, e)
+
     # Build headers
-    livepeer_hdr = _build_livepeer_header(req, job_id)
+    livepeer_hdr = _build_livepeer_header(req, job_id, sender=sender, sig=sig)
     body = json.dumps(req.payload).encode("utf-8")
 
     # Try each orchestrator
