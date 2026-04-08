@@ -173,13 +173,19 @@ class MediaPublishStats:
         )
 
 
+_TRACK_STAT_KEYS = ("frames_in", "frames_dropped_overflow", "frames_dropped_debt", "frames_dropped_non_monotonic_pts")
+
+
+def _new_track_stats() -> dict[str, int]:
+    return {k: 0 for k in _TRACK_STAT_KEYS}
+
+
 class MediaPublishTrack:
     """
     Runtime handle for one configured output track.
 
-    Call `write_frame()` on the returned handle when multiple tracks of the
-    same media kind are configured and routing by frame type alone would be
-    ambiguous.
+    Owns its queue and encoder state. Call `write_frame()` to enqueue frames
+    for encoding. Use `resize()` to adjust queue capacity at runtime.
     """
 
     def __init__(
@@ -189,11 +195,32 @@ class MediaPublishTrack:
         kind: str,
         config: VideoOutputConfig | AudioOutputConfig,
         index: int,
+        queue: "_FrameQueue",
+        stats: dict[str, int],
     ) -> None:
         self._owner = owner
         self.kind = kind
         self.config = config
         self.index = index
+
+        # Queue and stats.
+        self._queue: _FrameQueue = queue
+        self._stats: dict[str, int] = stats
+
+        # Encoder-thread-owned state.
+        self._label: str = ""
+        self._stream: Any = None
+        self._pending_frames: list[av.VideoFrame | av.AudioFrame] = []
+        self._first_frame: Optional[av.VideoFrame | av.AudioFrame] = None
+        self._audio_sample_rate: Optional[int] = None
+        self._audio_layout: Optional[str] = None
+        self._dropped_timeout: bool = False
+        self._last_out_pts: Optional[int] = None
+        self._wallclock_start: Optional[float] = None
+        self._next_out_pts: Optional[int] = None
+        self._last_keyframe_time: Optional[float] = None
+        self._stopped: bool = False
+        self._audio_resampler: Any = None
 
     async def write_frame(self, frame: av.VideoFrame | av.AudioFrame) -> None:
         await self._owner._write_frame_to_track(self, frame)
@@ -204,35 +231,6 @@ class MediaPublishTrack:
 
     def __repr__(self) -> str:
         return f"MediaPublishTrack(kind={self.kind!r}, index={self.index}, config={self.config!r})"
-
-
-_TRACK_STAT_KEYS = ("frames_in", "frames_dropped_overflow", "frames_dropped_debt", "frames_dropped_non_monotonic_pts")
-
-
-def _new_track_stats() -> dict[str, int]:
-    return {k: 0 for k in _TRACK_STAT_KEYS}
-
-
-@dataclass
-class _TrackState:
-    """Internal per-track encoder state inside one shared muxer."""
-
-    track: MediaPublishTrack
-    queue: "_FrameQueue"
-    label: str = ""
-    track_stats: dict[str, int] = field(default_factory=_new_track_stats)
-    stream: Any = None
-    pending_frames: list[av.VideoFrame | av.AudioFrame] = field(default_factory=list)
-    first_frame: Optional[av.VideoFrame | av.AudioFrame] = None
-    audio_sample_rate: Optional[int] = None
-    audio_layout: Optional[str] = None
-    dropped_timeout: bool = False
-    last_out_pts: Optional[int] = None
-    wallclock_start: Optional[float] = None
-    next_out_pts: Optional[int] = None
-    last_keyframe_time: Optional[float] = None
-    stopped: bool = False
-    audio_resampler: Any = None
 
 
 class MediaPublish:
@@ -285,48 +283,46 @@ class MediaPublish:
         self._tracks: list[MediaPublishTrack] = []
         self._video_tracks: list[MediaPublishTrack] = []
         self._audio_tracks: list[MediaPublishTrack] = []
-        self._track_states: list[_TrackState] = []
-        self._track_state_by_track: dict[MediaPublishTrack, _TrackState] = {}
         for track_config in config.tracks:
             track_stats = _new_track_stats()
             if isinstance(track_config, VideoOutputConfig):
-                track_writer = MediaPublishTrack(
-                    self,
-                    kind="video",
-                    config=track_config,
-                    index=len(self._video_tracks),
-                )
                 queue_obj = _FrameQueue(
                     maxsize=track_config.queue_size,
                     stats=track_stats,
                     debt_skip=True,
                 )
+                track_writer = MediaPublishTrack(
+                    self,
+                    kind="video",
+                    config=track_config,
+                    index=len(self._video_tracks),
+                    queue=queue_obj,
+                    stats=track_stats,
+                )
                 self._video_tracks.append(track_writer)
             elif isinstance(track_config, AudioOutputConfig):
+                queue_obj = _FrameQueue(
+                    maxsize=track_config.queue_size,
+                    stats=track_stats,
+                )
                 track_writer = MediaPublishTrack(
                     self,
                     kind="audio",
                     config=track_config,
                     index=len(self._audio_tracks),
-                )
-                queue_obj = _FrameQueue(
-                    maxsize=track_config.queue_size,
+                    queue=queue_obj,
                     stats=track_stats,
                 )
                 self._audio_tracks.append(track_writer)
             else:
                 raise TypeError(f"Unsupported track config type: {type(track_config).__name__}")
             self._tracks.append(track_writer)
-            state = _TrackState(track=track_writer, queue=queue_obj, track_stats=track_stats)
-            self._track_states.append(state)
-            self._track_state_by_track[track_writer] = state
 
         video_count = len(self._video_tracks)
         audio_count = len(self._audio_tracks)
-        for state in self._track_states:
-            kind = state.track.kind
-            count = video_count if kind == "video" else audio_count
-            state.label = kind if count == 1 else f"{kind}_{state.track.index}"
+        for track in self._tracks:
+            count = video_count if track.kind == "video" else audio_count
+            track._label = track.kind if count == 1 else f"{track.kind}_{track.index}"
 
         video_configs = [track.config for track in self._video_tracks if isinstance(track.config, VideoOutputConfig)]
         self._segment_time_s = (
@@ -362,10 +358,9 @@ class MediaPublish:
             raise LivepeerGatewayError("MediaPublish is closed")
         if self._error:
             raise LivepeerGatewayError(f"MediaPublish failed: {self._error}") from self._error
-        state = self._track_state_by_track.get(track)
-        if state is None:
+        if track not in self._tracks:
             raise TypeError("MediaPublish track is not recognized")
-        state.queue.resize(queue_size)
+        track._queue.resize(queue_size)
 
     async def write_frame(self, frame: av.VideoFrame | av.AudioFrame) -> None:
         track = self._resolve_track_for_frame(frame)
@@ -402,8 +397,7 @@ class MediaPublish:
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
 
-        state = self._track_state_by_track.get(track)
-        if state is None:
+        if track not in self._tracks:
             raise TypeError("MediaPublish track is not recognized")
         if track.kind == "video":
             if not isinstance(frame, av.VideoFrame):
@@ -417,13 +411,13 @@ class MediaPublish:
                 raise TypeError("MediaPublish audio track is not enabled")
         else:
             raise TypeError(f"Unsupported MediaPublish track kind: {track.kind!r}")
-        if state.dropped_timeout:
+        if track._dropped_timeout:
             raise LivepeerGatewayError(
-                f"MediaPublish {state.label} track dropped before initialization timeout"
+                f"MediaPublish {track._label} track dropped before initialization timeout"
             )
         self._ensure_thread()
-        state.track_stats["frames_in"] += 1
-        state.queue.put(frame)
+        track._stats["frames_in"] += 1
+        track._queue.put(frame)
 
     async def _suppress_close_step(self, step_name: str, awaitable: Awaitable[Any]) -> None:
         try:
@@ -440,10 +434,10 @@ class MediaPublish:
         # Intentionally step-wise: each shutdown action has its own
         # suppression so one failure does not prevent later cleanup.
         if self._thread is not None:
-            for state in self._track_states:
+            for track in self._tracks:
                 await self._suppress_close_step(
-                    f"{state.track.kind} sentinel enqueue",
-                    asyncio.to_thread(state.queue.put, _STOP),
+                    f"{track.kind} sentinel enqueue",
+                    asyncio.to_thread(track._queue.put, _STOP),
                 )
             await self._suppress_close_step("encoder join", asyncio.to_thread(self._thread.join, 2.0))
             if self._thread.is_alive():
@@ -492,20 +486,20 @@ class MediaPublish:
                 if self._error is not None:
                     break
                 if selected is None:
-                    active_states = [state for state in self._track_states if not state.stopped]
-                    if not active_states:
+                    active = [t for t in self._tracks if not t._stopped]
+                    if not active:
                         break
                     continue
-                state, item = selected
+                track, item = selected
                 if item is _STOP:
-                    state.stopped = True
+                    track._stopped = True
                     continue
 
                 if self._container is None:
-                    self._stage_frame_before_open(state, item)
+                    self._stage_frame_before_open(track, item)
                     continue
 
-                self._encode_track_frame(state, item)
+                self._encode_track_frame(track, item)
 
             self._flush_encoder()
         except Exception as e:
@@ -519,42 +513,42 @@ class MediaPublish:
                 except Exception:
                     _LOG.exception("MediaPublish failed to close container")
             self._container = None
-            for state in self._track_states:
-                state.stream = None
+            for track in self._tracks:
+                track._stream = None
 
-    def _next_encoder_item(self) -> Optional[tuple[_TrackState, object]]:
-        active_states = [state for state in self._track_states if not state.stopped]
-        if not active_states:
+    def _next_encoder_item(self) -> Optional[tuple[MediaPublishTrack, object]]:
+        active = [t for t in self._tracks if not t._stopped]
+        if not active:
             return None
 
-        state_count = len(self._track_states)
-        for offset in range(state_count):
-            idx = (self._next_state_index + offset) % state_count
-            state = self._track_states[idx]
-            if state.stopped:
+        track_count = len(self._tracks)
+        for offset in range(track_count):
+            idx = (self._next_state_index + offset) % track_count
+            track = self._tracks[idx]
+            if track._stopped:
                 continue
-            item = state.queue.get_nowait()
+            item = track._queue.get_nowait()
             if item is not None:
-                self._next_state_index = (idx + 1) % state_count
-                return state, item
+                self._next_state_index = (idx + 1) % track_count
+                return track, item
 
-        for offset in range(state_count):
-            idx = (self._next_state_index + offset) % state_count
-            state = self._track_states[idx]
-            if state.stopped:
+        for offset in range(track_count):
+            idx = (self._next_state_index + offset) % track_count
+            track = self._tracks[idx]
+            if track._stopped:
                 continue
-            item = state.queue.get(timeout=0.05)
+            item = track._queue.get(timeout=0.05)
             if item is not None:
-                self._next_state_index = (idx + 1) % state_count
-                return state, item
+                self._next_state_index = (idx + 1) % track_count
+                return track, item
         return None
 
-    def _stage_frame_before_open(self, state: _TrackState, frame: av.VideoFrame | av.AudioFrame) -> None:
-        if state.first_frame is None:
-            state.first_frame = frame
+    def _stage_frame_before_open(self, track: MediaPublishTrack, frame: av.VideoFrame | av.AudioFrame) -> None:
+        if track._first_frame is None:
+            track._first_frame = frame
         if self._first_frame_arrived_at is None:
             self._first_frame_arrived_at = time.monotonic()
-        state.pending_frames.append(frame)
+        track._pending_frames.append(frame)
 
     def _can_open_container(self) -> bool:
         # The container can open when all active tracks are either initialized
@@ -565,23 +559,23 @@ class MediaPublish:
         deadline_expired = (
             time.monotonic() - self._first_frame_arrived_at
         ) >= self._track_wait_timeout_s
-        for state in self._track_states:
-            if state.stopped:
+        for track in self._tracks:
+            if track._stopped:
                 continue
-            if state.first_frame is not None:
+            if track._first_frame is not None:
                 continue
             if deadline_expired:
                 _LOG.warning(
                     "MediaPublish dropping late track %s after %.3fs without first frame",
-                    state.label,
+                    track._label,
                     self._track_wait_timeout_s,
                 )
-                state.dropped_timeout = True
-                state.stopped = True
-                state.pending_frames.clear()
+                track._dropped_timeout = True
+                track._stopped = True
+                track._pending_frames.clear()
                 continue
             return False
-        return any(state.first_frame is not None for state in self._track_states)
+        return any(t._first_frame is not None for t in self._tracks)
 
     def _open_container(self) -> None:
         if self._loop is None:
@@ -607,15 +601,15 @@ class MediaPublish:
             options=segment_options,
         )
 
-        for state in self._track_states:
-            if state.stopped:
+        for track in self._tracks:
+            if track._stopped:
                 continue
-            if state.first_frame is None:
+            if track._first_frame is None:
                 continue
-            if state.track.kind == "video":
-                config = state.track.config
+            if track.kind == "video":
+                config = track.config
                 assert isinstance(config, VideoOutputConfig)
-                if not isinstance(state.first_frame, av.VideoFrame):
+                if not isinstance(track._first_frame, av.VideoFrame):
                     continue
                 video_opts = {
                     "bf": "0",
@@ -625,12 +619,12 @@ class MediaPublish:
                 }
                 video_kwargs = {
                     "time_base": _OUT_TIME_BASE,
-                    "width": state.first_frame.width,
-                    "height": state.first_frame.height,
+                    "width": track._first_frame.width,
+                    "height": track._first_frame.height,
                     "pix_fmt": config.pix_fmt,
                 }
                 rounded_fps = _normalize_fps(config.fps)
-                state.stream = self._container.add_stream(
+                track._stream = self._container.add_stream(
                     config.codec,
                     rate=rounded_fps,
                     options=video_opts,
@@ -638,11 +632,11 @@ class MediaPublish:
                 )
                 continue
 
-            config = state.track.config
+            config = track.config
             assert isinstance(config, AudioOutputConfig)
-            if not isinstance(state.first_frame, av.AudioFrame):
+            if not isinstance(track._first_frame, av.AudioFrame):
                 continue
-            first_audio_frame = state.first_frame
+            first_audio_frame = track._first_frame
             sample_rate = int(
                 config.sample_rate
                 if config.sample_rate is not None
@@ -658,14 +652,14 @@ class MediaPublish:
                 else _DEFAULT_AUDIO_LAYOUT
                 )
             )
-            state.audio_sample_rate = sample_rate
-            state.audio_layout = layout
-            state.stream = self._container.add_stream(
+            track._audio_sample_rate = sample_rate
+            track._audio_layout = layout
+            track._stream = self._container.add_stream(
                 config.codec,
                 rate=sample_rate,
             )
             try:
-                state.stream.time_base = _OUT_TIME_BASE
+                track._stream.time_base = _OUT_TIME_BASE
             except Exception:
                 pass
             for attr, value in (
@@ -673,37 +667,37 @@ class MediaPublish:
                 ("format", config.format),
             ):
                 try:
-                    setattr(state.stream, attr, value)
+                    setattr(track._stream, attr, value)
                 except Exception:
                     pass
 
     def _flush_staged_frames(self) -> None:
-        for state in self._track_states:
-            pending = list(state.pending_frames)
-            state.pending_frames.clear()
+        for track in self._tracks:
+            pending = list(track._pending_frames)
+            track._pending_frames.clear()
             for frame in pending:
-                self._encode_track_frame(state, frame)
+                self._encode_track_frame(track, frame)
 
-    def _encode_track_frame(self, state: _TrackState, frame: av.VideoFrame | av.AudioFrame) -> None:
-        if state.track.kind == "video":
+    def _encode_track_frame(self, track: MediaPublishTrack, frame: av.VideoFrame | av.AudioFrame) -> None:
+        if track.kind == "video":
             assert isinstance(frame, av.VideoFrame)
             encode_started = time.monotonic()
-            encoded, encoded_media_time_s = self._encode_video_frame(state, frame)
+            encoded, encoded_media_time_s = self._encode_video_frame(track, frame)
             encode_duration_s = max(0.0, time.monotonic() - encode_started)
             if encoded:
-                state.queue.update_after_encode(
+                track._queue.update_after_encode(
                     encoded_media_time_s=encoded_media_time_s,
                     encode_duration_s=encode_duration_s,
                 )
             return
 
         assert isinstance(frame, av.AudioFrame)
-        self._encode_audio_frame(state, frame)
+        self._encode_audio_frame(track, frame)
 
-    def _encode_video_frame(self, state: _TrackState, frame: av.VideoFrame) -> tuple[bool, float]:
-        if state.stream is None or self._container is None:
+    def _encode_video_frame(self, track: MediaPublishTrack, frame: av.VideoFrame) -> tuple[bool, float]:
+        if track._stream is None or self._container is None:
             raise RuntimeError("MediaPublish encoder is not initialized")
-        config = state.track.config
+        config = track.config
         assert isinstance(config, VideoOutputConfig)
 
         source_pts = frame.pts
@@ -713,37 +707,37 @@ class MediaPublish:
         if frame.format.name != output_pix_fmt:
             frame = frame.reformat(format=output_pix_fmt)
 
-        current_time_s, out_pts = self._compute_pts(state, source_pts, source_tb)
-        if state.last_out_pts is not None and out_pts <= state.last_out_pts:
-            # timestamp would overlap with previous frame, so drop
-            # happens if frames come in faster than the encode rate
-            state.track_stats["frames_dropped_non_monotonic_pts"] += 1
+        current_time_s, out_pts = self._compute_pts(track, source_pts, source_tb)
+        if track._last_out_pts is not None and out_pts <= track._last_out_pts:
+            # Timestamp would overlap with previous frame, so drop. This can
+            # happen if frames arrive faster than the effective encode rate.
+            track._stats["frames_dropped_non_monotonic_pts"] += 1
             return False, current_time_s
-        state.last_out_pts = out_pts
+        track._last_out_pts = out_pts
         frame.pts = out_pts
         frame.time_base = _OUT_TIME_BASE
 
         if (
-            state.last_keyframe_time is None
-            or current_time_s - state.last_keyframe_time >= float(config.keyframe_interval_s)
+            track._last_keyframe_time is None
+            or current_time_s - track._last_keyframe_time >= float(config.keyframe_interval_s)
         ):
             frame.pict_type = PictureType.I
-            state.last_keyframe_time = current_time_s
+            track._last_keyframe_time = current_time_s
         else:
             frame.pict_type = PictureType.NONE
 
-        packets = state.stream.encode(frame)
+        packets = track._stream.encode(frame)
         for packet in packets:
             self._container.mux(packet)
         return True, current_time_s
 
-    def _encode_audio_frame(self, state: _TrackState, frame: av.AudioFrame) -> None:
-        if state.stream is None or self._container is None:
+    def _encode_audio_frame(self, track: MediaPublishTrack, frame: av.AudioFrame) -> None:
+        if track._stream is None or self._container is None:
             raise RuntimeError("MediaPublish audio encoder is not initialized")
-        config = state.track.config
+        config = track.config
         assert isinstance(config, AudioOutputConfig)
-        sample_rate = state.audio_sample_rate
-        layout = state.audio_layout
+        sample_rate = track._audio_sample_rate
+        layout = track._audio_layout
         if sample_rate is None or layout is None:
             raise RuntimeError("MediaPublish audio stream targets are not initialized")
 
@@ -755,50 +749,50 @@ class MediaPublish:
             or frame_format != config.format
         )
         if needs_resample:
-            if state.audio_resampler is None:
-                state.audio_resampler = av.AudioResampler(
+            if track._audio_resampler is None:
+                track._audio_resampler = av.AudioResampler(
                     format=config.format,
                     layout=layout,
                     rate=sample_rate,
                 )
-            for converted in state.audio_resampler.resample(frame):
-                self._encode_audio_frame_converted(state, converted)
+            for converted in track._audio_resampler.resample(frame):
+                self._encode_audio_frame_converted(track, converted)
             return
 
-        self._encode_audio_frame_converted(state, frame)
+        self._encode_audio_frame_converted(track, frame)
 
-    def _encode_audio_frame_converted(self, state: _TrackState, frame: av.AudioFrame) -> None:
-        if state.stream is None or self._container is None:
+    def _encode_audio_frame_converted(self, track: MediaPublishTrack, frame: av.AudioFrame) -> None:
+        if track._stream is None or self._container is None:
             raise RuntimeError("MediaPublish audio encoder is not initialized")
 
-        _, out_pts = self._compute_audio_pts(state, frame)
-        if state.last_out_pts is not None and out_pts <= state.last_out_pts:
-            state.track_stats["frames_dropped_non_monotonic_pts"] += 1
+        _, out_pts = self._compute_audio_pts(track, frame)
+        if track._last_out_pts is not None and out_pts <= track._last_out_pts:
+            track._stats["frames_dropped_non_monotonic_pts"] += 1
             return
-        state.last_out_pts = out_pts
+        track._last_out_pts = out_pts
         frame.pts = out_pts
         frame.time_base = _OUT_TIME_BASE
 
-        packets = state.stream.encode(frame)
+        packets = track._stream.encode(frame)
         for packet in packets:
             self._container.mux(packet)
 
     def _flush_encoder(self) -> None:
         if self._container is None:
             return
-        for state in self._track_states:
-            if state.stream is None:
+        for track in self._tracks:
+            if track._stream is None:
                 continue
-            if state.track.kind == "audio" and state.audio_resampler is not None:
-                for converted in state.audio_resampler.resample(None):
-                    self._encode_audio_frame_converted(state, converted)
-            packets = state.stream.encode(None)
+            if track.kind == "audio" and track._audio_resampler is not None:
+                for converted in track._audio_resampler.resample(None):
+                    self._encode_audio_frame_converted(track, converted)
+            packets = track._stream.encode(None)
             for packet in packets:
                 self._container.mux(packet)
 
     def _compute_pts(
         self,
-        state: _TrackState,
+        track: MediaPublishTrack,
         pts: Optional[int],
         time_base: Optional[Fraction],
     ) -> tuple[float, int]:
@@ -809,12 +803,12 @@ class MediaPublish:
             return current_time_s, out_pts
 
         now = time.time()
-        if state.wallclock_start is None:
-            state.wallclock_start = now
-        current_time_s = now - state.wallclock_start
+        if track._wallclock_start is None:
+            track._wallclock_start = now
+        current_time_s = now - track._wallclock_start
         return current_time_s, int(current_time_s * _OUT_TIME_BASE.denominator)
 
-    def _compute_audio_pts(self, state: _TrackState, frame: av.AudioFrame) -> tuple[float, int]:
+    def _compute_audio_pts(self, track: MediaPublishTrack, frame: av.AudioFrame) -> tuple[float, int]:
         if frame.pts is not None and frame.time_base is not None:
             tb = _fraction_from_time_base(frame.time_base)
             current_time_s = float(Fraction(frame.pts) * tb)
@@ -822,19 +816,19 @@ class MediaPublish:
             return current_time_s, out_pts
 
         now = time.time()
-        if state.wallclock_start is None:
-            state.wallclock_start = now
-        current_time_s = now - state.wallclock_start
-        if state.next_out_pts is None:
-            state.next_out_pts = int(current_time_s * _OUT_TIME_BASE.denominator)
-        out_pts = state.next_out_pts
-        sample_rate = state.audio_sample_rate
+        if track._wallclock_start is None:
+            track._wallclock_start = now
+        current_time_s = now - track._wallclock_start
+        if track._next_out_pts is None:
+            track._next_out_pts = int(current_time_s * _OUT_TIME_BASE.denominator)
+        out_pts = track._next_out_pts
+        sample_rate = track._audio_sample_rate
         if sample_rate is None:
             raise RuntimeError("MediaPublish audio sample rate is not initialized")
         sample_rate_for_step = max(1, int(getattr(frame, "sample_rate", 0) or sample_rate))
         samples = max(0, int(getattr(frame, "samples", 0) or 0))
         step = int(round(samples * (_OUT_TIME_BASE.denominator / sample_rate_for_step)))
-        state.next_out_pts = out_pts + max(1, step)
+        track._next_out_pts = out_pts + max(1, step)
         return current_time_s, out_pts
 
     def _schedule_pipe_reader(self, read_file: BinaryIO) -> None:
@@ -905,15 +899,15 @@ class MediaPublish:
         publisher_stats = self._publisher.get_stats()
         per_track = tuple(
             TrackQueueStats(
-                label=state.label,
-                frames_in=state.track_stats["frames_in"],
-                frames_dropped_overflow=state.track_stats["frames_dropped_overflow"],
-                frames_dropped_debt=state.track_stats["frames_dropped_debt"],
-                frames_dropped_non_monotonic_pts=state.track_stats["frames_dropped_non_monotonic_pts"],
-                time_debt_s=state.queue.time_debt_s,
-                queue_depth=state.queue.qsize,
+                label=track._label,
+                frames_in=track._stats["frames_in"],
+                frames_dropped_overflow=track._stats["frames_dropped_overflow"],
+                frames_dropped_debt=track._stats["frames_dropped_debt"],
+                frames_dropped_non_monotonic_pts=track._stats["frames_dropped_non_monotonic_pts"],
+                time_debt_s=track._queue.time_debt_s,
+                queue_depth=track._queue.qsize,
             )
-            for state in self._track_states
+            for track in self._tracks
         )
         return MediaPublishStats(
             elapsed_s=max(0.0, time.time() - self._started_at),
