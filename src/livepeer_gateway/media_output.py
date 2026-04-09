@@ -10,7 +10,7 @@ import logging
 import time
 from enum import Enum
 from contextlib import suppress
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Collection, Optional
 
 from .errors import LivepeerGatewayError
 from .media_decode import (
@@ -27,6 +27,7 @@ from .segment_reader import SegmentReader
 from .trickle_subscriber import TrickleSubscriber, TrickleSubscriberStats
 
 _LOG = logging.getLogger(__name__)
+_DEFAULT_ACCEPTED_CONTENT_TYPES = frozenset({"video/mp2t", "audio/mp2t"})
 
 class LagPolicy(Enum):
     """
@@ -123,6 +124,7 @@ class MediaOutput:
         chunk_size: int = 64 * 1024,
         max_segments: int = 5,
         on_lag: LagPolicy = LagPolicy.LATEST,
+        accepted_content_types: Collection[str] = _DEFAULT_ACCEPTED_CONTENT_TYPES,
     ) -> None:
         if max_segments < 1:
             raise ValueError("max_segments must be >= 1")
@@ -134,6 +136,7 @@ class MediaOutput:
         self.chunk_size = chunk_size
         self.max_segments = max_segments
         self.on_lag = on_lag
+        self.accepted_content_types = _normalize_accepted_content_types(accepted_content_types)
 
         self._sub: Optional[TrickleSubscriber] = None
         self._segments: list[SegmentReader] = []
@@ -252,7 +255,10 @@ class MediaOutput:
         while segment is not None:
             if not checked_content_type:
                 try:
-                    _require_mpegts_content_type(segment.headers().get("Content-Type"))
+                    _require_content_type(
+                        segment.headers().get("Content-Type"),
+                        self.accepted_content_types,
+                    )
                 except Exception:
                     self._stats["content_type_errors"] += 1
                     raise
@@ -383,9 +389,22 @@ def _normalize_content_type(value: Optional[str]) -> Optional[str]:
     return value.split(";", 1)[0].strip().lower()
 
 
-def _require_mpegts_content_type(value: Optional[str]) -> None:
+def _normalize_accepted_content_types(
+    accepted_content_types: Collection[str],
+) -> frozenset[str]:
+    normalized = frozenset(
+        content_type
+        for value in accepted_content_types
+        if (content_type := _normalize_content_type(value)) is not None
+    )
+    if not normalized:
+        raise ValueError("accepted_content_types must contain at least one content type")
+    return normalized
+
+
+def _require_content_type(value: Optional[str], accepted: frozenset[str]) -> None:
     normalized = _normalize_content_type(value)
-    if normalized != "video/mp2t":
+    if normalized not in accepted:
         raise LivepeerGatewayError(
-            f"Expected MPEG-TS Content-Type 'video/mp2t', got {value!r}"
+            f"Expected Content-Type in {sorted(accepted)!r}, got {value!r}"
         )
