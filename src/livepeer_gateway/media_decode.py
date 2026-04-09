@@ -42,6 +42,47 @@ _EOF = object()
 _END = object()
 
 
+@dataclass(frozen=True)
+class DecoderQueueStats:
+    # These queue metrics are intentionally best-effort snapshots. They are
+    # derived from single-writer totals that are updated from different threads
+    # without per-operation locks, and rely on CPython's implementation details
+    # for cross-thread integer reads and writes being safe enough for telemetry.
+    # They should not be treated as exact, atomic queue state.
+
+    # queued_chunks: current number of chunk objects still waiting in the
+    # cross-thread input queue before they are moved into the internal buffer.
+    queued_chunks: int
+
+    # queued_bytes: current number of bytes still waiting in the cross-thread
+    # input queue. Unlike buffered_bytes, these bytes have not yet been moved
+    # into the internal bytearray used to satisfy read(size) calls.
+    queued_bytes: int
+
+    # buffered_bytes: current number of bytes already removed from the
+    # cross-thread queue and staged in the internal bytearray for future reads.
+    buffered_bytes: int
+
+    # total_chunks_dequeued: lifetime count of chunk objects moved out of the
+    # cross-thread queue and into the internal bytearray.
+    total_chunks_dequeued: int
+
+    # total_bytes_dequeued: lifetime count of bytes moved out of the
+    # cross-thread queue and into the internal bytearray.
+    total_bytes_dequeued: int
+
+    # total_bytes_read: lifetime count of bytes returned from read() to PyAV.
+    total_bytes_read: int
+
+    # output_items_queued: current number of objects waiting in the decoder
+    # output queue. This includes frames plus terminal/error markers.
+    output_items_queued: int
+
+    # total_output_items_dequeued: lifetime count of objects removed from the
+    # decoder output queue by MediaOutput.frames().
+    total_output_items_dequeued: int
+
+
 # Internal adapter that turns async-fed byte chunks into a blocking, file-like
 # stream for PyAV.
 class _BlockingByteStream:
@@ -51,11 +92,19 @@ class _BlockingByteStream:
         self._queue: "queue.Queue[object]" = queue.Queue()
         self._buffer = bytearray()
         self._closed = False
+        self._total_chunks_fed = 0
+        self._total_bytes_fed = 0
+        self._buffered_bytes = 0
+        self._total_chunks_dequeued = 0
+        self._total_bytes_dequeued = 0
+        self._total_bytes_read = 0
 
     def feed(self, data: bytes) -> None:
         # Called from the async producer to enqueue raw bytes for decoding.
         if not data:
             return
+        self._total_chunks_fed += 1
+        self._total_bytes_fed += len(data)
         self._queue.put(data)
 
     def close(self) -> None:
@@ -72,6 +121,8 @@ class _BlockingByteStream:
         if self._buffer:
             out = self._buffer[:size]
             del self._buffer[:size]
+            self._buffered_bytes -= len(out)
+            self._total_bytes_read += len(out)
             return bytes(out)
 
         while not self._buffer and not self._closed:
@@ -82,13 +133,37 @@ class _BlockingByteStream:
             if not item:
                 continue
             self._buffer.extend(item)  # type: ignore[arg-type]
+            chunk_len = len(item)
+            self._buffered_bytes += chunk_len
+            self._total_chunks_dequeued += 1
+            self._total_bytes_dequeued += chunk_len
 
         if not self._buffer and self._closed:
             return b""
 
         out = self._buffer[:size]
         del self._buffer[:size]
+        self._buffered_bytes -= len(out)
+        self._total_bytes_read += len(out)
         return bytes(out)
+
+    def get_stats(self) -> DecoderQueueStats:
+        total_chunks_fed = self._total_chunks_fed
+        total_bytes_fed = self._total_bytes_fed
+        total_chunks_dequeued = self._total_chunks_dequeued
+        total_bytes_dequeued = self._total_bytes_dequeued
+        total_bytes_read = self._total_bytes_read
+        buffered_bytes = self._buffered_bytes
+        return DecoderQueueStats(
+            queued_chunks=max(0, total_chunks_fed - total_chunks_dequeued),
+            queued_bytes=max(0, total_bytes_fed - total_bytes_dequeued),
+            buffered_bytes=max(0, buffered_bytes),
+            total_chunks_dequeued=total_chunks_dequeued,
+            total_bytes_dequeued=total_bytes_dequeued,
+            total_bytes_read=total_bytes_read,
+            output_items_queued=0,
+            total_output_items_dequeued=0,
+        )
 
 
 class _DecoderError:
@@ -168,6 +243,8 @@ class MpegTsDecoder:
         self._reader = _BlockingByteStream()
         # TODO: add backpressure here too (bounded queue) if callers are slow to consume.
         self._output: "queue.Queue[object]" = queue.Queue()
+        self._total_output_items_enqueued = 0
+        self._total_output_items_dequeued = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="MpegTsDecoder", daemon=True)
 
@@ -187,8 +264,29 @@ class MpegTsDecoder:
     def join(self) -> None:
         self._thread.join()
 
-    def output_queue(self) -> "queue.Queue[object]":
-        return self._output
+    def get(self) -> object:
+        item = self._output.get()
+        self._total_output_items_dequeued += 1
+        return item
+
+    def get_stats(self) -> DecoderQueueStats:
+        reader_stats = self._reader.get_stats()
+        total_output_items_enqueued = self._total_output_items_enqueued
+        total_output_items_dequeued = self._total_output_items_dequeued
+        return DecoderQueueStats(
+            queued_chunks=reader_stats.queued_chunks,
+            queued_bytes=reader_stats.queued_bytes,
+            buffered_bytes=reader_stats.buffered_bytes,
+            total_chunks_dequeued=reader_stats.total_chunks_dequeued,
+            total_bytes_dequeued=reader_stats.total_bytes_dequeued,
+            total_bytes_read=reader_stats.total_bytes_read,
+            output_items_queued=max(0, total_output_items_enqueued - total_output_items_dequeued),
+            total_output_items_dequeued=total_output_items_dequeued,
+        )
+
+    def _put_output_item(self, item: object) -> None:
+        self._total_output_items_enqueued += 1
+        self._output.put(item)
 
     def _run(self) -> None:
         container: Optional[av.container.InputContainer] = None
@@ -204,7 +302,7 @@ class MpegTsDecoder:
                 try:
                     frames = packet.decode()
                 except Exception as e:
-                    self._output.put(_DecoderError(e))
+                    self._put_output_item(_DecoderError(e))
                     break
                 for frame in frames:
                     decoded_at = time.time()
@@ -214,16 +312,16 @@ class MpegTsDecoder:
                         demuxed_at=demuxed_at,
                         decoded_at=decoded_at,
                     )
-                    self._output.put(decoded)
+                    self._put_output_item(decoded)
         except Exception as e:
-            self._output.put(_DecoderError(e))
+            self._put_output_item(_DecoderError(e))
         finally:
             if container is not None:
                 try:
                     container.close()
                 except Exception:
                     pass
-            self._output.put(_END)
+            self._put_output_item(_END)
 
 
 def is_decoder_end(item: object) -> bool:
@@ -234,4 +332,3 @@ def decoder_error(item: object) -> Optional[BaseException]:
     if isinstance(item, _DecoderError):
         return item.error
     return None
-

@@ -16,6 +16,7 @@ from .errors import LivepeerGatewayError
 from .media_decode import (
     AudioDecodedMediaFrame,
     DecodedMediaFrame,
+    DecoderQueueStats,
     MpegTsDecoder,
     VideoDecodedMediaFrame,
     decoder_error,
@@ -50,6 +51,10 @@ class MediaOutputStats:
     video_frames_decoded: int
     audio_frames_decoded: int
     decode_errors: int
+    # decoder: decode pipeline queue metrics, including the distinction between
+    # queued_bytes in the cross-thread input queue and buffered_bytes already
+    # staged in the internal bytearray used to satisfy read() calls.
+    decoder: Optional[DecoderQueueStats]
     subscriber: Optional[TrickleSubscriberStats]
 
     def __str__(self) -> str:
@@ -68,6 +73,7 @@ class MediaOutputStats:
             f"video_frames_decoded={self.video_frames_decoded}, "
             f"audio_frames_decoded={self.audio_frames_decoded}, "
             f"decode_errors={self.decode_errors}"
+            f"{', decoder=' + str(self.decoder) if self.decoder is not None else ''}"
             f"{', subscriber=' + str(self.subscriber) if self.subscriber is not None else ''}"
             ")"
         )
@@ -136,6 +142,8 @@ class MediaOutput:
         self._next_local_seq = 0
         self._base_seq = 0
         self._started_at = time.time()
+        self._decoder: Optional[MpegTsDecoder] = None
+        self._last_decoder_stats: Optional[DecoderQueueStats] = None
         self._stats: dict[str, int] = {
             "segments_consumed": 0,
             "bytes_read": 0,
@@ -192,7 +200,7 @@ class MediaOutput:
 
         async def _iter() -> AsyncIterator[AudioDecodedMediaFrame | VideoDecodedMediaFrame]:
             decoder = MpegTsDecoder()
-            output = decoder.output_queue()
+            self._decoder = decoder
             decoder.start()
 
             async def _feed() -> None:
@@ -203,7 +211,7 @@ class MediaOutput:
             producer_task = asyncio.create_task(_feed())
             try:
                 while True:
-                    item = await asyncio.to_thread(output.get)
+                    item = await asyncio.to_thread(decoder.get)
                     err = decoder_error(item)
                     if err is not None:
                         self._stats["decode_errors"] += 1
@@ -229,6 +237,9 @@ class MediaOutput:
                 with suppress(asyncio.CancelledError):
                     await producer_task
                 await asyncio.to_thread(decoder.join)
+                self._last_decoder_stats = decoder.get_stats()
+                if self._decoder is decoder:
+                    self._decoder = None
 
         return _iter()
 
@@ -346,6 +357,7 @@ class MediaOutput:
         await self.close()
 
     def get_stats(self) -> MediaOutputStats:
+        decoder_stats = self._decoder.get_stats() if self._decoder is not None else self._last_decoder_stats
         return MediaOutputStats(
             elapsed_s=max(0.0, time.time() - self._started_at),
             segments_consumed=self._stats["segments_consumed"],
@@ -360,6 +372,7 @@ class MediaOutput:
             video_frames_decoded=self._stats["video_frames_decoded"],
             audio_frames_decoded=self._stats["audio_frames_decoded"],
             decode_errors=self._stats["decode_errors"],
+            decoder=decoder_stats,
             subscriber=(self._sub.get_stats() if self._sub is not None else None),
         )
 
@@ -376,4 +389,3 @@ def _require_mpegts_content_type(value: Optional[str]) -> None:
         raise LivepeerGatewayError(
             f"Expected MPEG-TS Content-Type 'video/mp2t', got {value!r}"
         )
-
