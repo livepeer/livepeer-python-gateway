@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
-import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -25,63 +22,10 @@ from .media_publish import MediaPublish, MediaPublishConfig
 from .orchestrator import _http_origin, post_json
 from .selection import orchestrator_selector
 from .remote_signer import PaymentSession
+from .token import parse_token
 from .trickle_subscriber import TrickleSubscriber
 
 _LOG = logging.getLogger(__name__)
-
-
-def _is_str_dict(v: object) -> bool:
-    return isinstance(v, dict) and all(isinstance(k, str) and isinstance(val, str) for k, val in v.items())
-
-
-def _parse_token(token: str) -> dict[str, Any]:
-    try:
-        decoded = base64.b64decode(token, validate=True)
-    except (binascii.Error, ValueError) as e:
-        raise LivepeerGatewayError("Invalid token: expected base64-encoded JSON") from e
-
-    try:
-        payload = json.loads(decoded.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        raise LivepeerGatewayError("Invalid token: expected UTF-8 JSON payload") from e
-
-    if not isinstance(payload, dict):
-        raise LivepeerGatewayError("Invalid token: payload must be a JSON object")
-
-    signer = payload.get("signer")
-    discovery = payload.get("discovery")
-    if signer is not None and not isinstance(signer, str):
-        raise LivepeerGatewayError("Invalid token: signer must be a string")
-    if discovery is not None and not isinstance(discovery, str):
-        raise LivepeerGatewayError("Invalid token: discovery must be a string")
-
-    signer_headers = payload.get("signer_headers")
-    discovery_headers = payload.get("discovery_headers")
-    orchestrators = payload.get("orchestrators")
-    if signer_headers is not None and not _is_str_dict(signer_headers):
-        raise LivepeerGatewayError("Invalid token: signer_headers must be a {string: string} object")
-    if discovery_headers is not None and not _is_str_dict(discovery_headers):
-        raise LivepeerGatewayError("Invalid token: discovery_headers must be a {string: string} object")
-    if orchestrators is not None and not isinstance(orchestrators, list):
-        raise LivepeerGatewayError("Invalid token: orchestrators must be an array of strings")
-
-    normalized_orchestrators: Optional[list[str]] = None
-    if isinstance(orchestrators, list):
-        normalized_orchestrators = []
-        for item in orchestrators:
-            if not isinstance(item, str) or not item.strip():
-                raise LivepeerGatewayError(
-                    "Invalid token: orchestrators must contain only non-empty strings"
-                )
-            normalized_orchestrators.append(item.strip())
-
-    return {
-        "orchestrators": normalized_orchestrators,
-        "signer": signer,
-        "discovery": discovery,
-        "signer_headers": signer_headers,
-        "discovery_headers": discovery_headers,
-    }
 
 
 @dataclass(frozen=True)
@@ -352,7 +296,7 @@ def start_lv2v(
 
     token_data: Optional[dict[str, Any]] = None
     if token is not None:
-        token_data = _parse_token(token)
+        token_data = parse_token(token)
 
     resolved_orch_url = token_data.get("orchestrators") if token_data else None
     if resolved_orch_url is None:

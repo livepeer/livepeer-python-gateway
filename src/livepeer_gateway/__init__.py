@@ -22,6 +22,7 @@ from .orchestrator import discover_orchestrators
 from .remote_signer import PaymentSession
 from .scope import start_scope
 from .selection import SelectionCursor, orchestrator_selector
+from .token import parse_token
 from .trickle_publisher import (
     TricklePublishError,
     TricklePublisher,
@@ -62,6 +63,7 @@ __all__ = [
     "JSONLWriter",
     "Events",
     "PaymentSession",
+    "parse_token",
     "SelectionCursor",
     "orchestrator_selector",
     "StartJobRequest",

@@ -11,6 +11,7 @@ from livepeer_gateway.capabilities import (
 )
 from livepeer_gateway import get_orch_info
 from livepeer_gateway.orchestrator import LivepeerGatewayError, discover_orchestrators
+from livepeer_gateway.token import parse_token
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -25,6 +26,10 @@ def _parse_args() -> argparse.Namespace:
             "  # Discovery URL\n"
             "  python examples/get_orchestrator_info.py --discovery https://discover.example.com/orchestrators\n"
             "  python examples/get_orchestrator_info.py --discovery https://discover.example.com/orchestrators --signer https://signer.example.com\n"
+            "\n"
+            "  # Gateway token\n"
+            "  python examples/get_orchestrator_info.py --token <base64-token>\n"
+            "  python examples/get_orchestrator_info.py localhost:8935 --token <base64-token>\n"
             "\n"
             "  # Signer URL\n"
             "  python examples/get_orchestrator_info.py --signer https://signer.example.com\n"
@@ -49,6 +54,11 @@ def _parse_args() -> argparse.Namespace:
         "--signer",
         default=None,
         help="Remote signer base URL (no path). Can be combined with list/discovery.",
+    )
+    p.add_argument(
+        "--token",
+        default=None,
+        help="Base64-encoded gateway token; token fields override explicit signer/discovery/orchestrator args.",
     )
     p.add_argument(
         "--debug",
@@ -317,6 +327,28 @@ def _print_jsonl_error(orch_url: str | None, err: Exception) -> None:
     print(json.dumps(_orch_error_summary(orch_url, err), sort_keys=True))
 
 
+def _resolve_discovery_args(args: argparse.Namespace) -> tuple[Any, str | None, dict[str, str] | None, str | None, dict[str, str] | None]:
+    token_data = parse_token(args.token) if args.token else None
+
+    orchestrators = token_data.get("orchestrators") if token_data else None
+    if orchestrators is None:
+        orchestrators = args.orchestrators
+
+    signer = token_data.get("signer") if token_data else None
+    if signer is None:
+        signer = args.signer
+
+    signer_headers = token_data.get("signer_headers") if token_data else None
+
+    discovery = token_data.get("discovery") if token_data else None
+    if discovery is None:
+        discovery = args.discovery
+
+    discovery_headers = token_data.get("discovery_headers") if token_data else None
+
+    return orchestrators, signer, signer_headers, discovery, discovery_headers
+
+
 def main() -> None:
     args = _parse_args()
 
@@ -345,15 +377,22 @@ def main() -> None:
     print_error = error_printers[args.format]
 
     try:
+        orchestrators, signer, signer_headers, discovery, discovery_headers = _resolve_discovery_args(args)
         orch_list = discover_orchestrators(
-            args.orchestrators,
-            signer_url=args.signer,
-            discovery_url=args.discovery,
+            orchestrators,
+            signer_url=signer,
+            signer_headers=signer_headers,
+            discovery_url=discovery,
+            discovery_headers=discovery_headers,
         )
 
         for orch_url in orch_list:
             try:
-                info = get_orch_info(orch_url, signer_url=args.signer)
+                info = get_orch_info(
+                    orch_url,
+                    signer_url=signer,
+                    signer_headers=signer_headers,
+                )
             except LivepeerGatewayError as e:
                 print_error(orch_url, e)
                 continue

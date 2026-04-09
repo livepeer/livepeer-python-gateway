@@ -6,10 +6,11 @@ from typing import Any, Optional, Sequence
 from .capabilities import CapabilityId, build_capabilities
 from .control import ControlConfig, ControlMode
 from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, OrchestratorRejection
-from .lv2v import LiveVideoToVideo, StartJobRequest, _parse_token
+from .lv2v import LiveVideoToVideo, StartJobRequest
 from .orchestrator import _http_origin, post_json
 from .remote_signer import PaymentSession
 from .selection import orchestrator_selector
+from .token import parse_token
 
 _LOG = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ def start_scope(
 
     token_data: Optional[dict[str, Any]] = None
     if token is not None:
-        token_data = _parse_token(token)
+        token_data = parse_token(token)
 
     resolved_orch_url = token_data.get("orchestrators") if token_data else None
     if resolved_orch_url is None:
