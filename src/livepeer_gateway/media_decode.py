@@ -82,6 +82,18 @@ class DecoderQueueStats:
     # decoder output queue by MediaOutput.frames().
     total_output_items_dequeued: int
 
+    # queue_s: aggregate span of source PTS media-time between the most-
+    # recently enqueued decoded frame and the most-recently dequeued decoded
+    # frame. Approximates how much media time is sitting in the decoder output
+    # queue. Aggregated across all streams (audio+video); noisy when streams
+    # diverge in PTS but still useful as a rough depth.
+    queue_s: float
+
+    # processed_s: aggregate span of source PTS media-time between the first
+    # and most-recently dequeued decoded frames. Approximates total media time
+    # the decoder consumer has pulled out since start.
+    processed_s: float
+
 
 # Internal adapter that turns async-fed byte chunks into a blocking, file-like
 # stream for PyAV.
@@ -163,6 +175,8 @@ class _BlockingByteStream:
             total_bytes_read=total_bytes_read,
             output_items_queued=0,
             total_output_items_dequeued=0,
+            queue_s=0.0,
+            processed_s=0.0,
         )
 
 
@@ -245,6 +259,12 @@ class MpegTsDecoder:
         self._output: "queue.Queue[object]" = queue.Queue()
         self._total_output_items_enqueued = 0
         self._total_output_items_dequeued = 0
+        # Aggregate source-PTS media-time watermarks across all streams for
+        # output-queue telemetry. Best-effort snapshots updated from producer
+        # (decoder thread) and consumer (get()) without per-op locks.
+        self._max_pts_time_enqueued: Optional[float] = None
+        self._max_pts_time_dequeued: Optional[float] = None
+        self._min_pts_time_dequeued: Optional[float] = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="MpegTsDecoder", daemon=True)
 
@@ -267,12 +287,36 @@ class MpegTsDecoder:
     def get(self) -> object:
         item = self._output.get()
         self._total_output_items_dequeued += 1
+        if isinstance(item, DecodedMediaFrame):
+            pts_time = item.pts_time
+            if pts_time is not None:
+                if (
+                    self._max_pts_time_dequeued is None
+                    or pts_time > self._max_pts_time_dequeued
+                ):
+                    self._max_pts_time_dequeued = pts_time
+                if (
+                    self._min_pts_time_dequeued is None
+                    or pts_time < self._min_pts_time_dequeued
+                ):
+                    self._min_pts_time_dequeued = pts_time
         return item
 
     def get_stats(self) -> DecoderQueueStats:
         reader_stats = self._reader.get_stats()
         total_output_items_enqueued = self._total_output_items_enqueued
         total_output_items_dequeued = self._total_output_items_dequeued
+        max_enq = self._max_pts_time_enqueued
+        max_deq = self._max_pts_time_dequeued
+        min_deq = self._min_pts_time_dequeued
+        if max_enq is None or max_deq is None:
+            queue_s = 0.0
+        else:
+            queue_s = max(0.0, max_enq - max_deq)
+        if max_deq is None or min_deq is None:
+            processed_s = 0.0
+        else:
+            processed_s = max(0.0, max_deq - min_deq)
         return DecoderQueueStats(
             queued_chunks=reader_stats.queued_chunks,
             queued_bytes=reader_stats.queued_bytes,
@@ -282,10 +326,19 @@ class MpegTsDecoder:
             total_bytes_read=reader_stats.total_bytes_read,
             output_items_queued=max(0, total_output_items_enqueued - total_output_items_dequeued),
             total_output_items_dequeued=total_output_items_dequeued,
+            queue_s=queue_s,
+            processed_s=processed_s,
         )
 
     def _put_output_item(self, item: object) -> None:
         self._total_output_items_enqueued += 1
+        if isinstance(item, DecodedMediaFrame):
+            pts_time = item.pts_time
+            if pts_time is not None and (
+                self._max_pts_time_enqueued is None
+                or pts_time > self._max_pts_time_enqueued
+            ):
+                self._max_pts_time_enqueued = pts_time
         self._output.put(item)
 
     def _run(self) -> None:

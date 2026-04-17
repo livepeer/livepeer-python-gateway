@@ -133,6 +133,15 @@ class TrackQueueStats:
     frames_dropped_non_monotonic_pts: int
     time_debt_s: float
     queue_depth: int
+    # queue_media_time_s: span of source PTS media-time between the most-
+    # recently enqueued frame and the most-recently dequeued frame on this
+    # track. Approximates how much media time is currently buffered in the
+    # per-track queue waiting to be encoded.
+    queue_media_time_s: float
+    # total_media_time_processed_s: span of source PTS media-time between
+    # the first and most-recently dequeued frame. Approximates total media
+    # time the encoder has pulled off this track's queue since start.
+    total_media_time_processed_s: float
 
     def __str__(self) -> str:
         return (
@@ -142,7 +151,9 @@ class TrackQueueStats:
             f"debt={self.frames_dropped_debt}, "
             f"nm_pts={self.frames_dropped_non_monotonic_pts}, "
             f"debt_s={self.time_debt_s:.4f}, "
-            f"depth={self.queue_depth})"
+            f"depth={self.queue_depth}, "
+            f"queue_s={self.queue_media_time_s:.4f}, "
+            f"processed_s={self.total_media_time_processed_s:.4f})"
         )
 
 
@@ -947,6 +958,8 @@ class MediaPublish:
                 frames_dropped_non_monotonic_pts=track._stats["frames_dropped_non_monotonic_pts"],
                 time_debt_s=track._queue.time_debt_s,
                 queue_depth=track._queue.qsize,
+                queue_media_time_s=track._queue.queue_media_time_s,
+                total_media_time_processed_s=track._queue.total_media_time_processed_s,
             )
             for track in self._tracks
         )
@@ -1003,6 +1016,14 @@ class _FrameQueue:
         self._last_encoded_media_time_s: Optional[float] = None
         self._stop_after_current = False
         self._stop_enqueued = False
+        # Source-PTS media-time watermarks for queue-span telemetry. These are
+        # best-effort snapshots (single-writer-ish updates across threads) and
+        # are not locked per op. They are only meaningful for frames that
+        # expose pts + time_base; STOP sentinels and pts-less frames are
+        # skipped.
+        self._last_put_media_time_s: Optional[float] = None
+        self._first_get_media_time_s: Optional[float] = None
+        self._last_get_media_time_s: Optional[float] = None
 
     def resize(self, maxsize: int) -> None:
         if not isinstance(maxsize, int) or isinstance(maxsize, bool):
@@ -1027,13 +1048,18 @@ class _FrameQueue:
                 self._queue.put_nowait(item)
                 if item is _STOP:
                     self._stop_enqueued = True
+                else:
+                    self._track_put_media_time(item)
                 return
             except queue.Full:
                 try:
-                    self._queue.get_nowait()
+                    dropped = self._queue.get_nowait()
                 except queue.Empty:
                     continue
                 self._stats["frames_dropped_overflow"] += 1
+                # Overflow drops come off the head, so their media time should
+                # advance the "consumed" watermark just like a normal get.
+                self._track_get_media_time(dropped)
         _LOG.error("MediaPublish frame queue put exceeded retry limit (%d); dropping item", max_retries)
         if item is not _STOP:
             self._stats["frames_dropped_overflow"] += 1
@@ -1057,6 +1083,7 @@ class _FrameQueue:
             return _STOP
 
         if not self._debt_skip:
+            self._track_get_media_time(item)
             return item
 
         # Candidate selection is intentionally one-at-a-time:
@@ -1067,18 +1094,24 @@ class _FrameQueue:
         candidate = item
         while True:
             if self._accept_candidate(candidate):
+                self._track_get_media_time(candidate)
                 return candidate
             try:
                 next_item = self._queue.get_nowait()
             except queue.Empty:
                 # No immediate replacement candidate; keep pipeline moving.
+                self._track_get_media_time(candidate)
                 return candidate
             if next_item is _STOP:
                 # Treat STOP as a normal FIFO sentinel, but do not drop the
                 # current candidate mid-selection. Request shutdown right after.
                 self._stop_after_current = True
+                self._track_get_media_time(candidate)
                 return candidate
             self._stats["frames_dropped_debt"] += 1
+            # Debt-skipped frames still leave the queue; treat them like a get
+            # for watermark tracking so queue-span math stays accurate.
+            self._track_get_media_time(candidate)
             candidate = next_item
 
     def update_after_encode(self, *, encoded_media_time_s: float, encode_duration_s: float) -> None:
@@ -1107,6 +1140,36 @@ class _FrameQueue:
     def maxsize(self) -> int:
         with self._queue.mutex:
             return self._queue.maxsize
+
+    @property
+    def queue_media_time_s(self) -> float:
+        last_put = self._last_put_media_time_s
+        last_get = self._last_get_media_time_s
+        if last_put is None or last_get is None:
+            return 0.0
+        return max(0.0, last_put - last_get)
+
+    @property
+    def total_media_time_processed_s(self) -> float:
+        first_get = self._first_get_media_time_s
+        last_get = self._last_get_media_time_s
+        if first_get is None or last_get is None:
+            return 0.0
+        return max(0.0, last_get - first_get)
+
+    def _track_put_media_time(self, item: object) -> None:
+        media_time_s = self._frame_media_time_s(item)
+        if media_time_s is None:
+            return
+        self._last_put_media_time_s = media_time_s
+
+    def _track_get_media_time(self, item: object) -> None:
+        media_time_s = self._frame_media_time_s(item)
+        if media_time_s is None:
+            return
+        if self._first_get_media_time_s is None:
+            self._first_get_media_time_s = media_time_s
+        self._last_get_media_time_s = media_time_s
 
     def _accept_candidate(self, candidate: object) -> bool:
         candidate_media_time_s = self._frame_media_time_s(candidate)
