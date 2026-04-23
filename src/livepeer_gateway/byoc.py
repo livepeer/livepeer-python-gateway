@@ -38,6 +38,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from .orchestrator import _http_origin, _parse_http_url, discover_orchestrators
@@ -155,66 +156,47 @@ def _create_byoc_payment(
     """
     Create on-chain payment tickets for a BYOC job.
 
-    Flow (same as LV2V payment):
-      1. Get signing credentials from signer (/sign-orchestrator-info)
-      2. Get token from BYOC orch (/process/token) — includes ticket params + price
-      3. Generate payment via signer (/generate-live-payment)
-      4. Return headers to include in the job request
+    Flow:
+      1. Get OrchestratorInfo via gRPC (same as LV2V) — contains ticket params + price
+      2. Generate payment via signer (/generate-live-payment)
+      3. Return headers to include in the job request
 
     Returns dict with Livepeer-Payment and Livepeer-Segment headers.
     """
     from .remote_signer import get_orch_info_sig, _freeze_headers, PaymentSession
-    from .orchestrator import _http_origin, post_json
+    from .orchestrator import _http_origin
+    from .orch_info import get_orch_info
 
-    # Step 1: Get signing credentials from signer
-    signer_material = get_orch_info_sig(signer_url, _freeze_headers(signer_headers))
+    # Step 1: Get OrchestratorInfo via gRPC (port 8935)
+    # The BYOC orch_origin is on :8936 (HTTP), but gRPC is on :8935.
+    # Derive the gRPC URL from the HTTP origin.
+    parsed = urlparse(orch_origin)
+    grpc_url = f"https://{parsed.hostname}:8935"
 
-    # Step 2: Get token from BYOC orch (/process/token)
-    # This returns ticket params, price, sender address, balance
-    token_url = f"{orch_origin}/process/token"
-    token_headers = {
-        "Content-Type": "application/json",
-        "Livepeer": livepeer_hdr,
-        "Livepeer-Capability": capability,
-    }
-    if signer_material.address and signer_material.sig:
-        # BYOC orch expects base64-encoded JSON: {"addr": "0x...", "sig": "0x..."}
-        # Must use original hex casing from signer (EIP-55) since the sig was over that string
-        addr_str = signer_material.address_hex or ("0x" + signer_material.address.hex())
-        job_sender = json.dumps({
-            "addr": addr_str,
-            "sig": "0x" + signer_material.sig.hex(),
-        })
-        token_headers["Livepeer-Eth-Address"] = base64.b64encode(job_sender.encode()).decode()
+    info = get_orch_info(
+        grpc_url,
+        signer_url=signer_url,
+        signer_headers=signer_headers,
+    )
 
-    token_req = Request(token_url, headers=token_headers, method="GET")
-    try:
-        with urlopen(token_req, timeout=timeout, context=_ssl_ctx) as resp:
-            token_data = json.loads(resp.read())
-    except HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:200]
-        raise LivepeerGatewayError(f"BYOC token request failed: HTTP {e.code}: {body}") from e
-
-    _LOG.debug("BYOC token response: %s", token_data)
-
-    # Step 3: Generate payment via signer
-    # The token contains orchestrator info needed for payment generation
-    orch_info_b64 = token_data.get("orchestrator_info", "")
-    if not orch_info_b64:
-        # If the orch returned price=0, no payment needed
-        price = token_data.get("price", {})
-        if price.get("pricePerUnit", 0) == 0:
-            _LOG.info("BYOC orch price=0, skipping payment")
+    # Check if orch has a price set — if price is 0, skip payment
+    if info.HasField("ticket_params"):
+        tp = info.ticket_params
+        if not tp.face_value or tp.face_value == b'\x00':
+            _LOG.info("BYOC orch ticket face_value=0, skipping payment")
             return {}
-
-        _LOG.warning("BYOC token missing orchestrator_info, trying without payment")
+    else:
+        _LOG.info("BYOC orch has no ticket_params, skipping payment")
         return {}
+
+    # Step 2: Generate payment via signer
+    orch_info_b64 = base64.b64encode(info.SerializeToString()).decode("ascii")
 
     signer_origin = _http_origin(signer_url)
     payment_url = f"{signer_origin}/generate-live-payment"
     payment_body = json.dumps({
         "orchestrator": orch_info_b64,
-        "type": "byoc",
+        "type": "lv2v",
         "capability": capability,
     }).encode("utf-8")
     payment_headers = {
@@ -237,6 +219,7 @@ def _create_byoc_payment(
     if payment_data.get("segCreds"):
         result["Livepeer-Segment"] = payment_data["segCreds"]
 
+    _LOG.info("BYOC payment tickets generated for %s", orch_origin)
     return result
 
 
