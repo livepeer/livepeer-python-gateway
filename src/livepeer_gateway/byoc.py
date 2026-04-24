@@ -201,6 +201,7 @@ def _create_byoc_payment(
     }).encode("utf-8")
     payment_headers = {
         "Content-Type": "application/json",
+        "Livepeer-Capability": capability,
     }
     if signer_headers:
         payment_headers.update(signer_headers)
