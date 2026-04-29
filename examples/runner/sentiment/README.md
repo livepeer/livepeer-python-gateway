@@ -21,6 +21,12 @@ docker compose down
 > **First build is ~5 minutes** — pulls torch CPU (~200 MB), transformers, and
 > bakes the ~250 MB model into the image. Cached after that; rebuilds are fast.
 
+## Browse the API
+
+- Swagger UI: <http://localhost:5000/docs>
+- ReDoc: <http://localhost:5000/redoc>
+- OpenAPI JSON: <http://localhost:5000/openapi.json>
+
 ## What's running
 
 ```mermaid
