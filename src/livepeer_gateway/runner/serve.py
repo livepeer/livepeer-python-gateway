@@ -6,9 +6,15 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, create_model
 
-from .pipeline import Pipeline
+from .pipeline import Pipeline, PipelineState
 
-_LOG = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
+
+
+class HealthResponse(BaseModel):
+    """Response shape for ``GET /health`` — matches go-livepeer's HealthCheck."""
+
+    status: PipelineState
 
 
 def _is_basemodel(t: Any) -> bool:
@@ -50,7 +56,7 @@ def _build_predict_handler(
         except HTTPException:
             raise
         except Exception:
-            _LOG.exception("predict() failed")
+            logger.exception("predict() failed")
             raise HTTPException(status_code=500, detail="internal error")
 
     if OutputModel is not None:
@@ -60,7 +66,14 @@ def _build_predict_handler(
 
 def make_app(pipeline: Pipeline) -> FastAPI:
     """Build a FastAPI app exposing ``pipeline`` over HTTP."""
-    pipeline.setup()
+    pipeline._state = PipelineState.LOADING
+    try:
+        pipeline.setup()
+        pipeline._state = PipelineState.OK
+    except Exception:
+        pipeline._state = PipelineState.ERROR
+        logger.exception("setup() failed")
+        raise
 
     InputModel, explicit_basemodel = _build_input_model(
         pipeline.predict, type(pipeline).__name__
@@ -80,9 +93,9 @@ def make_app(pipeline: Pipeline) -> FastAPI:
         summary="Run one inference",
     )
 
-    @app.get("/health", summary="Liveness probe")
-    def handle_health() -> dict:
-        return {"status": "ready"}
+    @app.get("/health", summary="Liveness probe", response_model=HealthResponse)
+    def handle_health() -> HealthResponse:
+        return HealthResponse(status=pipeline._state)
 
     return app
 
