@@ -12,3 +12,9 @@ lp_rpc.proto
 
 # environment file
 env
+
+# IDE
+.vscode/
+*.code-workspace
+.idea/
+.codex 
