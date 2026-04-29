@@ -52,7 +52,12 @@ async def handle_health(_: web.Request) -> web.Response:
 
 
 def make_app(pipeline: Pipeline) -> web.Application:
-    """Build an aiohttp application exposing ``pipeline`` over HTTP."""
+    """Build an aiohttp application exposing ``pipeline`` over HTTP.
+
+    Calls ``pipeline.setup()`` synchronously before binding routes, so the
+    server only starts accepting requests once the pipeline is initialised.
+    """
+    pipeline.setup()
     app = web.Application()
     app["pipeline"] = pipeline
     app.router.add_post("/predict", handle_predict)
