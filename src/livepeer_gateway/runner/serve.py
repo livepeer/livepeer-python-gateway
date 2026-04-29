@@ -1,34 +1,84 @@
-from __future__ import annotations
-
+import inspect
 import logging
 from typing import Any
 
 import uvicorn
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, create_model
 
 from .pipeline import Pipeline
 
 _LOG = logging.getLogger(__name__)
 
 
-def make_app(pipeline: Pipeline) -> FastAPI:
-    """Build a FastAPI app exposing ``pipeline`` over HTTP."""
-    pipeline.setup()
+def _is_basemodel(t: Any) -> bool:
+    return isinstance(t, type) and issubclass(t, BaseModel)
 
-    app = FastAPI(title=type(pipeline).__name__)
-    app.state.pipeline = pipeline
 
-    @app.post("/predict", summary="Run one inference")
-    def handle_predict(body: dict = Body(...)) -> Any:
+def _build_input_model(predict_fn: Any, owner_name: str) -> tuple[type[BaseModel], bool]:
+    """Inspect predict()'s signature; return (InputModel, is_explicit_basemodel).
+
+    If predict() takes a single ``BaseModel`` parameter, use it directly.
+    Otherwise build a model from the bare parameters via ``create_model``.
+    """
+    sig = inspect.signature(predict_fn)
+    params = [param for param in sig.parameters.values() if param.name != "self"]
+
+    if len(params) == 1 and _is_basemodel(params[0].annotation):
+        return params[0].annotation, True
+
+    fields: dict[str, tuple[Any, Any]] = {}
+    for param in params:
+        annotation = param.annotation if param.annotation is not inspect.Parameter.empty else Any
+        default = param.default if param.default is not inspect.Parameter.empty else ...
+        fields[param.name] = (annotation, default)
+
+    return create_model(f"{owner_name}Input", **fields), False
+
+
+def _build_predict_handler(
+    pipeline: Pipeline,
+    InputModel: type[BaseModel],
+    OutputModel: type[BaseModel] | None,
+    explicit_basemodel: bool,
+):
+    def handler(body: InputModel):
         try:
-            return pipeline.predict(**body)
-        except TypeError as exc:
-            raise HTTPException(status_code=400, detail=f"input mismatch: {exc}")
+            if explicit_basemodel:
+                return pipeline.predict(body)
+            return pipeline.predict(**body.model_dump())
         except HTTPException:
             raise
         except Exception:
             _LOG.exception("predict() failed")
             raise HTTPException(status_code=500, detail="internal error")
+
+    if OutputModel is not None:
+        handler.__annotations__["return"] = OutputModel
+    return handler
+
+
+def make_app(pipeline: Pipeline) -> FastAPI:
+    """Build a FastAPI app exposing ``pipeline`` over HTTP."""
+    pipeline.setup()
+
+    InputModel, explicit_basemodel = _build_input_model(
+        pipeline.predict, type(pipeline).__name__
+    )
+    return_annotation = inspect.signature(pipeline.predict).return_annotation
+    OutputModel = return_annotation if _is_basemodel(return_annotation) else None
+
+    handler = _build_predict_handler(pipeline, InputModel, OutputModel, explicit_basemodel)
+
+    app = FastAPI(title=type(pipeline).__name__)
+    app.state.pipeline = pipeline
+
+    app.add_api_route(
+        "/predict",
+        handler,
+        methods=["POST"],
+        summary="Run one inference",
+    )
 
     @app.get("/health", summary="Liveness probe")
     def handle_health() -> dict:
