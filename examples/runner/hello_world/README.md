@@ -15,6 +15,12 @@ docker compose down
 
 `test.sh` prints `PASS` on success.
 
+## Browse the API
+
+- Swagger UI: <http://localhost:5000/docs>
+- ReDoc: <http://localhost:5000/redoc>
+- OpenAPI JSON: <http://localhost:5000/openapi.json>
+
 ## What's running
 
 ```mermaid

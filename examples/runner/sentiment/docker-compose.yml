@@ -42,8 +42,8 @@ services:
       context: ../../..
       dockerfile: examples/runner/sentiment/Dockerfile
     container_name: sentiment
-    expose:
-      - "5000"
+    ports:
+      - "5000:5000"
     # Healthcheck waits for setup() to finish loading the model before the
     # orchestrator can route requests here. Without this, register_capability
     # could complete and the test could fire before the model is loaded.
