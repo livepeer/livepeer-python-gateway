@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import json
 import logging
@@ -8,8 +9,18 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, create_model
 
-from .live_pipeline import LivePipeline, StreamParamsRequest, StreamStartRequest
+from .live_pipeline import (
+    LivePipeline,
+    StreamParamsRequest,
+    StreamStartRequest,
+    _run_passthrough,
+)
 from .pipeline import Pipeline, PipelineState
+
+# Bound the wait for an in-flight session task to terminate after cancel.
+# 5s covers the trickle close paths (segment close + session close + queue
+# drain). If we exceed it, the task is left to finish in the background.
+_STOP_TIMEOUT_S = 5.0
 
 logger = logging.getLogger(__name__)
 
@@ -115,11 +126,42 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
     @app.post("/stream/start", summary="Start a stream session")
     async def handle_stream_start(body: StreamStartRequest) -> dict[str, Any]:
         logger.info("stream/start request_id=%s", body.gateway_request_id)
+
+        if pipeline._session_task and not pipeline._session_task.done():
+            # Single-session for now; orchestrator shouldn't double-start.
+            raise HTTPException(status_code=409, detail="session already active")
+
+        if not (body.subscribe_url and body.publish_url):
+            # Bytes-through requires both directions; data-only / event-only
+            # streams land in later phases.
+            raise HTTPException(
+                status_code=400,
+                detail="subscribe_url and publish_url required for video streams",
+            )
+
+        pipeline._session_task = asyncio.create_task(
+            _run_passthrough(body.subscribe_url, body.publish_url),
+            name=f"live-session-{body.gateway_request_id}",
+        )
         return {"status": "started", "gateway_request_id": body.gateway_request_id}
 
     @app.post("/stream/stop", summary="Stop the active stream session")
     async def handle_stream_stop() -> dict[str, str]:
         logger.info("stream/stop")
+        task = pipeline._session_task
+        pipeline._session_task = None
+        if task is None or task.done():
+            return {"status": "stopped"}
+
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=_STOP_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            logger.warning("session task did not terminate within %.1fs", _STOP_TIMEOUT_S)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("session task ended with error")
         return {"status": "stopped"}
 
     @app.post("/stream/params", summary="Update params on the active stream")

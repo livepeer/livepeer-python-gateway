@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..trickle_publisher import TricklePublisher
+from ..trickle_subscriber import TrickleSubscriber
 from .pipeline import PipelineState
 
 if TYPE_CHECKING:
@@ -44,6 +47,8 @@ class LivePipeline:
     """
 
     _state: PipelineState = PipelineState.LOADING
+    # Single-session for now; multi-session is post-C8 (capacity demand-driven).
+    _session_task: asyncio.Task[None] | None = None
 
     def setup(self) -> None:
         """Hook called once before serve() accepts requests.
@@ -90,3 +95,34 @@ class LivePipeline:
         """
         # TODO: passthrough for now; wire up in next phase.
         return None
+
+
+async def _run_passthrough(subscribe_url: str, publish_url: str) -> None:
+    """Forward bytes from a subscribe URL to a publish URL, unmodified.
+
+    Each inbound trickle segment becomes one outbound segment (1:1) — never
+    merged or split, so downstream consumers see the same segment count and
+    ordering as the upstream sender. Returns when the subscribe channel ends
+    (orchestrator deletes it → 404 from the trickle server), or when the
+    task is cancelled / either side raises.
+    """
+    sub = TrickleSubscriber(subscribe_url)
+    try:
+        # MIME must match go-livepeer's publish channel (stream_orchestrator.go).
+        async with TricklePublisher(publish_url, mime_type="video/MP2T") as pub:
+            while True:
+                segment = await sub.next()
+                if segment is None:  # EOS — channel ended
+                    return
+                try:
+                    reader = segment.make_reader()
+                    async with await pub.next() as writer:
+                        while True:
+                            chunk = await reader.read()
+                            if not chunk:
+                                break
+                            await writer.write(chunk)
+                finally:
+                    await segment.close()
+    finally:
+        await sub.close()
