@@ -1,9 +1,11 @@
 import inspect
+import json
 import logging
-from typing import Any
+from typing import Any, Iterator
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, create_model
 
 from .pipeline import Pipeline, PipelineState
@@ -42,24 +44,45 @@ def _build_input_model(predict_fn: Any, owner_name: str) -> tuple[type[BaseModel
     return create_model(f"{owner_name}Input", **fields), False
 
 
+def _format_sse(generator: Iterator[Any]) -> Iterator[bytes]:
+    """Frame yielded values as SSE events with [DONE] terminator.
+
+    Required by go-livepeer and the Python caller-side gateway.
+    """
+    try:
+        for chunk in generator:
+            payload = chunk.model_dump_json() if isinstance(chunk, BaseModel) else json.dumps(chunk)
+            yield f"data: {payload}\n\n".encode()
+    except Exception:
+        logger.exception("predict() generator failed")
+        yield b'data: {"error": "internal error"}\n\n'
+    yield b"data: [DONE]\n\n"
+
+
 def _build_predict_handler(
     pipeline: Pipeline,
     InputModel: type[BaseModel],
     OutputModel: type[BaseModel] | None,
     explicit_basemodel: bool,
+    is_generator: bool,
 ):
     def handler(body: InputModel):
         try:
             if explicit_basemodel:
-                return pipeline.predict(body)
-            return pipeline.predict(**body.model_dump())
+                result = pipeline.predict(body)
+            else:
+                result = pipeline.predict(**body.model_dump())
         except HTTPException:
             raise
         except Exception:
             logger.exception("predict() failed")
             raise HTTPException(status_code=500, detail="internal error")
 
-    if OutputModel is not None:
+        if is_generator:
+            return StreamingResponse(_format_sse(result), media_type="text/event-stream")
+        return result
+
+    if OutputModel is not None and not is_generator:
         handler.__annotations__["return"] = OutputModel
     return handler
 
@@ -75,13 +98,17 @@ def make_app(pipeline: Pipeline) -> FastAPI:
         logger.exception("setup() failed")
         raise
 
+    is_generator = inspect.isgeneratorfunction(pipeline.predict)
+
     InputModel, explicit_basemodel = _build_input_model(
         pipeline.predict, type(pipeline).__name__
     )
     return_annotation = inspect.signature(pipeline.predict).return_annotation
     OutputModel = return_annotation if _is_basemodel(return_annotation) else None
 
-    handler = _build_predict_handler(pipeline, InputModel, OutputModel, explicit_basemodel)
+    handler = _build_predict_handler(
+        pipeline, InputModel, OutputModel, explicit_basemodel, is_generator
+    )
 
     app = FastAPI(title=type(pipeline).__name__)
     app.state.pipeline = pipeline
