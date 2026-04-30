@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, create_model
 
+from .live_pipeline import LivePipeline, StreamParamsRequest, StreamStartRequest
 from .pipeline import Pipeline, PipelineState
 
 logger = logging.getLogger(__name__)
@@ -87,8 +88,13 @@ def _build_predict_handler(
     return handler
 
 
-def make_app(pipeline: Pipeline) -> FastAPI:
-    """Build a FastAPI app exposing ``pipeline`` over HTTP."""
+def _add_health_route(app: FastAPI, pipeline: Pipeline | LivePipeline) -> None:
+    @app.get("/health", summary="Liveness probe", response_model=HealthResponse)
+    def handle_health() -> HealthResponse:
+        return HealthResponse(status=pipeline._state)
+
+
+def _run_setup(pipeline: Pipeline | LivePipeline) -> None:
     pipeline._state = PipelineState.LOADING
     try:
         pipeline.setup()
@@ -97,6 +103,37 @@ def make_app(pipeline: Pipeline) -> FastAPI:
         pipeline._state = PipelineState.ERROR
         logger.exception("setup() failed")
         raise
+
+
+def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
+    """Build a FastAPI app for a real-time ``LivePipeline``."""
+    _run_setup(pipeline)
+
+    app = FastAPI(title=type(pipeline).__name__)
+    app.state.pipeline = pipeline
+
+    @app.post("/stream/start", summary="Start a stream session")
+    async def handle_stream_start(body: StreamStartRequest) -> dict[str, Any]:
+        logger.info("stream/start request_id=%s", body.gateway_request_id)
+        return {"status": "started", "gateway_request_id": body.gateway_request_id}
+
+    @app.post("/stream/stop", summary="Stop the active stream session")
+    async def handle_stream_stop() -> dict[str, str]:
+        logger.info("stream/stop")
+        return {"status": "stopped"}
+
+    @app.post("/stream/params", summary="Update params on the active stream")
+    async def handle_stream_params(body: StreamParamsRequest) -> dict[str, str]:
+        logger.info("stream/params keys=%s", list(body.model_dump().keys()))
+        return {"status": "ok"}
+
+    _add_health_route(app, pipeline)
+    return app
+
+
+def _make_pipeline_app(pipeline: Pipeline) -> FastAPI:
+    """Build a FastAPI app for a request/response ``Pipeline`` (HTTP `/predict`)."""
+    _run_setup(pipeline)
 
     is_generator = inspect.isgeneratorfunction(pipeline.predict)
 
@@ -120,13 +157,23 @@ def make_app(pipeline: Pipeline) -> FastAPI:
         summary="Run one inference",
     )
 
-    @app.get("/health", summary="Liveness probe", response_model=HealthResponse)
-    def handle_health() -> HealthResponse:
-        return HealthResponse(status=pipeline._state)
-
+    _add_health_route(app, pipeline)
     return app
 
 
-def serve(pipeline: Pipeline, *, host: str = "0.0.0.0", port: int = 5000) -> None:
+def make_app(pipeline: Pipeline | LivePipeline) -> FastAPI:
+    """Build a FastAPI app exposing ``pipeline`` over HTTP.
+
+    Dispatches on `LivePipeline` vs `Pipeline` to register `/stream/*`
+    or `/predict` respectively.
+    """
+    if isinstance(pipeline, LivePipeline):
+        return _make_live_pipeline_app(pipeline)
+    return _make_pipeline_app(pipeline)
+
+
+def serve(
+    pipeline: Pipeline | LivePipeline, *, host: str = "0.0.0.0", port: int = 5000
+) -> None:
     """Run the pipeline as an HTTP server on host:port."""
     uvicorn.run(make_app(pipeline), host=host, port=port)
