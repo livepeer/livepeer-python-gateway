@@ -15,7 +15,7 @@ services:
       -orchestrator
       -ethUrl https://arb1.arbitrum.io/rpc
       -ethPassword secret-password
-      -pricePerUnit 1
+      -pricePerUnit 0
       -serviceAddr=orchestrator:8935
       -orchSecret=orch-secret
       -v 6

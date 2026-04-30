@@ -20,6 +20,9 @@ docker compose down
 
 `test.sh` prints `PASS` on success.
 
+`prepare_models.py` bakes the model into the image at build time so
+`setup()` loads from local cache in milliseconds.
+
 ## Browse the API
 
 - Swagger UI: <http://localhost:5000/docs>

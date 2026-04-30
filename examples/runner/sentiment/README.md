@@ -18,8 +18,8 @@ docker compose down
 
 `test.sh` prints `PASS` on success.
 
-> **First build is ~5 minutes** — pulls torch CPU (~200 MB), transformers, and
-> bakes the ~250 MB model into the image. Cached after that; rebuilds are fast.
+`prepare_models.py` bakes the model into the image at build time so
+`setup()` loads from local cache in milliseconds.
 
 ## Browse the API
 
