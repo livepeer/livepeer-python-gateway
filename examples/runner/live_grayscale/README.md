@@ -95,24 +95,3 @@ creates:
 
 Verified against `byoc/stream_orchestrator.go:93-131` in go-livepeer.
 
-## What `test.sh` covers (and what it doesn't)
-
-✅ **Tested today:**
-
-- Capability registration round-trip (`live-video-to-video`)
-- Job envelope signing on the gateway side
-- Stream-start handshake all the way to the runner's `/stream/start`
-- Lifecycle hooks fire (`on_stream_start` runs in the runner's logs)
-- Clean teardown via `/process/stream/{id}/stop`
-
-❌ **Not yet tested in CI:**
-
-- Pushing real MP2T to the WHIP/RTMP ingress
-- Pulling the egress and asserting UV chroma planes are flat
-- Frame-by-frame transform throughput
-
-The media verification is a follow-up — a `TODO:` in `test.sh` tracks
-it. Spike-risk: needs an ffmpeg-driven test source, a headless WHEP
-pull, and a chroma-plane assertion. Landing the lifecycle smoke test
-first proves the wire and lets media verification iterate independently.
-

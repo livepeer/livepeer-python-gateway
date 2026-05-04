@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# E2E lifecycle smoke test for the LivePipeline real-time runner.
+# E2E smoke test for the LivePipeline real-time runner. Two parts:
+#   - Lifecycle through the BYOC stack (gateway → orch → runner).
+#   - Real-data feed direct to runner with a pre-created MP2T segment.
 #
-# Asserts that a stream session establishes through the full BYOC
-# stack: caller (curl) → gateway → orchestrator → runner /stream/start,
-# and tears down cleanly via /process/stream/{id}/stop.
-#
-# Does NOT push media. Pushing ffmpeg-generated MP2T and asserting
-# grayscale output is a follow-up (see TODO at bottom).
+# Grayscale correctness is verified by the demo.py script.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -53,8 +50,7 @@ fi
 sleep 1
 
 echo "Asserting runner received /stream/start..."
-# uvicorn access log format: 'POST /stream/start HTTP/1.1" 200 OK'.
-# We assert 200 specifically so a 422 / 4xx still fails the test.
+# Match status 200 explicitly — naive grep would pass on 4xx too.
 if ! docker logs live_grayscale 2>&1 | grep -qE 'POST /stream/start HTTP/1\.1" 200'; then
     echo "FAIL: runner didn't accept /stream/start (200 not seen)"
     docker logs live_grayscale 2>&1 | tail -20
@@ -75,10 +71,44 @@ if ! docker logs live_grayscale 2>&1 | grep -qE 'POST /stream/stop HTTP/1\.1" 20
     exit 1
 fi
 
+# Phase 2: real-data smoke — feed a pre-created MP2T segment direct to the
+# runner. Verifies bytes were fetched + no frame-processor errors.
+
+# Trickle-aware fixture server on :8080 (handles start_seq=-2 + Lp-Trickle-Seq).
+# Runner reaches the host via host.docker.internal.
+SERVER_LOG=$(mktemp)
+python3 -u _smoke_server.py > "${SERVER_LOG}" 2>&1 &
+SERVER_PID=$!
+trap "kill ${SERVER_PID} 2>/dev/null; rm -f ${SERVER_LOG}" EXIT
+sleep 0.5
+
+echo "Starting real-data session against host fixtures server..."
+curl -fsS -X POST -H "Content-Type: application/json" \
+    -d '{"gateway_request_id":"smoke","control_url":"http://nope/c","events_url":"http://nope/e","subscribe_url":"http://host.docker.internal:8080","publish_url":"http://nope/p","params":null}' \
+    http://localhost:5000/stream/start
+echo
+
+# Give the runner time to GET /-2 (start_seq=-2), decode, run process_video,
+# and hit /1=404 = EOS.
+sleep 3
+
+echo "Asserting fixtures server received GET /-2..."
+if ! grep -qE '"GET /-2 HTTP/1\.1" 200' "${SERVER_LOG}"; then
+    echo "FAIL: fixtures server didn't serve GET /-2 — runner didn't fetch the segment"
+    cat "${SERVER_LOG}"
+    exit 1
+fi
+
+echo "Asserting no frame-processor errors in runner logs..."
+if docker logs live_grayscale 2>&1 | grep -qE "process_video failed|process_audio failed"; then
+    echo "FAIL: runner reported a frame-processor failure"
+    docker logs live_grayscale 2>&1 | grep -E "process_video failed|process_audio failed" | tail -5
+    exit 1
+fi
+
+echo "Stopping real-data session..."
+curl -fsS -X POST http://localhost:5000/stream/stop
+echo
+
 echo "PASS"
 exit 0
-
-# TODO: extend with ffmpeg-driven media verification — push MP2T to WHIP,
-# pull from WHEP, assert UV chroma planes are flat (= grayscale). Spike-
-# risk; landing the lifecycle smoke test first proves the wire and lets
-# us iterate on media verification independently.
