@@ -28,11 +28,22 @@ inference pipeline.
 
 ```bash
 docker compose up -d --wait --build
-./test.sh
+./test.sh                          # captures 5s, asserts grayscale, opens ffplay
 docker compose down
 ```
 
-`test.sh` prints `PASS` on success.
+`test.sh` does three things:
+
+1. Pushes a synthetic stream through the full BYOC chain
+2. Captures the egress to `/tmp/live_grayscale_output.mts` and asserts
+   the U/V chroma planes are ≈128 (i.e., the runner actually grayscaled
+   the frames — bytes-received alone wouldn't catch a no-op `process_video`)
+3. Opens the captured clip in **ffplay** so you can see the result
+   (`SKIP_VIEWER=1 ./test.sh` skips this — useful in CI / over SSH)
+
+Requires `ffmpeg`/`ffplay` on the host (already implicit since the test
+pushes and pulls RTMP via ffmpeg). `RETRIES=N` overrides the pull retry
+count (default 20) for fast-fail iteration during development.
 
 ## What's running
 
@@ -64,36 +75,17 @@ sequenceDiagram
 
 Five compose services:
 
-| Service                   | What it is                                                                                                                                                       |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `gateway`, `orchestrator` | `livepeer/go-livepeer:master` from Docker Hub                                                                                                                    |
-| `mediamtx`                | RTMP/WHIP/WHEP frontend the gateway points at via `LIVE_AI_PLAYBACK_HOST`. Caller pushes RTMP here; processed output served back as RTMP.                        |
-| `live_grayscale`          | The pipeline container — a [BYOC](https://github.com/livepeer/go-livepeer/blob/main/doc/byoc.md) capability built with `livepeer_gateway.runner.LivePipeline`.   |
-| `register_capability`     | One-shot helper that POSTs to `orchestrator:8935/capability/register` once `live_grayscale` is healthy                                                           |
+| Service                   | What it is                                                                                                                                                                                                                                                                                  |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gateway`, `orchestrator` | `livepeer/go-livepeer:master` from Docker Hub                                                                                                                                                                                                                                               |
+| `mediamtx`                | RTMP frontend the gateway points at via `LIVE_AI_PLAYBACK_HOST`. Caller pushes RTMP here; processed output served back as RTMP. `mediamtx.yml` wires `runOnReady` to the gateway's BYOC ingest webhook; `Dockerfile.mediamtx` repackages the scratch image with curl so the webhook can fire. |
+| `live_grayscale`          | The pipeline container — a [BYOC](https://github.com/livepeer/go-livepeer/blob/main/doc/byoc.md) capability built with `livepeer_gateway.runner.LivePipeline`.                                                                                                                              |
+| `register_capability`     | One-shot helper that POSTs to `orchestrator:8935/capability/register` once `live_grayscale` is healthy                                                                                                                                                                                      |
 
 The pipeline service has a healthcheck that probes `GET /health` until
 `setup()` finishes (state machine reaches `OK`). `register_capability`
 waits on `service_healthy`, so the orchestrator never sees a "registered
 but not loaded" container.
-
-## Try it yourself with your webcam
-
-`demo.sh` pushes your local webcam through the same path as test.sh and
-opens an `ffplay` window with the grayscale output:
-
-```bash
-docker compose up -d --wait --build
-./demo.sh                        # press 'q' in the player to stop
-docker compose down
-```
-
-Webcam input depends on OS — set `WEBCAM_FLAGS` to override the Linux default:
-
-| OS      | `WEBCAM_FLAGS`                              |
-| ------- | ------------------------------------------- |
-| Linux   | `-f v4l2 -i /dev/video0`                    |
-| macOS   | `-f avfoundation -i 0`                      |
-| Windows | `-f dshow -i video=YourCameraName`          |
 
 ## Wire contract (the parts that matter)
 
@@ -116,4 +108,3 @@ creates:
 | `enable_data_output: true`   | Adds `data_url` (not used here)             |
 
 Verified against `byoc/stream_orchestrator.go:93-131` in go-livepeer.
-

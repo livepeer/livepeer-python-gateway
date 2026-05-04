@@ -40,14 +40,17 @@ services:
       - orchestrator
       - mediamtx
 
-  # Media server that fronts the BYOC stream gateway: caller pushes RTMP to
-  # `rtmp_url` (= mediamtx), gateway forwards to runner; runner's egress
-  # comes back through orch → mediamtx, served on `rtmp_output_url`.
+  # RTMP frontend. Custom build adds curl to the scratch base so mediamtx.yml's
+  # `runOnReady` can call the gateway — no Livepeer mediamtx fork required.
   mediamtx:
-    image: bluenviron/mediamtx:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.mediamtx
     container_name: mediamtx
     ports:
-      - "1935:1935"   # RTMP — both test.sh/demo.sh on host and gateway in compose use this
+      - "1935:1935"   # RTMP push/pull
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
 
   live_grayscale:
     build:
