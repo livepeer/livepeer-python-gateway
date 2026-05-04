@@ -10,13 +10,12 @@ TEXT="${TEXT:-Livepeer makes decentralized inference effortless}"
 EXPECTED_LABEL="${EXPECTED_LABEL:-POSITIVE}"
 
 echo "Waiting for capability registration..."
-for _ in $(seq 1 60); do
-    if docker logs register_capability 2>&1 | grep -q "registered sentiment"; then
-        echo "  registered."
-        break
-    fi
-    sleep 2
-done
+if ! docker logs register_capability 2>&1 | grep -q "registered sentiment"; then
+    echo "FAIL: register_capability hasn't logged success."
+    echo "Make sure 'docker compose up -d --wait --build' completed first."
+    exit 1
+fi
+echo "  registered."
 
 # TODO: swap curl for a livepeer_gateway batch caller (post PR #6) — drops
 # the gateway service from compose.
