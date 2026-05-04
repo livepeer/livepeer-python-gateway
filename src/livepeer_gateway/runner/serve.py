@@ -13,6 +13,8 @@ from .live_pipeline import (
     LivePipeline,
     StreamParamsRequest,
     StreamStartRequest,
+    _has_user_processing,
+    _run_frame_loop,
     _run_passthrough,
 )
 from .pipeline import Pipeline, PipelineState
@@ -22,7 +24,7 @@ from .pipeline import Pipeline, PipelineState
 # drain). If we exceed it, the task is left to finish in the background.
 _STOP_TIMEOUT_S = 5.0
 
-logger = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 class HealthResponse(BaseModel):
@@ -66,7 +68,7 @@ def _format_sse(generator: Iterator[Any]) -> Iterator[bytes]:
             payload = chunk.model_dump_json() if isinstance(chunk, BaseModel) else json.dumps(chunk)
             yield f"data: {payload}\n\n".encode()
     except Exception:
-        logger.exception("predict() generator failed")
+        _LOG.exception("Pipeline predict() generator failed")
         yield b'data: {"error": "internal error"}\n\n'
     yield b"data: [DONE]\n\n"
 
@@ -87,7 +89,7 @@ def _build_predict_handler(
         except HTTPException:
             raise
         except Exception:
-            logger.exception("predict() failed")
+            _LOG.exception("Pipeline predict() failed")
             raise HTTPException(status_code=500, detail="internal error")
 
         if is_generator:
@@ -112,7 +114,7 @@ def _run_setup(pipeline: Pipeline | LivePipeline) -> None:
         pipeline._state = PipelineState.OK
     except Exception:
         pipeline._state = PipelineState.ERROR
-        logger.exception("setup() failed")
+        _LOG.exception("Pipeline setup() failed")
         raise
 
 
@@ -125,31 +127,38 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
 
     @app.post("/stream/start", summary="Start a stream session")
     async def handle_stream_start(body: StreamStartRequest) -> dict[str, Any]:
-        logger.info("stream/start request_id=%s", body.gateway_request_id)
+        _LOG.info("LivePipeline stream/start request_id=%s", body.gateway_request_id)
 
         if pipeline._session_task and not pipeline._session_task.done():
             # Single-session for now; orchestrator shouldn't double-start.
             raise HTTPException(status_code=409, detail="session already active")
 
         if not (body.subscribe_url and body.publish_url):
-            # Bytes-through requires both directions; data-only / event-only
+            # Both directions required for video streams; data-only / event-only
             # streams land in later phases.
             raise HTTPException(
                 status_code=400,
                 detail="subscribe_url and publish_url required for video streams",
             )
 
+        # Stored for _run_frame_loop to pass into on_stream_start.
+        pipeline._session_params = body.params
+
+        if _has_user_processing(pipeline):
+            coro = _run_frame_loop(pipeline, body.subscribe_url, body.publish_url)
+        else:
+            coro = _run_passthrough(body.subscribe_url, body.publish_url)
         pipeline._session_task = asyncio.create_task(
-            _run_passthrough(body.subscribe_url, body.publish_url),
-            name=f"live-session-{body.gateway_request_id}",
+            coro, name=f"live-session-{body.gateway_request_id}"
         )
         return {"status": "started", "gateway_request_id": body.gateway_request_id}
 
     @app.post("/stream/stop", summary="Stop the active stream session")
     async def handle_stream_stop() -> dict[str, str]:
-        logger.info("stream/stop")
+        _LOG.info("LivePipeline stream/stop")
         task = pipeline._session_task
         pipeline._session_task = None
+        pipeline._session_params = None
         if task is None or task.done():
             return {"status": "stopped"}
 
@@ -157,16 +166,22 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
         try:
             await asyncio.wait_for(task, timeout=_STOP_TIMEOUT_S)
         except asyncio.TimeoutError:
-            logger.warning("session task did not terminate within %.1fs", _STOP_TIMEOUT_S)
+            _LOG.warning("LivePipeline session task did not terminate within %.1fs", _STOP_TIMEOUT_S)
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.exception("session task ended with error")
+            _LOG.exception("LivePipeline session task ended with error")
         return {"status": "stopped"}
 
     @app.post("/stream/params", summary="Update params on the active stream")
     async def handle_stream_params(body: StreamParamsRequest) -> dict[str, str]:
-        logger.info("stream/params keys=%s", list(body.model_dump().keys()))
+        params = body.model_dump()
+        _LOG.info("LivePipeline stream/params keys=%s", list(params.keys()))
+        try:
+            await pipeline.on_params_update(params)
+        except Exception:
+            _LOG.exception("LivePipeline on_params_update failed")
+            raise HTTPException(status_code=500, detail="on_params_update failed")
         return {"status": "ok"}
 
     _add_health_route(app, pipeline)

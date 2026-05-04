@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,7 +12,10 @@ from .pipeline import PipelineState
 
 if TYPE_CHECKING:
     # Gated to keep PyAV out of the import path for batch Pipeline users.
-    from ..media_decode import AudioDecodedMediaFrame, VideoDecodedMediaFrame
+    from .frames import AudioFrame, VideoFrame
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class StreamStartRequest(BaseModel):
@@ -49,6 +53,7 @@ class LivePipeline:
     _state: PipelineState = PipelineState.LOADING
     # Single-session for now; multi-session is post-C8 (capacity demand-driven).
     _session_task: asyncio.Task[None] | None = None
+    _session_params: dict[str, Any] | None = None
 
     def setup(self) -> None:
         """Hook called once before serve() accepts requests.
@@ -62,15 +67,11 @@ class LivePipeline:
         `params` is the initial pipeline params from the caller.
         """
 
-    async def process_video(
-        self, frame: VideoDecodedMediaFrame
-    ) -> VideoDecodedMediaFrame:
+    async def process_video(self, frame: VideoFrame) -> VideoFrame:
         """Transform one decoded video frame. Default: passthrough."""
         return frame
 
-    async def process_audio(
-        self, frame: AudioDecodedMediaFrame
-    ) -> AudioDecodedMediaFrame:
+    async def process_audio(self, frame: AudioFrame) -> AudioFrame:
         """Transform one decoded audio frame. Default: passthrough."""
         return frame
 
@@ -95,6 +96,19 @@ class LivePipeline:
         """
         # TODO: passthrough for now; wire up in next phase.
         return None
+
+
+def _has_user_processing(pipeline: LivePipeline) -> bool:
+    """True if the pipeline overrides ``process_video`` or ``process_audio``.
+
+    Used by ``/stream/start`` to pick the cheap bytes path when nothing's
+    being transformed; otherwise the full decode → user → encode loop runs.
+    """
+    cls = type(pipeline)
+    return (
+        cls.process_video is not LivePipeline.process_video
+        or cls.process_audio is not LivePipeline.process_audio
+    )
 
 
 async def _run_passthrough(subscribe_url: str, publish_url: str) -> None:
@@ -126,3 +140,42 @@ async def _run_passthrough(subscribe_url: str, publish_url: str) -> None:
                     await segment.close()
     finally:
         await sub.close()
+
+
+async def _run_frame_loop(
+    pipeline: LivePipeline, subscribe_url: str, publish_url: str
+) -> None:
+    """Decode → user transform → encode loop.
+
+    Per-frame errors drop the frame and continue; subscribe/publish errors
+    end the session.
+    """
+    # Lazy import: defers PyAV until a pipeline actually needs the frame loop.
+    from ..media_decode import VideoDecodedMediaFrame
+    from ..media_output import MediaOutput
+    from ..media_publish import MediaPublish
+
+    try:
+        await pipeline.on_stream_start(pipeline._session_params or {})
+    except Exception:
+        _LOG.exception("LivePipeline on_stream_start failed")
+        return
+
+    async with MediaOutput(subscribe_url) as media_output:
+        media_publish = MediaPublish(publish_url)
+        try:
+            async for decoded in media_output.frames():
+                is_video = isinstance(decoded, VideoDecodedMediaFrame)
+                try:
+                    if is_video:
+                        result = await pipeline.process_video(decoded)
+                    else:
+                        result = await pipeline.process_audio(decoded)
+                except Exception:
+                    method = "process_video" if is_video else "process_audio"
+                    _LOG.exception("LivePipeline %s failed", method)
+                    continue
+                if result is not None:
+                    await media_publish.write_frame(result.frame)
+        finally:
+            await media_publish.close()
