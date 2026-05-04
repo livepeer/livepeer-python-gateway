@@ -43,6 +43,31 @@ class StreamParamsRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class _LiveSession:
+    """Per-session state held in `LivePipeline._session`.
+
+    Constructed on `/stream/start`, cleared on `/stream/stop`.
+    """
+
+    def __init__(
+        self,
+        *,
+        gateway_request_id: str,
+        events_url: str,
+        subscribe_url: str | None,
+        publish_url: str | None,
+        data_url: str | None,
+        params: dict[str, Any] | None,
+    ) -> None:
+        self.gateway_request_id = gateway_request_id
+        self.events_url = events_url
+        self.subscribe_url = subscribe_url
+        self.publish_url = publish_url
+        self.data_url = data_url
+        self.params: dict[str, Any] = params or {}
+        self.task: asyncio.Task[None] | None = None
+
+
 class LivePipeline:
     """Base class for real-time A/V pipelines on the BYOC trickle protocol.
 
@@ -52,8 +77,7 @@ class LivePipeline:
 
     _state: PipelineState = PipelineState.LOADING
     # Single-session for now; multi-session is post-C8 (capacity demand-driven).
-    _session_task: asyncio.Task[None] | None = None
-    _session_params: dict[str, Any] | None = None
+    _session: _LiveSession | None = None
 
     def setup(self) -> None:
         """Hook called once before serve() accepts requests.
@@ -142,9 +166,7 @@ async def _run_passthrough(subscribe_url: str, publish_url: str) -> None:
         await sub.close()
 
 
-async def _run_frame_loop(
-    pipeline: LivePipeline, subscribe_url: str, publish_url: str
-) -> None:
+async def _run_frame_loop(pipeline: LivePipeline) -> None:
     """Decode → user transform → encode loop.
 
     Per-frame errors drop the frame and continue; subscribe/publish errors
@@ -155,14 +177,16 @@ async def _run_frame_loop(
     from ..media_output import MediaOutput
     from ..media_publish import MediaPublish
 
+    session = pipeline._session  # set by serve.py before scheduling.
+
     try:
-        await pipeline.on_stream_start(pipeline._session_params or {})
+        await pipeline.on_stream_start(session.params)
     except Exception:
         _LOG.exception("LivePipeline on_stream_start failed")
         return
 
-    async with MediaOutput(subscribe_url) as media_output:
-        media_publish = MediaPublish(publish_url)
+    async with MediaOutput(session.subscribe_url) as media_output:
+        media_publish = MediaPublish(session.publish_url)
         try:
             async for decoded in media_output.frames():
                 is_video = isinstance(decoded, VideoDecodedMediaFrame)

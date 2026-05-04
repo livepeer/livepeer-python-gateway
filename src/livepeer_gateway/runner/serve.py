@@ -14,6 +14,7 @@ from .live_pipeline import (
     StreamParamsRequest,
     StreamStartRequest,
     _has_user_processing,
+    _LiveSession,
     _run_frame_loop,
     _run_passthrough,
 )
@@ -129,7 +130,8 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
     async def handle_stream_start(body: StreamStartRequest) -> dict[str, Any]:
         _LOG.info("LivePipeline stream/start request_id=%s", body.gateway_request_id)
 
-        if pipeline._session_task and not pipeline._session_task.done():
+        active = pipeline._session
+        if active and active.task and not active.task.done():
             # Single-session for now; orchestrator shouldn't double-start.
             raise HTTPException(status_code=409, detail="session already active")
 
@@ -141,14 +143,21 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
                 detail="subscribe_url and publish_url required for video streams",
             )
 
-        # Stored for _run_frame_loop to pass into on_stream_start.
-        pipeline._session_params = body.params
+        session = _LiveSession(
+            gateway_request_id=body.gateway_request_id,
+            events_url=body.events_url,
+            subscribe_url=body.subscribe_url,
+            publish_url=body.publish_url,
+            data_url=body.data_url,
+            params=body.params,
+        )
+        pipeline._session = session
 
         if _has_user_processing(pipeline):
-            coro = _run_frame_loop(pipeline, body.subscribe_url, body.publish_url)
+            coro = _run_frame_loop(pipeline)
         else:
             coro = _run_passthrough(body.subscribe_url, body.publish_url)
-        pipeline._session_task = asyncio.create_task(
+        session.task = asyncio.create_task(
             coro, name=f"live-session-{body.gateway_request_id}"
         )
         return {"status": "started", "gateway_request_id": body.gateway_request_id}
@@ -156,15 +165,14 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
     @app.post("/stream/stop", summary="Stop the active stream session")
     async def handle_stream_stop() -> dict[str, str]:
         _LOG.info("LivePipeline stream/stop")
-        task = pipeline._session_task
-        pipeline._session_task = None
-        pipeline._session_params = None
-        if task is None or task.done():
+        session = pipeline._session
+        pipeline._session = None
+        if session is None or session.task is None or session.task.done():
             return {"status": "stopped"}
 
-        task.cancel()
+        session.task.cancel()
         try:
-            await asyncio.wait_for(task, timeout=_STOP_TIMEOUT_S)
+            await asyncio.wait_for(session.task, timeout=_STOP_TIMEOUT_S)
         except asyncio.TimeoutError:
             _LOG.warning("LivePipeline session task did not terminate within %.1fs", _STOP_TIMEOUT_S)
         except asyncio.CancelledError:
@@ -177,6 +185,8 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
     async def handle_stream_params(body: StreamParamsRequest) -> dict[str, str]:
         params = body.model_dump()
         _LOG.info("LivePipeline stream/params keys=%s", list(params.keys()))
+        if pipeline._session is not None:
+            pipeline._session.params = params
         try:
             await pipeline.on_params_update(params)
         except Exception:
