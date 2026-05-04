@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from ..trickle_publisher import TricklePublisher
 from ..trickle_subscriber import TrickleSubscriber
@@ -34,7 +34,7 @@ class StreamStartRequest(BaseModel):
     subscribe_url: str | None = None
     publish_url: str | None = None
     data_url: str | None = None
-    params: dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] | None = None  # null when caller sent no params
 
 
 class StreamParamsRequest(BaseModel):
