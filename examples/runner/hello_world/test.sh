@@ -10,7 +10,7 @@ NAME="${NAME:-livepeer}"
 EXPECTED_MSG="hello, ${NAME}"
 
 echo "Waiting for capability registration..."
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     if docker logs register_capability 2>&1 | grep -q "registered hello-world"; then
         echo "  registered."
         break

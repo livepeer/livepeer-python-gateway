@@ -11,7 +11,7 @@ INPUT_WIDTH="${INPUT_WIDTH:-64}"
 INPUT_HEIGHT="${INPUT_HEIGHT:-64}"
 
 echo "Waiting for capability registration..."
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     if docker logs register_capability 2>&1 | grep -q "registered image-upscale"; then
         echo "  registered."
         break

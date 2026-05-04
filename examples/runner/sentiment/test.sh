@@ -10,7 +10,7 @@ TEXT="${TEXT:-Livepeer makes decentralized inference effortless}"
 EXPECTED_LABEL="${EXPECTED_LABEL:-POSITIVE}"
 
 echo "Waiting for capability registration..."
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     if docker logs register_capability 2>&1 | grep -q "registered sentiment"; then
         echo "  registered."
         break

@@ -9,7 +9,7 @@ GATEWAY_URL="${GATEWAY_URL:-http://localhost:9935}"
 PROMPT="${PROMPT:-Say hello in three words}"
 
 echo "Waiting for capability registration..."
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     if docker logs register_capability 2>&1 | grep -q "registered llm"; then
         echo "  registered."
         break
