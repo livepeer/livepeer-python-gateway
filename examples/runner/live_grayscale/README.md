@@ -39,32 +39,35 @@ docker compose down
 ```mermaid
 sequenceDiagram
     autonumber
-    participant curl
+    participant ffmpeg
+    participant mediamtx
     participant gateway
     participant orchestrator
     participant live_grayscale as live_grayscale<br/>(SDK container)
 
-    curl->>gateway: POST /process/stream/start
+    ffmpeg->>gateway: POST /process/stream/start (Livepeer envelope)
     gateway->>orchestrator: forward (signed)
     orchestrator->>live_grayscale: POST /stream/start (subscribe_url, publish_url, …)
     live_grayscale-->>orchestrator: 200
-    orchestrator-->>gateway: stream URLs
-    gateway-->>curl: { whip_url, whep_url, stream_id, … }
+    gateway-->>ffmpeg: { rtmp_url, rtmp_output_url, stream_id, … }
 
-    Note over live_grayscale: GrayscaleFilter.on_stream_start(params)
-    Note over live_grayscale: loop: subscribe → process_video → publish
+    ffmpeg->>mediamtx: RTMP push (rtmp_url)
+    mediamtx->>orchestrator: trickle ingest
+    orchestrator->>live_grayscale: trickle subscribe → frames
+    Note over live_grayscale: GrayscaleFilter.process_video zeros U/V
+    live_grayscale->>orchestrator: trickle publish → frames
+    orchestrator->>mediamtx: trickle egress
+    mediamtx-->>ffmpeg: RTMP pull (rtmp_output_url)
 
-    curl->>gateway: POST /process/stream/{id}/stop
-    gateway->>orchestrator: forward
-    orchestrator->>live_grayscale: POST /stream/stop
-    live_grayscale-->>orchestrator: 200
+    ffmpeg->>gateway: POST /process/stream/{id}/stop
 ```
 
-Four compose services:
+Five compose services:
 
 | Service                   | What it is                                                                                                                                                       |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `gateway`, `orchestrator` | `livepeer/go-livepeer:master` from Docker Hub                                                                                                                    |
+| `mediamtx`                | RTMP/WHIP/WHEP frontend the gateway points at via `LIVE_AI_PLAYBACK_HOST`. Caller pushes RTMP here; processed output served back as RTMP.                        |
 | `live_grayscale`          | The pipeline container — a [BYOC](https://github.com/livepeer/go-livepeer/blob/main/doc/byoc.md) capability built with `livepeer_gateway.runner.LivePipeline`.   |
 | `register_capability`     | One-shot helper that POSTs to `orchestrator:8935/capability/register` once `live_grayscale` is healthy                                                           |
 
@@ -72,6 +75,25 @@ The pipeline service has a healthcheck that probes `GET /health` until
 `setup()` finishes (state machine reaches `OK`). `register_capability`
 waits on `service_healthy`, so the orchestrator never sees a "registered
 but not loaded" container.
+
+## Try it yourself with your webcam
+
+`demo.sh` pushes your local webcam through the same path as test.sh and
+opens an `ffplay` window with the grayscale output:
+
+```bash
+docker compose up -d --wait --build
+./demo.sh                        # press 'q' in the player to stop
+docker compose down
+```
+
+Webcam input depends on OS — set `WEBCAM_FLAGS` to override the Linux default:
+
+| OS      | `WEBCAM_FLAGS`                              |
+| ------- | ------------------------------------------- |
+| Linux   | `-f v4l2 -i /dev/video0`                    |
+| macOS   | `-f avfoundation -i 0`                      |
+| Windows | `-f dshow -i video=YourCameraName`          |
 
 ## Wire contract (the parts that matter)
 

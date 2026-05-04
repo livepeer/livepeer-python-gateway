@@ -32,10 +32,22 @@ services:
       -httpAddr=0.0.0.0:9935
       -httpIngest
       -v 6
+    environment:
+      LIVE_AI_PLAYBACK_HOST: rtmp://mediamtx:1935
     ports:
       - "9935:9935"
     depends_on:
       - orchestrator
+      - mediamtx
+
+  # Media server that fronts the BYOC stream gateway: caller pushes RTMP to
+  # `rtmp_url` (= mediamtx), gateway forwards to runner; runner's egress
+  # comes back through orch → mediamtx, served on `rtmp_output_url`.
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: mediamtx
+    ports:
+      - "1935:1935"   # RTMP — both test.sh/demo.sh on host and gateway in compose use this
 
   live_grayscale:
     build:
@@ -44,10 +56,6 @@ services:
     container_name: live_grayscale
     ports:
       - "5000:5000"
-    # Lets the runner reach the host's localhost (where test.sh runs the
-    # fixtures HTTP server during the real-data smoke).
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     # Healthcheck waits for the LivePipeline state machine to reach OK after
     # setup() completes. Without this, register_capability could complete and
     # the test could fire before /stream/start would succeed.
