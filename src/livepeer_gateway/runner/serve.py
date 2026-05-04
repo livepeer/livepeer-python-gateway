@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, create_model
 
+from ..trickle_publisher import TricklePublisher
 from .live_pipeline import (
     LivePipeline,
     StreamParamsRequest,
@@ -16,13 +17,13 @@ from .live_pipeline import (
     _has_user_processing,
     _LiveSession,
     _run_frame_loop,
+    _run_heartbeat_loop,
     _run_passthrough,
 )
 from .pipeline import Pipeline, PipelineState
 
-# Bound the wait for an in-flight session task to terminate after cancel.
-# 5s covers the trickle close paths (segment close + session close + queue
-# drain). If we exceed it, the task is left to finish in the background.
+# Bound the cancel-then-wait for the session task; 5s covers trickle close.
+# Beyond that, the task is left to finish in the background.
 _STOP_TIMEOUT_S = 5.0
 
 _LOG = logging.getLogger(__name__)
@@ -151,7 +152,21 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
             data_url=body.data_url,
             params=body.params,
         )
+
+        session.events_publisher = TricklePublisher(
+            body.events_url, mime_type="application/json"
+        )
+        if body.data_url:
+            session.data_publisher = TricklePublisher(
+                body.data_url, mime_type="application/json"
+            )
         pipeline._session = session
+
+        # Heartbeat before frame loop so events_url has activity during cold start.
+        session.heartbeat_task = asyncio.create_task(
+            _run_heartbeat_loop(pipeline),
+            name=f"live-heartbeat-{body.gateway_request_id}",
+        )
 
         if _has_user_processing(pipeline):
             coro = _run_frame_loop(pipeline)
@@ -167,18 +182,38 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
         _LOG.info("LivePipeline stream/stop")
         session = pipeline._session
         pipeline._session = None
-        if session is None or session.task is None or session.task.done():
+        if session is None:
             return {"status": "stopped"}
 
-        session.task.cancel()
-        try:
-            await asyncio.wait_for(session.task, timeout=_STOP_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            _LOG.warning("LivePipeline session task did not terminate within %.1fs", _STOP_TIMEOUT_S)
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            _LOG.exception("LivePipeline session task ended with error")
+        # Cancel heartbeat first to avoid writes after the publisher closes.
+        if session.heartbeat_task and not session.heartbeat_task.done():
+            session.heartbeat_task.cancel()
+            try:
+                await asyncio.wait_for(session.heartbeat_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            except Exception:
+                _LOG.exception("LivePipeline heartbeat task ended with error")
+
+        # Cancel the frame loop / passthrough task.
+        if session.task and not session.task.done():
+            session.task.cancel()
+            try:
+                await asyncio.wait_for(session.task, timeout=_STOP_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                _LOG.warning("LivePipeline session task did not terminate within %.1fs", _STOP_TIMEOUT_S)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                _LOG.exception("LivePipeline session task ended with error")
+
+        for label, pub in (("events", session.events_publisher), ("data", session.data_publisher)):
+            if pub is None:
+                continue
+            try:
+                await pub.close()
+            except Exception:
+                _LOG.warning("LivePipeline %s_publisher close failed", label, exc_info=True)
         return {"status": "stopped"}
 
     @app.post("/stream/params", summary="Update params on the active stream")

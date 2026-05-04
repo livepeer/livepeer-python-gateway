@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
@@ -16,6 +18,9 @@ if TYPE_CHECKING:
 
 
 _LOG = logging.getLogger(__name__)
+
+# 10s under the gateway's 30s events-gap watchdog (byoc/trickle.go: maxEventGap).
+_HEARTBEAT_INTERVAL_S = 10
 
 
 class StreamStartRequest(BaseModel):
@@ -65,7 +70,10 @@ class _LiveSession:
         self.publish_url = publish_url
         self.data_url = data_url
         self.params: dict[str, Any] = params or {}
+        self.events_publisher: TricklePublisher | None = None
+        self.data_publisher: TricklePublisher | None = None
         self.task: asyncio.Task[None] | None = None
+        self.heartbeat_task: asyncio.Task[None] | None = None
 
 
 class LivePipeline:
@@ -108,18 +116,64 @@ class LivePipeline:
     async def emit_event(self, payload: dict[str, Any]) -> None:
         """Publish a JSON event on the events trickle channel.
 
-        Bound at session start; calling outside an active session is a no-op.
+        Use for telemetry, lifecycle signals, or runner-side observability:
+
+            await self.emit_event({"type": "model_loaded", "version": "v1.2"})
+
+        No-op outside an active session.
         """
-        # TODO: passthrough for now; wire up in next phase.
-        return None
+        session = self._session
+        if session is None or session.events_publisher is None:
+            return
+        await _publish_json(session.events_publisher, payload, "emit_event")
 
     async def emit_data(self, payload: dict[str, Any]) -> None:
-        """Publish a JSON record on the data trickle channel (when enabled).
+        """Publish a JSON record on the data trickle channel.
 
-        Bound at session start; calling outside an active session is a no-op.
+        Use for structured pipeline output the caller subscribes to (e.g.
+        transcripts, detections, classification results):
+
+            await self.emit_data({"text": segment.text, "start_ms": ...})
+
+        No-op outside an active session.
         """
-        # TODO: passthrough for now; wire up in next phase.
-        return None
+        session = self._session
+        if session is None or session.data_publisher is None:
+            return
+        await _publish_json(session.data_publisher, payload, "emit_data")
+
+
+async def _publish_json(
+    publisher: TricklePublisher, payload: dict[str, Any], context: str
+) -> None:
+    """Write a JSON object as one trickle segment. Errors are logged, not raised."""
+    try:
+        async with await publisher.next() as writer:
+            await writer.write(json.dumps(payload).encode())
+    except Exception:
+        _LOG.warning("%s publish failed", context, exc_info=True)
+
+
+async def _run_heartbeat_loop(pipeline: LivePipeline) -> None:
+    """Publish a heartbeat to events_url every `_HEARTBEAT_INTERVAL_S`.
+
+    Without this, the gateway's 30s events-gap watchdog kills the session.
+    Per-publish errors are logged but don't kill the loop.
+    """
+    session = pipeline._session
+    if session is None or session.events_publisher is None:
+        return
+    pub = session.events_publisher
+    try:
+        while True:
+            await _publish_json(
+                pub,
+                {"type": "heartbeat", "timestamp": int(time.time() * 1000)},
+                "heartbeat",
+            )
+            await asyncio.sleep(_HEARTBEAT_INTERVAL_S)
+    except asyncio.CancelledError:
+        return
 
 
 def _has_user_processing(pipeline: LivePipeline) -> bool:
