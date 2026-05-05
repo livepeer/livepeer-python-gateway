@@ -28,11 +28,14 @@ inference pipeline.
 
 ```bash
 docker compose up -d --wait --build
-./test.sh                          # captures 5s, asserts grayscale, opens ffplay
+
+./test.sh                          # CI: synthetic stream, asserts grayscale, opens ffplay
+./demo.sh                          # interactive: webcam in, live grayscale ffplay window
+
 docker compose down
 ```
 
-`test.sh` does three things:
+### `test.sh` — automated assertion
 
 1. Pushes a synthetic stream through the full BYOC chain
 2. Captures the egress to `/tmp/live_grayscale_output.mts` and asserts
@@ -41,9 +44,36 @@ docker compose down
 3. Opens the captured clip in **ffplay** so you can see the result
    (`SKIP_VIEWER=1 ./test.sh` skips this — useful in CI / over SSH)
 
-Requires `ffmpeg`/`ffplay` on the host (already implicit since the test
-pushes and pulls RTMP via ffmpeg). `RETRIES=N` overrides the pull retry
-count (default 20) for fast-fail iteration during development.
+`RETRIES=N` overrides the pull retry count (default 20) for fast-fail
+iteration.
+
+### `demo.sh` — live webcam viewer
+
+Pushes your webcam through the pipeline and opens an ffplay window
+showing the grayscale output in real time. Close the window or Ctrl-C
+to stop.
+
+Defaults to 320×240 @ 15fps. The PyAV encode loop is the sustained-throughput
+bottleneck — 30fps stalls after ~10s on most hardware; 15fps holds steadily.
+
+Bump either knob once you've confirmed your hardware keeps up:
+
+```bash
+WEBCAM_FPS=30 ./demo.sh                # smoother, may stall on slower CPUs
+WEBCAM_RES=640x480 WEBCAM_FPS=15 ./demo.sh
+WEBCAM_DEVICE=/dev/video1 ./demo.sh    # Linux: pick a different camera
+```
+
+If the live viewer disconnects mid-stream, you've hit the throughput ceiling —
+drop FPS or resolution. The proper fix (drop policies in `MediaPublish`) is
+tracked in [issue #8](https://github.com/livepeer/livepeer-python-gateway/issues/8).
+
+| Platform | Source                                                        |
+| -------- | ------------------------------------------------------------- |
+| Linux    | `/dev/video0` via `v4l2` (override with `WEBCAM_DEVICE`)      |
+| macOS    | First `avfoundation` device (override with `WEBCAM_DEVICE=N`) |
+
+Requires `ffmpeg` and `ffplay` on the host.
 
 ## What's running
 
