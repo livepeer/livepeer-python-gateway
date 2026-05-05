@@ -22,10 +22,6 @@ from .live_pipeline import (
 )
 from .pipeline import Pipeline, PipelineState
 
-# Bound the cancel-then-wait for the session task; 5s covers trickle close.
-# Beyond that, the task is left to finish in the background.
-_STOP_TIMEOUT_S = 5.0
-
 _LOG = logging.getLogger(__name__)
 
 
@@ -168,6 +164,14 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
             name=f"live-heartbeat-{body.gateway_request_id}",
         )
 
+        try:
+            await pipeline.on_stream_start(session.params)
+        except Exception:
+            _LOG.exception("LivePipeline on_stream_start failed")
+            pipeline._session = None
+            await session.close()
+            raise HTTPException(status_code=500, detail="on_stream_start failed")
+
         if _has_user_processing(pipeline):
             coro = _run_frame_loop(pipeline)
         else:
@@ -185,35 +189,7 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
         if session is None:
             return {"status": "stopped"}
 
-        # Cancel heartbeat first to avoid writes after the publisher closes.
-        if session.heartbeat_task and not session.heartbeat_task.done():
-            session.heartbeat_task.cancel()
-            try:
-                await asyncio.wait_for(session.heartbeat_task, timeout=2.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
-            except Exception:
-                _LOG.exception("LivePipeline heartbeat task ended with error")
-
-        # Cancel the frame loop / passthrough task.
-        if session.task and not session.task.done():
-            session.task.cancel()
-            try:
-                await asyncio.wait_for(session.task, timeout=_STOP_TIMEOUT_S)
-            except asyncio.TimeoutError:
-                _LOG.warning("LivePipeline session task did not terminate within %.1fs", _STOP_TIMEOUT_S)
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                _LOG.exception("LivePipeline session task ended with error")
-
-        for label, pub in (("events", session.events_publisher), ("data", session.data_publisher)):
-            if pub is None:
-                continue
-            try:
-                await pub.close()
-            except Exception:
-                _LOG.warning("LivePipeline %s_publisher close failed", label, exc_info=True)
+        await session.close()
 
         # User cleanup hook — fires after publishers close to avoid publish races.
         try:

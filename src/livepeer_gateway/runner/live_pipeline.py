@@ -22,6 +22,9 @@ _LOG = logging.getLogger(__name__)
 # 10s under the gateway's 30s events-gap watchdog (byoc/trickle.go: maxEventGap).
 _HEARTBEAT_INTERVAL_S = 10
 
+# cancel-then-wait bound; tasks beyond this are left to finish in the background
+_STOP_TIMEOUT_S = 5.0
+
 
 class StreamStartRequest(BaseModel):
     """Body of ``POST /stream/start`` — sent by the orchestrator.
@@ -74,6 +77,44 @@ class _LiveSession:
         self.data_publisher: TricklePublisher | None = None
         self.task: asyncio.Task[None] | None = None
         self.heartbeat_task: asyncio.Task[None] | None = None
+
+    async def close(self) -> None:
+        """Tear down resources; idempotent and tolerant of partial setup."""
+        # stop writers before closing the channels they write to
+        if self.heartbeat_task and not self.heartbeat_task.done():
+            self.heartbeat_task.cancel()
+            try:
+                await asyncio.wait_for(self.heartbeat_task, timeout=_STOP_TIMEOUT_S)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            except Exception:
+                _LOG.exception("LivePipeline heartbeat task ended with error")
+        if self.task and not self.task.done():
+            self.task.cancel()
+            try:
+                await asyncio.wait_for(self.task, timeout=_STOP_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                _LOG.warning(
+                    "LivePipeline session task did not terminate within %.1fs",
+                    _STOP_TIMEOUT_S,
+                )
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                _LOG.exception("LivePipeline session task ended with error")
+
+        for label, pub in (
+            ("events", self.events_publisher),
+            ("data", self.data_publisher),
+        ):
+            if pub is None:
+                continue
+            try:
+                await pub.close()
+            except Exception:
+                _LOG.warning(
+                    "LivePipeline %s_publisher close failed", label, exc_info=True
+                )
 
 
 class LivePipeline:
@@ -232,12 +273,6 @@ async def _run_frame_loop(pipeline: LivePipeline) -> None:
     from ..media_publish import MediaPublish
 
     session = pipeline._session  # set by serve.py before scheduling.
-
-    try:
-        await pipeline.on_stream_start(session.params)
-    except Exception:
-        _LOG.exception("LivePipeline on_stream_start failed")
-        return
 
     async with MediaOutput(session.subscribe_url) as media_output:
         media_publish = MediaPublish(session.publish_url)
