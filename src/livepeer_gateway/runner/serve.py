@@ -214,6 +214,12 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
                 await pub.close()
             except Exception:
                 _LOG.warning("LivePipeline %s_publisher close failed", label, exc_info=True)
+
+        # User cleanup hook — fires after publishers close to avoid publish races.
+        try:
+            await pipeline.on_stream_stop()
+        except Exception:
+            _LOG.exception("LivePipeline on_stream_stop failed")
         return {"status": "stopped"}
 
     @app.post("/stream/params", summary="Update params on the active stream")
