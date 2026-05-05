@@ -942,10 +942,8 @@ class MediaPublish:
                             asyncio.to_thread(read_file.read, _READ_CHUNK)
                         )
                     try:
-                        chunk = await asyncio.wait_for(
-                            asyncio.shield(pending_read),
-                            timeout=idle_timeout_s,
-                        )
+                        async with asyncio.timeout(idle_timeout_s):
+                            chunk = await asyncio.shield(pending_read)
                     except asyncio.TimeoutError:
                         # NB: This intentionally keeps trickle rolling
                         # accommodate long stalls / inactivity from the
@@ -1046,7 +1044,8 @@ class MediaPublish:
         # Best-effort cleanup: absorb TimeoutError and CancelledError
         # so drain never blocks shutdown
         try:
-            await asyncio.wait_for(_drain(), timeout=_DRAIN_TIMEOUT_S)
+            async with asyncio.timeout(_DRAIN_TIMEOUT_S):
+                await _drain()
         except BaseException:
             pass
 
