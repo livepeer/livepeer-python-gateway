@@ -185,17 +185,20 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
     async def handle_stream_stop() -> dict[str, str]:
         _LOG.info("LivePipeline stream/stop")
         session = pipeline._session
-        pipeline._session = None
         if session is None:
             return {"status": "stopped"}
 
-        await session.close()
+        # Cancel tasks but keep publishers open so on_stream_stop can still emit.
+        await session.cancel_tasks()
 
-        # User cleanup hook — fires after publishers close to avoid publish races.
         try:
             await pipeline.on_stream_stop()
         except Exception:
             _LOG.exception("LivePipeline on_stream_stop failed")
+
+        # Now close publishers and clear the session.
+        await session.close_publishers()
+        pipeline._session = None
         return {"status": "stopped"}
 
     @app.post("/stream/params", summary="Update params on the active stream")

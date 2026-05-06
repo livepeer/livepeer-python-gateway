@@ -78,9 +78,8 @@ class _LiveSession:
         self.task: asyncio.Task[None] | None = None
         self.heartbeat_task: asyncio.Task[None] | None = None
 
-    async def close(self) -> None:
-        """Tear down resources; idempotent and tolerant of partial setup."""
-        # stop writers before closing the channels they write to
+    async def cancel_tasks(self) -> None:
+        """Cancel the heartbeat + frame-loop tasks; leave publishers open."""
         if self.heartbeat_task and not self.heartbeat_task.done():
             self.heartbeat_task.cancel()
             try:
@@ -103,6 +102,8 @@ class _LiveSession:
             except Exception:
                 _LOG.exception("LivePipeline session task ended with error")
 
+    async def close_publishers(self) -> None:
+        """Close events + data publishers. Call after user cleanup runs."""
         for label, pub in (
             ("events", self.events_publisher),
             ("data", self.data_publisher),
@@ -115,6 +116,11 @@ class _LiveSession:
                 _LOG.warning(
                     "LivePipeline %s_publisher close failed", label, exc_info=True
                 )
+
+    async def close(self) -> None:
+        """Tear down everything. Idempotent and tolerant of partial setup."""
+        await self.cancel_tasks()
+        await self.close_publishers()
 
 
 class LivePipeline:
