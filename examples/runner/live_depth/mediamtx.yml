@@ -15,6 +15,11 @@ authInternalUsers:
       - action: api
 
 paths:
+  # Egress paths the gateway publishes to (<sid>-out). Skip the ingest
+  # hook — gateway is the publisher, not an external client, and would
+  # 404 looking these up.
+  '~.*-out$':
+    runOnReadyRestart: no
   all_others:
     # No shell in the image, so curl is invoked directly (no `sh -c`).
     runOnReady: >
