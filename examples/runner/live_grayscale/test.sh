@@ -64,7 +64,7 @@ PUSH_PID=$!
 echo -n "Pulling processed stream"
 PULL_OK=0
 for _ in $(seq 1 "${RETRIES:-20}"); do
-    if ffmpeg -loglevel error \
+    if ffmpeg -y -loglevel error \
               -fflags nobuffer -flags low_delay \
               -probesize 32 -analyzeduration 0 \
               -i "${RTMP_OUT}" -t 5 -c:v copy "${OUTPUT_FILE}" </dev/null 2>/dev/null; then
@@ -91,8 +91,7 @@ if [ ! -s "${OUTPUT_FILE}" ]; then
     exit 1
 fi
 
-# Verify chroma was actually zeroed (grayscale → U/V planes ≈ 128).
-# Otherwise PASS would also fire if process_video was a no-op passthrough.
+# Verify chroma ≈ 128 (else a no-op passthrough would also pass).
 IFS=, read -r U V < <(ffprobe -v error -f lavfi -i "movie=${OUTPUT_FILE},signalstats" \
     -show_entries frame_tags=lavfi.signalstats.UAVG,lavfi.signalstats.VAVG \
     -of csv=p=0 -read_intervals "%+#1")

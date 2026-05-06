@@ -59,9 +59,7 @@ services:
     container_name: live_grayscale
     ports:
       - "5000:5000"
-    # Healthcheck waits for the LivePipeline state machine to reach OK after
-    # setup() completes. Without this, register_capability could complete and
-    # the test could fire before /stream/start would succeed.
+    # Healthcheck waits for setup() to complete so register_capability + tests don't race the LOADING state.
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').read()"]
