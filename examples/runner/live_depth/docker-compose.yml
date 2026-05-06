@@ -1,0 +1,100 @@
+services:
+  # Mirrors go-livepeer/doc/byoc.md: on-chain mode against a public Arbitrum
+  # RPC, but `pricePerUnit 0` keeps the registration free — no balance ever
+  # leaves the auto-generated keystore. No real chain interaction occurs.
+  #
+  # TODO: once livepeer/go-livepeer#3906 ships in :master, drop -network /
+  # -ethUrl / -ethPassword and run with bare `-network offchain`. Tracked
+  # in livepeer/go-livepeer#3905.
+
+  orchestrator:
+    image: livepeer/go-livepeer:master
+    container_name: orchestrator
+    command: >
+      -network arbitrum-one-mainnet
+      -orchestrator
+      -ethUrl https://arb1.arbitrum.io/rpc
+      -ethPassword secret-password
+      -pricePerUnit 0
+      -serviceAddr=orchestrator:8935
+      -orchSecret=orch-secret
+      -v 6
+
+  gateway:
+    image: livepeer/go-livepeer:master
+    container_name: gateway
+    command: >
+      -network arbitrum-one-mainnet
+      -gateway
+      -ethUrl https://arb1.arbitrum.io/rpc
+      -ethPassword secret-password
+      -orchAddr=orchestrator:8935
+      -httpAddr=0.0.0.0:9935
+      -httpIngest
+      -v 6
+    environment:
+      LIVE_AI_PLAYBACK_HOST: rtmp://mediamtx:1935
+    ports:
+      - "9935:9935"
+    depends_on:
+      - orchestrator
+      - mediamtx
+
+  # RTMP frontend. Custom build adds curl to the scratch base so mediamtx.yml's
+  # `runOnReady` can call the gateway — no Livepeer mediamtx fork required.
+  mediamtx:
+    build:
+      context: .
+      dockerfile: Dockerfile.mediamtx
+    container_name: mediamtx
+    ports:
+      - "1935:1935"   # RTMP push/pull
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+
+  live_depth:
+    build:
+      context: ../../..
+      dockerfile: examples/runner/live_depth/Dockerfile
+    container_name: live_depth
+    ports:
+      - "5000:5000"
+    # Enable GPU access — requires nvidia-container-toolkit on the host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # Healthcheck waits for setup() to load the model on GPU. Larger start_period than the CPU examples so model load + first warm pass don't fail health probes.
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+    depends_on:
+      - orchestrator
+
+  register_capability:
+    image: python:3.11-slim
+    container_name: register_capability
+    command: sh -c "pip install --quiet requests && python /app/register_capability.py"
+    volumes:
+      - ./register_capability.py:/app/register_capability.py:ro
+    environment:
+      ORCH_URL: https://orchestrator:8935
+      ORCH_SECRET: orch-secret
+      CAPABILITY_NAME: live-video-to-video
+      CAPABILITY_URL: http://live_depth:5000
+    depends_on:
+      live_depth:
+        condition: service_healthy
+      orchestrator:
+        condition: service_started
+
+networks:
+  default:
+    name: livepeer

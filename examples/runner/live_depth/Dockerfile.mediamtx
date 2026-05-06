@@ -1,0 +1,8 @@
+# bluenviron/mediamtx ships as a scratch image (no shell, no curl), but
+# `runOnReady` needs curl to call back into the gateway's BYOC ingest webhook.
+# Repackage on alpine + curl — same mediamtx binary, ~10 MB image.
+FROM alpine:3.20
+RUN apk add --no-cache curl ca-certificates
+COPY --from=bluenviron/mediamtx:latest /mediamtx /mediamtx
+COPY --from=bluenviron/mediamtx:latest /mediamtx.yml /mediamtx.default.yml
+ENTRYPOINT ["/mediamtx"]
