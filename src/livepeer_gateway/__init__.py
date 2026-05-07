@@ -35,6 +35,7 @@ from .media_decode import (
 from .media_output import MediaOutput, MediaOutputStats
 from .errors import OrchestratorRejection
 from .lv2v import LiveVideoToVideo, StartJobRequest, start_lv2v
+from .live_runner import LiveRunnerGPU, LiveRunnerPriceInfo, LiveRunnerRegistration, register_runner
 from .orch_info import get_orch_info
 from .orchestrator import discover_orchestrators
 from .remote_signer import PaymentSession
@@ -61,6 +62,9 @@ __all__ = [
     "discover_orchestrators",
     "get_orch_info",
     "LiveVideoToVideo",
+    "LiveRunnerGPU",
+    "LiveRunnerPriceInfo",
+    "LiveRunnerRegistration",
     "LivepeerGatewayError",
     "NoOrchestratorAvailableError",
     "OrchestratorRejection",
@@ -86,6 +90,7 @@ __all__ = [
     "SelectionCursor",
     "orchestrator_selector",
     "StartJobRequest",
+    "register_runner",
     "start_lv2v",
     "start_scope",
     "TricklePublishError",
