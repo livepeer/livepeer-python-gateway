@@ -8,13 +8,13 @@ import shutil
 import ssl
 import subprocess
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from .errors import LivepeerGatewayError
-from .orchestrator import post_json
+from .orchestrator import post_json, request_json
 
 _LOG = logging.getLogger(__name__)
 
@@ -22,6 +22,18 @@ _DEFAULT_HEARTBEAT_INTERVAL_S = 5.0
 
 # golang format duration, eg "10s"
 _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u00b5s|ms|s|m|h)\s*$")
+
+
+class LiveRunnerTrickleChannelRequest(TypedDict):
+    name: str
+    mime_type: str
+
+
+class LiveRunnerTrickleChannel(TypedDict):
+    name: str
+    channel_name: str
+    url: str
+    mime_type: str
 
 
 @dataclass(frozen=True)
@@ -128,6 +140,62 @@ class LiveRunnerRegistration:
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         await self.close()
+
+    async def create_trickle_channels(
+        self,
+        session_id: str,
+        channels: list[LiveRunnerTrickleChannelRequest],
+    ) -> list[LiveRunnerTrickleChannel]:
+        if not self.runner_id:
+            raise LivepeerGatewayError("Live runner trickle channel create requires runner_id")
+        _validate_trickle_channel_requests(channels)
+        data = await asyncio.to_thread(
+            post_json,
+            _join_endpoint(
+                self.orchestrator_url,
+                (
+                    f"/runner/{quote(self.runner_id, safe='')}"
+                    f"/session/{quote(session_id, safe='')}"
+                    "/channels"
+                ),
+            ),
+            {"channels": channels},
+            headers={"Authorization": self._secret},
+            timeout=self._timeout,
+        )
+        response_channels = data.get("channels")
+        if not isinstance(response_channels, list) or not all(
+            _is_trickle_channel_response(channel) for channel in response_channels
+        ):
+            raise LivepeerGatewayError("Live runner trickle channel create response missing channels")
+        return cast(list[LiveRunnerTrickleChannel], response_channels)
+
+    async def remove_trickle_channels(self, session_id: str, channels: list[str]) -> list[str]:
+        if not self.runner_id:
+            raise LivepeerGatewayError("Live runner trickle channel remove requires runner_id")
+        data = await asyncio.to_thread(
+            request_json,
+            _join_endpoint(
+                self.orchestrator_url,
+                (
+                    f"/runner/{quote(self.runner_id, safe='')}"
+                    f"/session/{quote(session_id, safe='')}"
+                    "/channels"
+                ),
+            ),
+            method="DELETE",
+            payload={"channels": channels},
+            headers={"Authorization": self._secret},
+            timeout=self._timeout,
+        )
+        if not isinstance(data, dict):
+            raise LivepeerGatewayError(
+                f"Live runner trickle channel remove expected JSON object, got {type(data).__name__}"
+            )
+        deleted = data.get("deleted")
+        if not isinstance(deleted, list) or not all(isinstance(channel, str) for channel in deleted):
+            raise LivepeerGatewayError("Live runner trickle channel remove response missing deleted")
+        return deleted
 
     def _payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -274,6 +342,25 @@ def _parse_go_duration_s(value: object, *, default: Optional[float]) -> Optional
         "h": 3600.0,
     }[unit]
     return number * scale
+
+
+def _validate_trickle_channel_requests(channels: list[LiveRunnerTrickleChannelRequest]) -> None:
+    for channel in channels:
+        if not isinstance(channel, dict):
+            raise TypeError(f"trickle channel must be dict, got {type(channel).__name__}")
+        if not isinstance(channel.get("name"), str):
+            raise TypeError("trickle channel name must be str")
+        if not isinstance(channel.get("mime_type"), str):
+            raise TypeError("trickle channel mime_type must be str")
+
+
+def _is_trickle_channel_response(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return all(
+        isinstance(value.get(key), str)
+        for key in ("name", "channel_name", "url", "mime_type")
+    )
 
 
 def _post_empty(url: str, headers: dict[str, str], timeout: float) -> None:
