@@ -17,7 +17,12 @@ from .errors import (
     SkipPaymentCycle,
 )
 from .events import Events
-from .media_output import LagPolicy, MediaOutput
+from .media_output import (
+    LagPolicy,
+    MediaFrameCallback,
+    MediaOutput,
+    MediaPacketCallback,
+)
 from .media_publish import MediaPublish, MediaPublishConfig
 from .orchestrator import _http_origin, post_json
 from .selection import orchestrator_selector
@@ -116,6 +121,8 @@ class LiveVideoToVideo:
         chunk_size: int = 64 * 1024,
         max_segments: int = 5,
         on_lag: LagPolicy = LagPolicy.LATEST,
+        on_frame: Optional[MediaFrameCallback] = None,
+        on_packet: Optional[MediaPacketCallback] = None,
     ) -> MediaOutput:
         """
         Convenience helper to create a `MediaOutput` for this job.
@@ -134,6 +141,8 @@ class LiveVideoToVideo:
             chunk_size=chunk_size,
             max_segments=max_segments,
             on_lag=on_lag,
+            on_frame=on_frame,
+            on_packet=on_packet,
         )
 
     @property
