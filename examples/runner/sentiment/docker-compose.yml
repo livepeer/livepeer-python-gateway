@@ -16,6 +16,7 @@ services:
       -orchSecret=orch-secret
       -v 6
 
+  # TODO: see README — service removed after migration to the Python client SDK.
   gateway:
     image: livepeer/go-livepeer:master
     container_name: gateway

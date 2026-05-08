@@ -6,6 +6,8 @@
 #
 # Path: ffmpeg push (RTMP) → mediamtx → gateway → orch → runner → orch → mediamtx → ffmpeg pull (RTMP)
 
+# TODO: see README — migration to the Python client SDK.
+
 set -euo pipefail
 cd "$(dirname "$0")"
 

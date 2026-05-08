@@ -1,5 +1,9 @@
 # Image upscale (BYOC)
 
+> [!NOTE]
+> **TODO** — `test.sh` and the `gateway:` compose service collapse into a single Python script using the client SDK once [livepeer/livepeer-python-gateway#6](https://github.com/livepeer/livepeer-python-gateway/pull/6) merges.
+
+
 A ~2x image super-resolution BYOC capability — proves the SDK handles binary
 I/O cleanly via Pydantic's `Base64Bytes`. Built on
 [Swin2SR](https://huggingface.co/caidas/swin2SR-classical-sr-x2-64), small

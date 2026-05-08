@@ -2,6 +2,8 @@
 # E2E: send a chat request through the gateway, assert the LLM streams
 # tokens back via SSE and terminates with [DONE].
 
+# TODO: see README — migration to the Python client SDK.
+
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -15,9 +17,6 @@ if ! docker logs register_capability 2>&1 | grep -q "registered llm"; then
     exit 1
 fi
 echo "  registered."
-
-# TODO: swap curl for a livepeer_gateway batch caller (post PR #6) — drops
-# the gateway service from compose.
 LIVEPEER_HDR=$(printf '%s' '{"request":"{}","parameters":"{}","capability":"llm","timeout_seconds":120}' | base64 -w0)
 
 echo "Sending chat request through gateway (streaming)..."

@@ -1,5 +1,9 @@
 # Live grayscale (BYOC, real-time)
 
+> [!NOTE]
+> **TODO** — `test.sh`, `demo.sh`, and the `gateway:` compose service collapse into a single Python script using the client SDK once [livepeer/livepeer-python-gateway#6](https://github.com/livepeer/livepeer-python-gateway/pull/6) merges.
+
+
 A minimal real-time video pipeline — proves the SDK's `LivePipeline`
 abstraction end-to-end against go-livepeer's BYOC trickle protocol.
 Each video frame's chroma planes are zeroed (U=V=128), producing a

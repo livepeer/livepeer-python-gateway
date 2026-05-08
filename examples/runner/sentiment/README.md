@@ -1,5 +1,9 @@
 # Sentiment analysis (BYOC)
 
+> [!NOTE]
+> **TODO** — `test.sh` and the `gateway:` compose service collapse into a single Python script using the client SDK once [livepeer/livepeer-python-gateway#6](https://github.com/livepeer/livepeer-python-gateway/pull/6) merges.
+
+
 A Hugging Face sentiment classifier shipped as a BYOC capability. Demonstrates
 the `setup()` lifecycle hook for one-time model loading. Built on
 [distilbert-base-uncased-finetuned-sst-2-english](https://huggingface.co/distilbert/distilbert-base-uncased-finetuned-sst-2-english) — small enough to run on CPU.

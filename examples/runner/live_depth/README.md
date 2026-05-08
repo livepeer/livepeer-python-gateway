@@ -1,5 +1,9 @@
 # Live depth (BYOC, real-time, GPU)
 
+> [!NOTE]
+> **TODO** — `test.sh`, `demo.sh`, and the `gateway:` compose service collapse into a single Python script using the client SDK once [livepeer/livepeer-python-gateway#6](https://github.com/livepeer/livepeer-python-gateway/pull/6) merges.
+
+
 Real-time monocular depth estimation via [DepthAnything V2](https://github.com/DepthAnything/Depth-Anything-V2).
 Each video frame goes through the model; the depth map replaces the luma
 plane and the chroma planes are zeroed, so the egress reads as a

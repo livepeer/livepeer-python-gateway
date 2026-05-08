@@ -1,5 +1,9 @@
 # Hello world (BYOC)
 
+> [!NOTE]
+> **TODO** — `test.sh` and the `gateway:` compose service collapse into a single Python script using the client SDK once [livepeer/livepeer-python-gateway#6](https://github.com/livepeer/livepeer-python-gateway/pull/6) merges.
+
+
 Smallest end-to-end test of the Pipeline SDK against a real
 [go-livepeer](https://github.com/livepeer/go-livepeer) BYOC stack. A `Pipeline`
 subclass returns `{"message": "hello, X"}` over HTTP. Registered as a BYOC

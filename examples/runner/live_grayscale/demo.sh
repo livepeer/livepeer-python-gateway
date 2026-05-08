@@ -11,6 +11,8 @@
 #   - ffmpeg + ffplay on host
 #   - Webcam: /dev/video0 (Linux) or first AVFoundation device (macOS)
 
+# TODO: see README — migration to the Python client SDK.
+
 set -euo pipefail
 cd "$(dirname "$0")"
 

@@ -1,5 +1,9 @@
 # LLM chat (BYOC, streaming)
 
+> [!NOTE]
+> **TODO** — `test.sh` and the `gateway:` compose service collapse into a single Python script using the client SDK once [livepeer/livepeer-python-gateway#6](https://github.com/livepeer/livepeer-python-gateway/pull/6) merges.
+
+
 A streaming chat capability built on
 [Qwen2.5-0.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct) —
 small enough to run on CPU. Demonstrates the SDK's SSE pattern: `predict()`

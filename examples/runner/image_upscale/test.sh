@@ -2,6 +2,8 @@
 # E2E: send a request through the gateway, assert the upscaled image
 # (2x of the 32x32 fixture = 64x64) comes back through the orchestrator.
 
+# TODO: see README — migration to the Python client SDK.
+
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -19,9 +21,6 @@ fi
 echo "  registered."
 
 INPUT_B64=$(base64 -w0 < "${TEST_IMAGE}")
-
-# TODO: swap curl for a livepeer_gateway batch caller (post PR #6) — drops
-# the gateway service from compose.
 LIVEPEER_HDR=$(printf '%s' '{"request":"{}","parameters":"{}","capability":"image-upscale","timeout_seconds":60}' | base64 -w0)
 
 echo "Sending request through gateway..."

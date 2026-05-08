@@ -10,6 +10,8 @@
 # `start_byoc_job` from `livepeer_gateway.byoc` (customer-flow E2E
 # without the deprecated gateway endpoints).
 
+# TODO: see README — migration to the Python client SDK.
+
 set -euo pipefail
 cd "$(dirname "$0")"
 
