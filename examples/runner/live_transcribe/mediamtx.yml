@@ -1,0 +1,30 @@
+# Bridges stock bluenviron mediamtx → BYOC gateway, no Livepeer fork needed.
+# See go-livepeer byoc/stream_gateway.go:StartStreamRTMPIngest.
+
+# Gateway hits the API from another container for stream-exists checks and
+# input kicks; default ACL is localhost-only and would 401.
+api: yes
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+      - action: api
+
+paths:
+  # Egress paths the gateway publishes to (<sid>-out). Skip the ingest
+  # hook — gateway is the publisher, not an external client, and would
+  # 404 looking these up.
+  '~.*-out$':
+    runOnReadyRestart: no
+  all_others:
+    # No shell in the image, so curl is invoked directly (no `sh -c`).
+    runOnReady: >
+      curl -fsS -X POST
+      http://gateway:9935/process/stream/$MTX_PATH/rtmp
+      -F source_id=$MTX_SOURCE_ID
+      -F source_type=$MTX_SOURCE_TYPE
+    runOnReadyRestart: no
