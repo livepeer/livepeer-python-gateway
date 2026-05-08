@@ -146,12 +146,30 @@ class LivePipeline:
         `params` is the initial pipeline params from the caller.
         """
 
-    async def process_video(self, frame: VideoFrame) -> VideoFrame:
-        """Transform one decoded video frame. Default: passthrough."""
+    async def process_video(self, frame: VideoFrame) -> VideoFrame | None:
+        """Transform one decoded video frame. Default: passthrough.
+
+        The video output track is allocated when this method is overridden,
+        or when neither `process_*` hook is overridden (a stock LivePipeline
+        is a full passthrough relay). Override only `process_audio` and the
+        video track is not allocated; this method is not called.
+
+        Return `None` to drop the frame.
+        """
         return frame
 
-    async def process_audio(self, frame: AudioFrame) -> AudioFrame:
-        """Transform one decoded audio frame. Default: passthrough."""
+    async def process_audio(self, frame: AudioFrame) -> AudioFrame | None:
+        """Transform one decoded audio frame. Default: passthrough.
+
+        The audio output track is allocated when this method is overridden,
+        or when neither `process_*` hook is overridden (a stock LivePipeline
+        is a full passthrough relay). Override only `process_video` and the
+        audio track is not allocated; this method is not called.
+
+        Return `None` to drop the frame — useful for pipelines that consume
+        audio without re-emitting (e.g. transcription, where results go out
+        via `emit_data` on the data channel instead).
+        """
         return frame
 
     async def on_params_update(self, params: dict[str, Any]) -> None:
@@ -267,6 +285,36 @@ async def _run_passthrough(subscribe_url: str, publish_url: str) -> None:
         await sub.close()
 
 
+def _emit_flags(pipeline: LivePipeline) -> tuple[bool, bool]:
+    """Decide which output tracks the pipeline emits on, by introspection.
+
+    A track is emitted iff its `process_*` hook is overridden — except a
+    stock LivePipeline (no overrides) emits both as a passthrough relay.
+    """
+    cls = type(pipeline)
+    audio_overridden = cls.process_audio is not LivePipeline.process_audio
+    video_overridden = cls.process_video is not LivePipeline.process_video
+    if not (audio_overridden or video_overridden):
+        return True, True
+    return video_overridden, audio_overridden
+
+
+def _build_media_publish_config(emit_video: bool, emit_audio: bool):
+    """Allocate only the tracks the pipeline will emit on.
+
+    Tracks where the pipeline's `process_*` returns `None` for every frame
+    are still allocated briefly, then closed by `track_wait_timeout_s`.
+    """
+    from ..media_publish import AudioOutputConfig, MediaPublishConfig, VideoOutputConfig
+
+    tracks: list = []
+    if emit_video:
+        tracks.append(VideoOutputConfig())
+    if emit_audio:
+        tracks.append(AudioOutputConfig())
+    return MediaPublishConfig(tracks=tracks, track_wait_timeout_s=0.5)
+
+
 async def _run_frame_loop(pipeline: LivePipeline) -> None:
     """Decode → user transform → encode loop.
 
@@ -279,20 +327,27 @@ async def _run_frame_loop(pipeline: LivePipeline) -> None:
     from ..media_publish import MediaPublish
 
     session = pipeline._session  # set by serve.py before scheduling.
+    emit_video, emit_audio = _emit_flags(pipeline)  # Determine required tracks.
 
     async with MediaOutput(session.subscribe_url) as media_output:
-        media_publish = MediaPublish(session.publish_url)
+        media_publish = MediaPublish(
+            session.publish_url,
+            config=_build_media_publish_config(emit_video, emit_audio),
+        )
         try:
             async for decoded in media_output.frames():
                 is_video = isinstance(decoded, VideoDecodedMediaFrame)
+                # Skip kinds we don't emit — input may carry them, but
+                # writing to a non-allocated MediaPublish track raises.
+                if not (emit_video if is_video else emit_audio):
+                    continue
                 try:
                     if is_video:
                         result = await pipeline.process_video(decoded)
                     else:
                         result = await pipeline.process_audio(decoded)
                 except Exception:
-                    method = "process_video" if is_video else "process_audio"
-                    _LOG.exception("LivePipeline %s failed", method)
+                    _LOG.exception("LivePipeline %s failed", "process_video" if is_video else "process_audio")
                     continue
                 if result is not None:
                     await media_publish.write_frame(result.frame)
