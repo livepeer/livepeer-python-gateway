@@ -2,10 +2,6 @@ services:
   # Mirrors go-livepeer/doc/byoc.md: on-chain mode against a public Arbitrum
   # RPC, but `pricePerUnit 0` keeps the registration free — no balance ever
   # leaves the auto-generated keystore. No real chain interaction occurs.
-  #
-  # TODO: once livepeer/go-livepeer#3906 ships in :master, drop -network /
-  # -ethUrl / -ethPassword and run with bare `-network offchain`. Tracked
-  # in livepeer/go-livepeer#3905.
 
   orchestrator:
     image: livepeer/go-livepeer:master
