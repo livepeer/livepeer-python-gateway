@@ -344,7 +344,14 @@ class TricklePublisher:
         resp.release()
 
     async def _resolve_next_seq(self) -> int:
-        """Resolve seq via /next, or return -1 on failure."""
+        """Resolve seq via /next, or assume a fresh channel on failure.
+
+        On success returns the server's `Lp-Trickle-Latest` (the next-write
+        slot). On failure returns 0 — the fresh-channel default. The `-1`
+        sentinel can't be used here because the caller increments by one
+        for the next POST; pairing `-1` with `+1` collides on slot 0 (server
+        resolves `-1` to slot 0, then the next POST also targets 0).
+        """
         assert self._session is not None
         url = f"{self.url}/next"
         try:
@@ -355,11 +362,11 @@ class TricklePublisher:
                 resolved_seq = int(latest)
                 _LOG.debug("Trickle resolved seq from %s: %s", url, resolved_seq)
                 return resolved_seq
-            else:
-                _LOG.warning("Trickle /next missing Lp-Trickle-Latest header")
+            # Common pre-go-livepeer #3884 — server lacks /next, returns 400.
+            _LOG.debug("Trickle /next missing Lp-Trickle-Latest header — assuming fresh channel")
         except Exception:
             _LOG.warning("Trickle /next request failed", exc_info=True)
-        return -1
+        return 0
 
     async def next(self) -> "SegmentWriter":
         # Fail fast via the publisher error hierarchy, not a generic RuntimeError.
