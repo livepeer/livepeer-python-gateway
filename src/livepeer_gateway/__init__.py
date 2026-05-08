@@ -32,7 +32,12 @@ from .media_decode import (
     DemuxedMediaPacket,
     VideoDecodedMediaFrame,
 )
-from .media_output import MediaOutput, MediaOutputStats
+from .media_output import (
+    MediaFrameCallback,
+    MediaOutput,
+    MediaOutputStats,
+    MediaPacketCallback,
+)
 from .errors import OrchestratorRejection
 from .lv2v import LiveVideoToVideo, StartJobRequest, start_lv2v
 from .live_runner import LiveRunnerGPU, LiveRunnerPriceInfo, LiveRunnerRegistration, register_runner
@@ -78,6 +83,8 @@ __all__ = [
     "AudioOutputConfig",
     "MediaOutput",
     "MediaOutputStats",
+    "MediaFrameCallback",
+    "MediaPacketCallback",
     "AudioDecodedMediaFrame",
     "DecodedMediaFrame",
     "DemuxedMediaPacket",
