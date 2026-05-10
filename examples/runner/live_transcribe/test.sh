@@ -21,7 +21,7 @@ cd "$(dirname "$0")"
 GATEWAY_URL="${GATEWAY_URL:-http://localhost:9935}"
 
 echo "Waiting for capability registration..."
-if ! docker logs register_capability 2>&1 | grep -q "registered live-video-to-video"; then
+if ! docker logs register_capability 2>&1 | grep -q "registered live-transcribe"; then
     echo "FAIL: register_capability hasn't logged success."
     echo "Make sure 'docker compose up -d --wait --build' completed first."
     exit 1
@@ -33,7 +33,7 @@ echo "  registered."
 # enable_data_output is what makes the gateway return a real `data_url` and
 # subscribe to the runner's emit_data channel for SSE proxying.
 LIVEPEER_HDR=$(printf '%s' \
-  '{"request":"{}","parameters":"{\"enable_video_ingress\":true,\"enable_video_egress\":true,\"enable_data_output\":true}","capability":"live-video-to-video","timeout_seconds":120}' \
+  '{"request":"{}","parameters":"{\"enable_video_ingress\":true,\"enable_video_egress\":true,\"enable_data_output\":true}","capability":"live-transcribe","timeout_seconds":120}' \
   | base64 -w0)
 
 # Best-effort session cleanup; registered early to catch Ctrl-C.
@@ -77,8 +77,8 @@ sleep 1  # let curl establish the connection before we start pushing
 # windowed transcribes plus the final on_stream_stop flush. Loop
 # wraparound makes transcripts appear "out of order" relative to a
 # single read of the speech — that's expected, the audio itself loops.
-# Black video satisfies the live-video-to-video capability; JFK audio
-# is what the pipeline consumes.
+# Black video satisfies the live-transcribe capability's video ingress;
+# JFK audio is what the pipeline actually consumes.
 echo "Pushing JFK clip (20s, looped)..."
 ffmpeg -loglevel error -re \
        -f lavfi -i "color=size=320x240:rate=15" \

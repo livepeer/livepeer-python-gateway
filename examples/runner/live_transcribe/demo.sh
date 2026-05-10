@@ -21,9 +21,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Use system ffmpeg if available — it carries the pulse/alsa/avfoundation
-# audio demuxers needed for mic capture. A custom-compiled ffmpeg in $PATH
-# (e.g. a Livepeer transcoding build) is often video-only and won't work.
+# Use the system ffmpeg — capture demuxers (pulse/alsa/avfoundation) must
+# be compiled in. The transcoding-only ffmpeg that ships with go-livepeer
+# lacks them, so a Livepeer dev's $PATH ffmpeg often won't open the mic.
 FFMPEG="${FFMPEG:-${HOMEBREW_PREFIX:+$HOMEBREW_PREFIX/bin/ffmpeg}}"
 [ -x "${FFMPEG:-}" ] || FFMPEG="/usr/bin/ffmpeg"
 [ -x "${FFMPEG}" ] || FFMPEG="$(command -v ffmpeg)"
@@ -47,7 +47,7 @@ case "$(uname -s)" in
 esac
 
 echo "Waiting for capability registration..."
-if ! docker logs register_capability 2>&1 | grep -q "registered live-video-to-video"; then
+if ! docker logs register_capability 2>&1 | grep -q "registered live-transcribe"; then
     echo "FAIL: register_capability hasn't logged success."
     echo "Make sure 'docker compose up -d --wait --build' completed first."
     exit 1
@@ -57,7 +57,7 @@ echo "  registered."
 # enable_data_output makes the gateway create the data trickle channel and
 # proxy it as SSE on /process/stream/{id}/data. Long timeout for a chatty demo.
 LIVEPEER_HDR=$(printf '%s' \
-  '{"request":"{}","parameters":"{\"enable_video_ingress\":true,\"enable_video_egress\":true,\"enable_data_output\":true}","capability":"live-video-to-video","timeout_seconds":600}' \
+  '{"request":"{}","parameters":"{\"enable_video_ingress\":true,\"enable_video_egress\":true,\"enable_data_output\":true}","capability":"live-transcribe","timeout_seconds":600}' \
   | base64 -w0)
 
 # Best-effort cleanup; registered early to catch Ctrl-C.
@@ -76,10 +76,7 @@ echo "  stream_id=${STREAM_ID}"
 echo "  rtmp_in =${RTMP_IN}"
 echo "  data_url=${DATA_URL}"
 
-# Subscribe to the data SSE before pushing, so we don't miss early
-# transcripts. Stream output through a small Python formatter so each JSON
-# record renders as a single human-readable line in real time.
-# `--max-time` bounds it to the push duration plus headroom.
+# Subscribe before pushing so we don't miss early records.
 echo
 echo "Listening for transcripts. Speak now — Ctrl-C to stop early."
 echo "------------------------------------------------------------"
@@ -92,7 +89,7 @@ SUB_PID=$!
 # Tiny gap so curl's connection is established before ffmpeg starts pushing.
 sleep 1
 
-# Push black video + mic. Black satisfies the live-video-to-video capability;
+# Push black video + mic. Black satisfies the live-transcribe capability;
 # the pipeline only consumes the audio track. `-g 15` = 1s GOP for low first-
 # segment latency.
 "${FFMPEG}" -loglevel error -re \

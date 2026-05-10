@@ -76,7 +76,7 @@ services:
     environment:
       ORCH_URL: https://orchestrator:8935
       ORCH_SECRET: orch-secret
-      CAPABILITY_NAME: live-video-to-video
+      CAPABILITY_NAME: live-transcribe
       CAPABILITY_URL: http://live_transcribe:5000
     depends_on:
       live_transcribe:
