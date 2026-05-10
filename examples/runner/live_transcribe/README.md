@@ -7,7 +7,7 @@ Streaming speech-to-text via [faster-whisper](https://github.com/SYSTRAN/faster-
 running [tiny.en](https://huggingface.co/Systran/faster-whisper-tiny.en).
 Push audio (or video-with-audio) into the BYOC pipeline; transcripts arrive
 on the data trickle channel as structured JSON. Companion to
-[`live_grayscale`](../live_grayscale/), which exercises only `process_video`
+[`live_tint`](../live_tint/), which exercises only `process_video`
 — this example exercises **the full LivePipeline lifecycle**:
 
 | Hook | What this example does |

@@ -49,11 +49,11 @@ services:
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
 
-  live_grayscale:
+  live_tint:
     build:
       context: ../../..
-      dockerfile: examples/runner/live_grayscale/Dockerfile
-    container_name: live_grayscale
+      dockerfile: examples/runner/live_tint/Dockerfile
+    container_name: live_tint
     ports:
       - "5000:5000"
     # Healthcheck waits for setup() to complete so register_capability + tests don't race the LOADING state.
@@ -76,10 +76,10 @@ services:
     environment:
       ORCH_URL: https://orchestrator:8935
       ORCH_SECRET: orch-secret
-      CAPABILITY_NAME: live-video-to-video
-      CAPABILITY_URL: http://live_grayscale:5000
+      CAPABILITY_NAME: live-tint
+      CAPABILITY_URL: http://live_tint:5000
     depends_on:
-      live_grayscale:
+      live_tint:
         condition: service_healthy
       orchestrator:
         condition: service_started

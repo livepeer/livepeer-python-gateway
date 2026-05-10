@@ -136,10 +136,10 @@ Concretely:
 | `process_audio` only  | no        | yes       |
 | both                  | yes       | yes       |
 
-Examples: [`live_grayscale`](../examples/runner/live_grayscale/) (video
-only), [`live_depth`](../examples/runner/live_depth/) (video only, GPU
-model), [`live_transcribe`](../examples/runner/live_transcribe/) (audio
-in → data out).
+Examples: [`live_tint`](../examples/runner/live_tint/) (video only,
+also exercises `on_params_update`), [`live_depth`](../examples/runner/live_depth/)
+(video only, GPU model), [`live_transcribe`](../examples/runner/live_transcribe/)
+(audio in → data out).
 
 ## Coverage
 
@@ -147,7 +147,7 @@ in → data out).
 | --------------------- | ------------------------------------- | ------ |
 | Batch sync            | hello_world, sentiment, image_upscale | ✅     |
 | Batch streaming (SSE) | llm                                   | ✅     |
-| Live video → video    | live_grayscale, live_depth            | ✅     |
+| Live video → video    | live_tint, live_depth                 | ✅     |
 | Live audio → data     | live_transcribe                       | ⏳     |
 | Live audio → audio    | _planned: pitch-shift_                | ⏳     |
 | Live video + audio    | _planned: combined_                   | ⏳     |

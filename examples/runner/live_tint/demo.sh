@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Live demo — push your webcam through the grayscale pipeline and watch
-# the result in ffplay. Minimal complement to test.sh (which uses synthetic
-# testsrc + capture-to-file for CI assertions).
+# Live demo — push your webcam through the tint pipeline, watch grayscale
+# in ffplay, then a backgrounded curl swaps the chroma mid-stream so you
+# see the tint shift live (exercises on_params_update).
 #
 # Path: webcam → ffmpeg push (RTMP) → mediamtx → gateway → orch → runner →
 #       orch → mediamtx → ffplay pull (RTMP)
+# Params: POST /process/stream/{id}/update {"u": <0..255>, "v": <0..255>}
+#         128/128 = neutral (grayscale); shift U for blue↔yellow, V for red↔green.
 #
 # Prerequisites:
 #   - Stack up: `docker compose up -d --wait --build`
@@ -45,7 +47,7 @@ case "$(uname -s)" in
 esac
 
 echo "Waiting for capability registration..."
-if ! docker logs register_capability 2>&1 | grep -q "registered live-video-to-video"; then
+if ! docker logs register_capability 2>&1 | grep -q "registered live-tint"; then
     echo "FAIL: register_capability hasn't logged success."
     echo "Make sure 'docker compose up -d --wait --build' completed first."
     exit 1
@@ -55,13 +57,13 @@ echo "  registered."
 # `parameters` is a stringified JSON; enable_video_{ingress,egress} drive
 # trickle channel creation (go-livepeer byoc/types.go). 600s timeout for long demos.
 LIVEPEER_HDR=$(printf '%s' \
-  '{"request":"{}","parameters":"{\"enable_video_ingress\":true,\"enable_video_egress\":true}","capability":"live-video-to-video","timeout_seconds":600}' \
+  '{"request":"{}","parameters":"{\"enable_video_ingress\":true,\"enable_video_egress\":true}","capability":"live-tint","timeout_seconds":600}' \
   | base64 -w0)
 
 # Best-effort session cleanup; registered early to catch Ctrl-C.
 # `${STREAM_ID:-}` so an early failure (before stream/start succeeded) doesn't
 # trip `set -u` when the trap fires.
-trap 'kill -INT "${PUSH_PID:-}" 2>/dev/null || true; curl -fsS -X POST "${GATEWAY_URL}/process/stream/${STREAM_ID:-}/stop" -H "Livepeer: ${LIVEPEER_HDR}" -d "{}" >/dev/null 2>&1 || true' EXIT
+trap 'kill -INT "${PUSH_PID:-}" 2>/dev/null || true; kill "${TINT_PID:-}" 2>/dev/null || true; curl -fsS -X POST "${GATEWAY_URL}/process/stream/${STREAM_ID:-}/stop" -H "Livepeer: ${LIVEPEER_HDR}" -d "{}" >/dev/null 2>&1 || true' EXIT
 
 echo "Starting stream session..."
 RESPONSE=$(curl -fsS -X POST "${GATEWAY_URL}/process/stream/start" \
@@ -104,10 +106,33 @@ for _ in $(seq 1 "${RETRIES:-30}"); do
     sleep 1
 done
 
+# Cycle the chroma so you can see on_params_update land. First burst fires
+# after the viewer has warmed up; the loop runs until ffplay exits, at which
+# point the EXIT trap kills it. Backgrounded so it doesn't block ffplay.
+# Override TINT_DELAY=0 to skip the cycle and stay grayscale.
+TINT_DELAY="${TINT_DELAY:-6}"
+TINT_INTERVAL="${TINT_INTERVAL:-4}"
+if [ "${TINT_DELAY}" != "0" ]; then
+    (
+        sleep "${TINT_DELAY}"
+        while true; do
+            for params in '{"u":80,"v":160}' '{"u":160,"v":80}' '{"u":128,"v":128}'; do
+                echo "  -> POST /update ${params}"
+                curl -fsS -X POST "${GATEWAY_URL}/process/stream/${STREAM_ID}/update" \
+                    -H "Livepeer: ${LIVEPEER_HDR}" \
+                    -H "Content-Type: application/json" \
+                    -d "${params}" >/dev/null || true
+                sleep "${TINT_INTERVAL}"
+            done
+        done
+    ) &
+    TINT_PID=$!
+fi
+
 echo "Opening live viewer (close the window or Ctrl-C to stop)..."
 # `nobuffer` + `low_delay` for low playback latency; no `probesize 32` —
 # too aggressive for RTMP (causes I/O error on open before ffplay locks).
 ffplay -loglevel warning \
     -fflags nobuffer -flags low_delay \
-    -window_title "live_grayscale (webcam)" \
+    -window_title "live_tint (webcam)" \
     "${RTMP_OUT}"

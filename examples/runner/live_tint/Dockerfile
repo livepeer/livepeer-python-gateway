@@ -9,7 +9,7 @@ COPY src /app/src
 RUN pip install --no-cache-dir /app
 
 # Pipeline code last so edits don't invalidate the SDK install layer.
-COPY examples/runner/live_grayscale/pipeline.py /app/pipeline.py
+COPY examples/runner/live_tint/pipeline.py /app/pipeline.py
 
 EXPOSE 5000
 
