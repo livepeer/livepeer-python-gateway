@@ -15,7 +15,7 @@ GATEWAY_URL="${GATEWAY_URL:-http://localhost:9935}"
 OUTPUT_FILE="${OUTPUT_FILE:-/tmp/live_depth_output.mts}"
 
 echo "Waiting for capability registration..."
-if ! docker logs register_capability 2>&1 | grep -q "registered live-video-to-video"; then
+if ! docker logs register_capability 2>&1 | grep -q "registered live-depth"; then
     echo "FAIL: register_capability hasn't logged success."
     echo "Make sure 'docker compose up -d --wait --build' completed first."
     exit 1
@@ -25,7 +25,7 @@ echo "  registered."
 # `parameters` is a stringified JSON; enable_video_{ingress,egress} drive
 # trickle channel creation (go-livepeer byoc/types.go).
 LIVEPEER_HDR=$(printf '%s' \
-  '{"request":"{}","parameters":"{\"enable_video_ingress\":true,\"enable_video_egress\":true}","capability":"live-video-to-video","timeout_seconds":60}' \
+  '{"request":"{}","parameters":"{\"enable_video_ingress\":true,\"enable_video_egress\":true}","capability":"live-depth","timeout_seconds":60}' \
   | base64 -w0)
 
 # Best-effort session cleanup; registered early to catch Ctrl-C.
