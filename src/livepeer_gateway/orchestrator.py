@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import ssl
-from functools import lru_cache
 from typing import Any, Optional, Sequence
 from urllib.parse import ParseResult, parse_qsl, quote, urlencode, urlparse, urlunparse
 from urllib.error import URLError, HTTPError
@@ -305,6 +304,5 @@ def discover_orchestrators(
     _LOG.debug("discover_orchestrators discovered %d orchestrators", len(orch_list))
 
     return orch_list
-
 
 

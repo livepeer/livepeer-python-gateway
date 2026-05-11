@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from . import lp_rpc_pb2
-from .errors import LivepeerGatewayError, PaymentError, SignerRefreshRequired, SkipPaymentCycle
+from .errors import LivepeerGatewayError, PaymentError, SignerRefreshRequired
 _LOG = logging.getLogger(__name__)
 
 @dataclass(frozen=True)

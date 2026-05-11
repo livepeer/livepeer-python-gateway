@@ -4,6 +4,7 @@ import json
 from typing import Any, AsyncIterator
 
 from .errors import LivepeerGatewayError
+from .segment_reader import SegmentReader
 from .trickle_subscriber import TrickleSubscriber
 
 
@@ -173,4 +174,3 @@ class JSONLReader:
                 ) from e
 
         return _iter()
-
