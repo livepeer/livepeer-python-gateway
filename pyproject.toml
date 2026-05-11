@@ -28,3 +28,6 @@ examples = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/livepeer_gateway", "src/net"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/livepeer_gateway/lp_rpc_pb2_grpc.py" = ["F401"]
