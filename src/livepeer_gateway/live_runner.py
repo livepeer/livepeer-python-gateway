@@ -8,7 +8,7 @@ import shutil
 import ssl
 import subprocess
 from dataclasses import dataclass
-from typing import Any, Optional, TypedDict, cast
+from typing import Any, Optional, Protocol, TypedDict, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -35,6 +35,13 @@ class LiveRunnerTrickleChannel(TypedDict):
     url: str
     mime_type: str
 
+
+class LiveRunnerSessionHeaders(Protocol):
+    def get(self, key: str, default: str = "") -> str: ...
+
+
+class LiveRunnerSessionRequest(Protocol):
+    headers: LiveRunnerSessionHeaders
 
 @dataclass(frozen=True)
 class LiveRunnerGPU:
@@ -91,7 +98,8 @@ class LiveRunnerRegistration:
         self.heartbeat_interval_s = heartbeat_interval_s or _DEFAULT_HEARTBEAT_INTERVAL_S
         self.heartbeat_ttl_s: Optional[float] = None
 
-        self._secret = secret
+        self._bootstrap_secret = secret
+        self._heartbeat_secret: Optional[str] = None
         self._runner_url = runner_url
         self._app = app
         self._price_info = price_info
@@ -125,11 +133,15 @@ class LiveRunnerRegistration:
                 _LOG.exception("Live runner heartbeat task failed during shutdown")
 
         if self._unregister_on_close and self.runner_id:
+            secret = self._heartbeat_secret
+            if not secret:
+                _LOG.warning("Skipping live runner unregister without heartbeat secret")
+                return
             try:
                 await asyncio.to_thread(
                     _post_empty,
                     _join_endpoint(self.orchestrator_url, f"/runners/{quote(self.runner_id, safe='')}/unregister"),
-                    {"Authorization": self._secret},
+                    {"Authorization": secret},
                     self._timeout,
                 )
             except Exception:
@@ -143,11 +155,20 @@ class LiveRunnerRegistration:
 
     async def create_trickle_channels(
         self,
-        session_id: str,
+        session: str | LiveRunnerSessionRequest,
         channels: list[LiveRunnerTrickleChannelRequest],
+        *,
+        session_token: str = "",
     ) -> list[LiveRunnerTrickleChannel]:
+        """Create channels for a live runner app session.
+
+        This is intended for apps running behind the orchestrator's live-runner
+        proxy, not end-user clients. Apps should normally pass the incoming
+        request so the orchestrator-provided session headers are used.
+        """
         if not self.runner_id:
             raise LivepeerGatewayError("Live runner trickle channel create requires runner_id")
+        session_id, token = _resolve_session_credentials(session, session_token=session_token)
         _validate_trickle_channel_requests(channels)
         data = await asyncio.to_thread(
             post_json,
@@ -160,7 +181,7 @@ class LiveRunnerRegistration:
                 ),
             ),
             {"channels": channels},
-            headers={"Authorization": self._secret},
+            headers={"Livepeer-Session-Token": token},
             timeout=self._timeout,
         )
         response_channels = data.get("channels")
@@ -170,9 +191,22 @@ class LiveRunnerRegistration:
             raise LivepeerGatewayError("Live runner trickle channel create response missing channels")
         return cast(list[LiveRunnerTrickleChannel], response_channels)
 
-    async def remove_trickle_channels(self, session_id: str, channels: list[str]) -> list[str]:
+    async def remove_trickle_channels(
+        self,
+        session: str | LiveRunnerSessionRequest,
+        channels: list[str],
+        *,
+        session_token: str = "",
+    ) -> list[str]:
+        """Remove channels for a live runner app session.
+
+        This is intended for apps running behind the orchestrator's live-runner
+        proxy, not end-user clients. Apps should normally pass the incoming
+        request so the orchestrator-provided session headers are used.
+        """
         if not self.runner_id:
             raise LivepeerGatewayError("Live runner trickle channel remove requires runner_id")
+        session_id, token = _resolve_session_credentials(session, session_token=session_token)
         data = await asyncio.to_thread(
             request_json,
             _join_endpoint(
@@ -185,7 +219,7 @@ class LiveRunnerRegistration:
             ),
             method="DELETE",
             payload={"channels": channels},
-            headers={"Authorization": self._secret},
+            headers={"Livepeer-Session-Token": token},
             timeout=self._timeout,
         )
         if not isinstance(data, dict):
@@ -229,11 +263,13 @@ class LiveRunnerRegistration:
                 _LOG.warning("Live runner heartbeat failed; retrying on next interval", exc_info=True)
 
     async def _send_heartbeat(self) -> None:
+        is_initial_heartbeat = self._heartbeat_secret is None
+        auth = self._heartbeat_secret or self._bootstrap_secret
         data = await asyncio.to_thread(
             post_json,
             _join_endpoint(self.orchestrator_url, "/runners/heartbeat"),
             self._payload(),
-            headers={"Authorization": self._secret},
+            headers={"Authorization": auth},
             timeout=self._timeout,
         )
         runner_id = data.get("runner_id")
@@ -251,6 +287,12 @@ class LiveRunnerRegistration:
                 default=_DEFAULT_HEARTBEAT_INTERVAL_S,
             )
         self.heartbeat_ttl_s = _parse_go_duration_s(data.get("heartbeat_ttl"), default=None)
+
+        heartbeat_secret = data.get("heartbeat_secret")
+        if isinstance(heartbeat_secret, str) and heartbeat_secret.strip():
+            self._heartbeat_secret = heartbeat_secret.strip()
+        elif is_initial_heartbeat:
+            raise LivepeerGatewayError("Live runner heartbeat response missing heartbeat_secret")
 
 
 async def register_runner(
@@ -344,6 +386,35 @@ def _parse_go_duration_s(value: object, *, default: Optional[float]) -> Optional
     return number * scale
 
 
+def _resolve_session_credentials(
+    session: str | LiveRunnerSessionRequest,
+    *,
+    session_token: str = "",
+) -> tuple[str, str]:
+    session_id = ""
+    token = session_token.strip()
+
+    if isinstance(session, str):
+        session_id = session.strip()
+    else:
+        headers = getattr(session, "headers", None)
+        if headers is not None:
+            get = getattr(headers, "get", None)
+            if callable(get):
+                session_id_value = get("Livepeer-Session-Id", "")
+                token_value = get("Livepeer-Session-Token", "")
+                if isinstance(session_id_value, str):
+                    session_id = session_id_value.strip()
+                if not token and isinstance(token_value, str):
+                    token = token_value.strip()
+
+    if not session_id:
+        raise LivepeerGatewayError("Live runner trickle channel request requires session_id")
+    if not token:
+        raise LivepeerGatewayError("Live runner trickle channel request requires session_token")
+    return session_id, token
+
+
 def _validate_trickle_channel_requests(channels: list[LiveRunnerTrickleChannelRequest]) -> None:
     for channel in channels:
         if not isinstance(channel, dict):
@@ -371,9 +442,9 @@ def _post_empty(url: str, headers: dict[str, str], timeout: float) -> None:
             resp.read()
     except HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        raise LivepeerGatewayError(f"HTTP error unregistering live runner: HTTP {e.code}; body={body!r}") from e
+        raise LivepeerGatewayError(f"HTTP empty POST error: HTTP {e.code}; body={body!r}") from e
     except URLError as e:
-        raise LivepeerGatewayError(f"HTTP error unregistering live runner: {getattr(e, 'reason', e)}") from e
+        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'reason', e)}") from e
 
 
 def _detect_gpu_pynvml() -> Optional[LiveRunnerGPU]:
