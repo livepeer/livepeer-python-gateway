@@ -29,6 +29,12 @@ tears down within seconds.
 
 ## Run
 
+> [!WARNING]
+> Only one example can run at a time — all share container names
+> (`gateway`, `orchestrator`, …) and ports (`1935`, `9935`, `5000`). If
+> `./test.sh` fails at the capability-registration step, run `docker
+> compose down` in the other example's directory first.
+
 ```bash
 docker compose up -d --wait --build      # first build downloads model + CUDA layers
 
