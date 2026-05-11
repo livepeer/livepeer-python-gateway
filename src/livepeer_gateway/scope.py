@@ -4,7 +4,7 @@ import logging
 from typing import Any, Optional, Sequence
 
 from .capabilities import CapabilityId, build_capabilities
-from .control import ControlConfig, ControlMode
+from .control import ControlConfig
 from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, OrchestratorRejection
 from .lv2v import LiveVideoToVideo, StartJobRequest
 from .orchestrator import _http_origin, post_json
