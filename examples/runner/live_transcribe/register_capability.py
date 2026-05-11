@@ -17,8 +17,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 ORCH_URL = os.environ.get("ORCH_URL", "https://orchestrator:8935")
 ORCH_SECRET = os.environ.get("ORCH_SECRET", "orch-secret")
-CAPABILITY_NAME = os.environ.get("CAPABILITY_NAME", "sentiment")
-CAPABILITY_URL = os.environ.get("CAPABILITY_URL", "http://sentiment:5000")
+CAPABILITY_NAME = os.environ.get("CAPABILITY_NAME", "live-transcribe")
+CAPABILITY_URL = os.environ.get("CAPABILITY_URL", "http://live_transcribe:5000")
 MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS", "30"))
 
 data = {
