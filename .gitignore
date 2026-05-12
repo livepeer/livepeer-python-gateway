@@ -18,3 +18,4 @@ env
 *.code-workspace
 .idea/
 .codex 
+.claude
