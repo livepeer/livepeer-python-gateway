@@ -259,19 +259,24 @@ class LiveRunnerRegistration:
                 return
             try:
                 await self._send_heartbeat()
+            except LivepeerGatewayError as exc:
+                _LOG.warning("Live runner heartbeat failed; retrying on next interval: %s", exc)
             except Exception:
                 _LOG.warning("Live runner heartbeat failed; retrying on next interval", exc_info=True)
 
     async def _send_heartbeat(self) -> None:
         is_initial_heartbeat = self._heartbeat_secret is None
         auth = self._heartbeat_secret or self._bootstrap_secret
-        data = await asyncio.to_thread(
-            post_json,
-            _join_endpoint(self.orchestrator_url, "/runners/heartbeat"),
-            self._payload(),
-            headers={"Authorization": auth},
-            timeout=self._timeout,
-        )
+        try:
+            data = await self._post_heartbeat(auth)
+        except LivepeerGatewayError as exc:
+            if is_initial_heartbeat or not _is_invalid_authorization_error(exc):
+                raise
+            _LOG.info("Live runner heartbeat authorization expired; resetting heartbeat auth")
+            self._heartbeat_secret = None
+            is_initial_heartbeat = True
+            data = await self._post_heartbeat(self._bootstrap_secret)
+
         runner_id = data.get("runner_id")
         if not isinstance(runner_id, str) or not runner_id.strip():
             raise LivepeerGatewayError("Live runner heartbeat response missing runner_id")
@@ -293,6 +298,15 @@ class LiveRunnerRegistration:
             self._heartbeat_secret = heartbeat_secret.strip()
         elif is_initial_heartbeat:
             raise LivepeerGatewayError("Live runner heartbeat response missing heartbeat_secret")
+
+    async def _post_heartbeat(self, auth: str) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            post_json,
+            _join_endpoint(self.orchestrator_url, "/runners/heartbeat"),
+            self._payload(),
+            headers={"Authorization": auth},
+            timeout=self._timeout,
+        )
 
 
 async def register_runner(
@@ -384,6 +398,11 @@ def _parse_go_duration_s(value: object, *, default: Optional[float]) -> Optional
         "h": 3600.0,
     }[unit]
     return number * scale
+
+
+def _is_invalid_authorization_error(exc: LivepeerGatewayError) -> bool:
+    message = str(exc).lower()
+    return "http 401" in message and "invalid authorization" in message
 
 
 def _resolve_session_credentials(
