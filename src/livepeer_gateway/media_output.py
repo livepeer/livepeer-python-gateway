@@ -37,6 +37,7 @@ MediaFrameCallback = Callable[
     None | Awaitable[None],
 ]
 MediaPacketCallback = Callable[[DemuxedMediaPacket], None | Awaitable[None]]
+MediaBytesCallback = Callable[[bytes], None | Awaitable[None]]
 
 
 class LagPolicy(Enum):
@@ -144,6 +145,7 @@ class MediaOutput:
         max_segments: int = 5,
         on_lag: LagPolicy = LagPolicy.LATEST,
         accepted_content_types: Collection[str] = _DEFAULT_ACCEPTED_CONTENT_TYPES,
+        on_bytes: Optional[MediaBytesCallback] = None,
         on_frame: Optional[MediaFrameCallback] = None,
         on_packet: Optional[MediaPacketCallback] = None,
     ) -> None:
@@ -158,6 +160,7 @@ class MediaOutput:
         self.max_segments = max_segments
         self.on_lag = on_lag
         self.accepted_content_types = _normalize_accepted_content_types(accepted_content_types)
+        self.on_bytes = on_bytes
         self.on_frame = on_frame
         self.on_packet = on_packet
 
@@ -170,6 +173,7 @@ class MediaOutput:
         self._started_at = time.time()
         self._processor: Optional[MpegTsDecoder | MpegTsPacketDemuxer] = None
         self._last_decoder_stats: Optional[DecoderQueueStats] = None
+        self._bytes_callback_task: Optional[asyncio.Task[None]] = None
         self._frame_callback_task: Optional[asyncio.Task[None]] = None
         self._packet_callback_task: Optional[asyncio.Task[None]] = None
         self._callback_errors: list[BaseException] = []
@@ -191,7 +195,7 @@ class MediaOutput:
             "packet_errors": 0,
             "decode_errors": 0,
         }
-        if self.on_frame is not None or self.on_packet is not None:
+        if self.on_bytes is not None or self.on_frame is not None or self.on_packet is not None:
             self.start_callbacks()
 
     def start_callbacks(self) -> list[asyncio.Task[None]]:
@@ -201,7 +205,7 @@ class MediaOutput:
         This is idempotent. If called without a running event loop, no tasks are
         started and callers may retry later from async code.
         """
-        if self.on_frame is None and self.on_packet is None:
+        if self.on_bytes is None and self.on_frame is None and self.on_packet is None:
             return []
         try:
             loop = asyncio.get_running_loop()
@@ -213,6 +217,14 @@ class MediaOutput:
             return []
 
         started: list[asyncio.Task[None]] = []
+        if self.on_bytes is not None and self._bytes_callback_task is None:
+            task = loop.create_task(
+                self._run_bytes_callback_loop(self.on_bytes),
+                name="MediaOutput.on_bytes",
+            )
+            task.add_done_callback(self._record_callback_task_result)
+            self._bytes_callback_task = task
+            started.append(task)
         if self.on_frame is not None and self._frame_callback_task is None:
             task = loop.create_task(
                 self._run_frame_callback_loop(self.on_frame),
@@ -233,11 +245,43 @@ class MediaOutput:
 
     def callback_tasks(self) -> tuple[asyncio.Task[None], ...]:
         tasks = []
+        if self._bytes_callback_task is not None:
+            tasks.append(self._bytes_callback_task)
         if self._frame_callback_task is not None:
             tasks.append(self._frame_callback_task)
         if self._packet_callback_task is not None:
             tasks.append(self._packet_callback_task)
         return tuple(tasks)
+
+    async def wait_callbacks(self, timeout: Optional[float] = None) -> tuple[object, ...]:
+        """
+        Wait for configured callback consumers to finish.
+
+        Raises the first callback error, matching close().
+        """
+        callback_tasks = self.callback_tasks()
+        if not callback_tasks:
+            return ()
+        results = await asyncio.wait_for(
+            asyncio.gather(*callback_tasks, return_exceptions=True),
+            timeout=timeout,
+        )
+        self._collect_callback_errors(results)
+        if self._callback_errors:
+            raise self._callback_errors[0]
+        return tuple(results)
+
+    def _collect_callback_errors(self, results: Collection[object]) -> None:
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(
+                result, asyncio.CancelledError
+            ):
+                if not any(error is result for error in self._callback_errors):
+                    self._callback_errors.append(result)
+
+    async def _run_bytes_callback_loop(self, callback: MediaBytesCallback) -> None:
+        async for chunk in self.bytes():
+            await _maybe_await(callback(chunk))
 
     async def _run_frame_callback_loop(self, callback: MediaFrameCallback) -> None:
         async for frame in self.frames():
@@ -502,19 +546,19 @@ class MediaOutput:
                 return self._segments[relative]
             return None
 
-    async def close(self) -> None:
+    async def close(self, *, wait_callbacks: bool = True, timeout: Optional[float] = 10.0) -> None:
         callback_tasks = self.callback_tasks()
-        for task in callback_tasks:
-            if not task.done():
-                task.cancel()
         if callback_tasks:
+            if wait_callbacks and (timeout is None or timeout > 0):
+                try:
+                    await self.wait_callbacks(timeout=timeout)
+                except asyncio.TimeoutError:
+                    pass
+            for task in callback_tasks:
+                if not task.done():
+                    task.cancel()
             results = await asyncio.gather(*callback_tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, BaseException) and not isinstance(
-                    result, asyncio.CancelledError
-                ):
-                    if not any(error is result for error in self._callback_errors):
-                        self._callback_errors.append(result)
+            self._collect_callback_errors(results)
         for segment in self._segments:
             await segment.close()
         if self._sub is not None:
