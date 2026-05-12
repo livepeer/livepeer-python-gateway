@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import logging
+from contextlib import asynccontextmanager
 from typing import Any, Iterator
 
 import uvicorn
@@ -21,6 +22,7 @@ from .live_pipeline import (
     _run_passthrough,
 )
 from .pipeline import Pipeline, PipelineState
+from .registration import RegistrationConfig, deregister, register
 
 _LOG = logging.getLogger(__name__)
 
@@ -49,7 +51,9 @@ def _build_input_model(run_fn: Any, owner_name: str) -> tuple[type[BaseModel], b
 
     fields: dict[str, tuple[Any, Any]] = {}
     for param in params:
-        annotation = param.annotation if param.annotation is not inspect.Parameter.empty else Any
+        annotation = (
+            param.annotation if param.annotation is not inspect.Parameter.empty else Any
+        )
         default = param.default if param.default is not inspect.Parameter.empty else ...
         fields[param.name] = (annotation, default)
 
@@ -63,7 +67,11 @@ def _format_sse(generator: Iterator[Any]) -> Iterator[bytes]:
     """
     try:
         for chunk in generator:
-            payload = chunk.model_dump_json() if isinstance(chunk, BaseModel) else json.dumps(chunk)
+            payload = (
+                chunk.model_dump_json()
+                if isinstance(chunk, BaseModel)
+                else json.dumps(chunk)
+            )
             yield f"data: {payload}\n\n".encode()
     except Exception:
         _LOG.exception("Pipeline run() generator failed")
@@ -91,7 +99,9 @@ def _build_run_handler(
             raise HTTPException(status_code=500, detail="internal error")
 
         if is_generator:
-            return StreamingResponse(_format_sse(result), media_type="text/event-stream")
+            return StreamingResponse(
+                _format_sse(result), media_type="text/event-stream"
+            )
         return result
 
     if OutputModel is not None and not is_generator:
@@ -116,11 +126,40 @@ def _run_setup(pipeline: Pipeline | LivePipeline) -> None:
         raise
 
 
-def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
+def _make_lifespan(cfg: RegistrationConfig | None):
+    """Build the FastAPI lifespan that registers on startup and deregisters on shutdown.
+
+    Registration failures don't poison ``/health`` — the orch is the source of
+    truth for routing, and failures surface in container + orch logs.
+    """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        registered = False
+        if cfg is not None:
+            try:
+                await register(cfg)
+                registered = True
+            except RuntimeError as exc:
+                _LOG.error("registration failed: %s", exc)
+
+        try:
+            yield
+        finally:
+            if registered:
+                try:
+                    await deregister(cfg)
+                except Exception as exc:
+                    _LOG.warning("deregister failed: %s", exc)
+
+    return lifespan
+
+
+def _make_live_pipeline_app(pipeline: LivePipeline, lifespan=None) -> FastAPI:
     """Build a FastAPI app for a real-time ``LivePipeline``."""
     _run_setup(pipeline)
 
-    app = FastAPI(title=type(pipeline).__name__)
+    app = FastAPI(title=type(pipeline).__name__, lifespan=lifespan)
     app.state.pipeline = pipeline
 
     @app.post("/stream/start", summary="Start a stream session")
@@ -218,7 +257,7 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
     return app
 
 
-def _make_pipeline_app(pipeline: Pipeline) -> FastAPI:
+def _make_pipeline_app(pipeline: Pipeline, lifespan=None) -> FastAPI:
     """Build a FastAPI app for a request/response ``Pipeline`` (HTTP `/run`)."""
     _run_setup(pipeline)
 
@@ -234,7 +273,7 @@ def _make_pipeline_app(pipeline: Pipeline) -> FastAPI:
         pipeline, InputModel, OutputModel, explicit_basemodel, is_generator
     )
 
-    app = FastAPI(title=type(pipeline).__name__)
+    app = FastAPI(title=type(pipeline).__name__, lifespan=lifespan)
     app.state.pipeline = pipeline
 
     app.add_api_route(
@@ -252,15 +291,22 @@ def make_app(pipeline: Pipeline | LivePipeline) -> FastAPI:
     """Build a FastAPI app exposing ``pipeline`` over HTTP.
 
     Dispatches on `LivePipeline` vs `Pipeline` to register `/stream/*`
-    or `/run` respectively.
+    or `/run` respectively. Auto-registration with the orchestrator runs in
+    the FastAPI lifespan if ``LIVEPEER_*`` env vars are set
+    (see :meth:`RegistrationConfig.from_env`).
     """
+    cfg = RegistrationConfig.from_env()
+    lifespan = _make_lifespan(cfg)
     if isinstance(pipeline, LivePipeline):
-        return _make_live_pipeline_app(pipeline)
-    return _make_pipeline_app(pipeline)
+        return _make_live_pipeline_app(pipeline, lifespan=lifespan)
+    return _make_pipeline_app(pipeline, lifespan=lifespan)
 
 
 def serve(
-    pipeline: Pipeline | LivePipeline, *, host: str = "0.0.0.0", port: int = 5000
+    pipeline: Pipeline | LivePipeline,
+    *,
+    host: str = "0.0.0.0",
+    port: int = 5000,
 ) -> None:
     """Run the pipeline as an HTTP server on host:port."""
     uvicorn.run(make_app(pipeline), host=host, port=port)
