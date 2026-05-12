@@ -35,13 +35,13 @@ def _is_basemodel(t: Any) -> bool:
     return isinstance(t, type) and issubclass(t, BaseModel)
 
 
-def _build_input_model(predict_fn: Any, owner_name: str) -> tuple[type[BaseModel], bool]:
-    """Inspect predict()'s signature; return (InputModel, is_explicit_basemodel).
+def _build_input_model(run_fn: Any, owner_name: str) -> tuple[type[BaseModel], bool]:
+    """Inspect run()'s signature; return (InputModel, is_explicit_basemodel).
 
-    If predict() takes a single ``BaseModel`` parameter, use it directly.
+    If run() takes a single ``BaseModel`` parameter, use it directly.
     Otherwise build a model from the bare parameters via ``create_model``.
     """
-    sig = inspect.signature(predict_fn)
+    sig = inspect.signature(run_fn)
     params = [param for param in sig.parameters.values() if param.name != "self"]
 
     if len(params) == 1 and _is_basemodel(params[0].annotation):
@@ -66,12 +66,12 @@ def _format_sse(generator: Iterator[Any]) -> Iterator[bytes]:
             payload = chunk.model_dump_json() if isinstance(chunk, BaseModel) else json.dumps(chunk)
             yield f"data: {payload}\n\n".encode()
     except Exception:
-        _LOG.exception("Pipeline predict() generator failed")
+        _LOG.exception("Pipeline run() generator failed")
         yield b'data: {"error": "internal error"}\n\n'
     yield b"data: [DONE]\n\n"
 
 
-def _build_predict_handler(
+def _build_run_handler(
     pipeline: Pipeline,
     InputModel: type[BaseModel],
     OutputModel: type[BaseModel] | None,
@@ -81,13 +81,13 @@ def _build_predict_handler(
     def handler(body: InputModel):
         try:
             if explicit_basemodel:
-                result = pipeline.predict(body)
+                result = pipeline.run(body)
             else:
-                result = pipeline.predict(**body.model_dump())
+                result = pipeline.run(**body.model_dump())
         except HTTPException:
             raise
         except Exception:
-            _LOG.exception("Pipeline predict() failed")
+            _LOG.exception("Pipeline run() failed")
             raise HTTPException(status_code=500, detail="internal error")
 
         if is_generator:
@@ -219,18 +219,18 @@ def _make_live_pipeline_app(pipeline: LivePipeline) -> FastAPI:
 
 
 def _make_pipeline_app(pipeline: Pipeline) -> FastAPI:
-    """Build a FastAPI app for a request/response ``Pipeline`` (HTTP `/predict`)."""
+    """Build a FastAPI app for a request/response ``Pipeline`` (HTTP `/run`)."""
     _run_setup(pipeline)
 
-    is_generator = inspect.isgeneratorfunction(pipeline.predict)
+    is_generator = inspect.isgeneratorfunction(pipeline.run)
 
     InputModel, explicit_basemodel = _build_input_model(
-        pipeline.predict, type(pipeline).__name__
+        pipeline.run, type(pipeline).__name__
     )
-    return_annotation = inspect.signature(pipeline.predict).return_annotation
+    return_annotation = inspect.signature(pipeline.run).return_annotation
     OutputModel = return_annotation if _is_basemodel(return_annotation) else None
 
-    handler = _build_predict_handler(
+    handler = _build_run_handler(
         pipeline, InputModel, OutputModel, explicit_basemodel, is_generator
     )
 
@@ -238,10 +238,10 @@ def _make_pipeline_app(pipeline: Pipeline) -> FastAPI:
     app.state.pipeline = pipeline
 
     app.add_api_route(
-        "/predict",
+        "/run",
         handler,
         methods=["POST"],
-        summary="Run one inference",
+        summary="Run the pipeline",
     )
 
     _add_health_route(app, pipeline)
@@ -252,7 +252,7 @@ def make_app(pipeline: Pipeline | LivePipeline) -> FastAPI:
     """Build a FastAPI app exposing ``pipeline`` over HTTP.
 
     Dispatches on `LivePipeline` vs `Pipeline` to register `/stream/*`
-    or `/predict` respectively.
+    or `/run` respectively.
     """
     if isinstance(pipeline, LivePipeline):
         return _make_live_pipeline_app(pipeline)

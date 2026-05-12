@@ -21,7 +21,7 @@ echo "  registered."
 LIVEPEER_HDR=$(printf '%s' '{"request":"{}","parameters":"{}","capability":"hello-world","timeout_seconds":30}' | base64 -w0)
 
 echo "Sending request through gateway..."
-RESPONSE=$(curl -fsS -X POST "${GATEWAY_URL}/process/request/predict" \
+RESPONSE=$(curl -fsS -X POST "${GATEWAY_URL}/process/request/run" \
     -H "Livepeer: ${LIVEPEER_HDR}" \
     -H "Content-Type: application/json" \
     -d "{\"name\":\"${NAME}\"}")

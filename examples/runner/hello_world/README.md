@@ -41,9 +41,9 @@ sequenceDiagram
     participant orchestrator
     participant hello_world as hello_world<br/>(SDK container)
 
-    curl->>gateway: POST /process/request/predict
+    curl->>gateway: POST /process/request/run
     gateway->>orchestrator: forward (Livepeer-signed)
-    orchestrator->>hello_world: POST /predict {"name":"..."}
+    orchestrator->>hello_world: POST /run {"name":"..."}
     hello_world-->>orchestrator: {"message":"hello, ..."}
     orchestrator-->>gateway: response
     gateway-->>curl: response

@@ -26,7 +26,7 @@ transport modes:
 
 | Base class                                                        | Transport                                                          | Hook surface                                                                                                                          |
 | ----------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| [`Pipeline`](../src/livepeer_gateway/runner/pipeline.py)          | `POST /predict` — request/response, or SSE when `predict()` yields | `setup()`, `predict(**kwargs)`                                                                                                        |
+| [`Pipeline`](../src/livepeer_gateway/runner/pipeline.py)          | `POST /run` — request/response, or SSE when `run()` yields | `setup()`, `run(**kwargs)`                                                                                                            |
 | [`LivePipeline`](../src/livepeer_gateway/runner/live_pipeline.py) | trickle (BYOC live) over `POST /stream/{start,stop,params}`        | `setup()`, `on_stream_start`, `process_video`, `process_audio`, `on_params_update`, `on_stream_stop`, plus `emit_event` / `emit_data` |
 
 `make_app(pipeline)` dispatches on the base class. Health is `GET /health`
@@ -39,13 +39,13 @@ class Sentiment(Pipeline):
     def setup(self) -> None:
         self.model = load_model()
 
-    def predict(self, text: str) -> dict:
+    def run(self, text: str) -> dict:
         return {"label": self.model(text)}
 ```
 
-- `predict` signature is introspected. A single `BaseModel` parameter is
+- `run` signature is introspected. A single `BaseModel` parameter is
   used directly; bare params get wrapped in a generated model.
-- Generator `predict` is auto-detected → response framed as SSE.
+- Generator `run` is auto-detected → response framed as SSE.
 - Return type annotation, if `BaseModel`, becomes the OpenAPI response.
 
 Examples: [`hello_world`](../examples/runner/hello_world/),

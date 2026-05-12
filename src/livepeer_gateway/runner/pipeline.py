@@ -15,7 +15,13 @@ class PipelineState(str, Enum):
 
 
 class Pipeline(ABC):
-    """Base class for batch inference pipelines."""
+    """Base class for batch pipelines.
+
+    Override ``run()`` with the work the pipeline does — inference, generation,
+    transformation, agent invocation, anything that fits a request/response (or
+    streaming-response) shape. The method name is intentionally generic; the
+    class name and docstring describe the specific workload.
+    """
 
     _state: PipelineState = PipelineState.LOADING
 
@@ -27,9 +33,10 @@ class Pipeline(ABC):
         """
 
     @abstractmethod
-    def predict(self, **kwargs: Any) -> Any:
-        """Run one inference; kwargs are the JSON request body fields.
+    def run(self, **kwargs: Any) -> Any:
+        """Execute the pipeline once; kwargs are the JSON request body fields.
 
         Return any JSON-serialisable value, or raise to signal an error.
+        Yield to stream results as Server-Sent Events.
         """
         ...

@@ -26,7 +26,7 @@ class ChatPipeline(Pipeline):
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForCausalLM.from_pretrained(model_id)
 
-    def predict(self, params: ChatInput) -> Iterator[ChatChunk]:
+    def run(self, params: ChatInput) -> Iterator[ChatChunk]:
         messages = [
             {"role": "system", "content": params.system},
             {"role": "user", "content": params.prompt},

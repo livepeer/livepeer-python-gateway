@@ -9,7 +9,7 @@ the `setup()` lifecycle hook for one-time model loading. Built on
 [distilbert-base-uncased-finetuned-sst-2-english](https://huggingface.co/distilbert/distilbert-base-uncased-finetuned-sst-2-english) — small enough to run on CPU.
 
 A `Pipeline` subclass loads the model once in `setup()`, then classifies text
-on each `POST /predict`. Registered as a BYOC capability, called through the
+on each `POST /run`. Registered as a BYOC capability, called through the
 gateway, response flows back end-to-end.
 
 ## Run
@@ -47,9 +47,9 @@ sequenceDiagram
     participant orchestrator
     participant sentiment as sentiment<br/>(SDK container)
 
-    curl->>gateway: POST /process/request/predict
+    curl->>gateway: POST /process/request/run
     gateway->>orchestrator: forward (Livepeer-signed)
-    orchestrator->>sentiment: POST /predict {"text":"..."}
+    orchestrator->>sentiment: POST /run {"text":"..."}
     sentiment-->>orchestrator: {"label":"POSITIVE","score":0.99,...}
     orchestrator-->>gateway: response
     gateway-->>curl: response
@@ -78,7 +78,7 @@ Or manually:
 ```bash
 LIVEPEER_HDR=$(printf '%s' '{"request":"{}","parameters":"{}","capability":"sentiment","timeout_seconds":30}' | base64 -w0)
 
-curl -X POST http://localhost:9935/process/request/predict \
+curl -X POST http://localhost:9935/process/request/run \
     -H "Livepeer: ${LIVEPEER_HDR}" \
     -H "Content-Type: application/json" \
     -d '{"text":"distributed inference is the future"}'

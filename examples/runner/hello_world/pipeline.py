@@ -4,7 +4,7 @@ from livepeer_gateway.runner import Pipeline, serve
 
 
 class HelloWorld(Pipeline):
-    def predict(self, name: str = "world") -> dict:
+    def run(self, name: str = "world") -> dict:
         return {"message": f"hello, {name}"}
 
 

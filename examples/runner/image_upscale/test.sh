@@ -24,7 +24,7 @@ INPUT_B64=$(base64 -w0 < "${TEST_IMAGE}")
 LIVEPEER_HDR=$(printf '%s' '{"request":"{}","parameters":"{}","capability":"image-upscale","timeout_seconds":60}' | base64 -w0)
 
 echo "Sending request through gateway..."
-RESPONSE=$(curl -fsS -X POST "${GATEWAY_URL}/process/request/predict" \
+RESPONSE=$(curl -fsS -X POST "${GATEWAY_URL}/process/request/run" \
     -H "Livepeer: ${LIVEPEER_HDR}" \
     -H "Content-Type: application/json" \
     -d "{\"image\":\"${INPUT_B64}\"}")

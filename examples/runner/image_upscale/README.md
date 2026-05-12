@@ -10,7 +10,7 @@ I/O cleanly via Pydantic's `Base64Bytes`. Built on
 enough to run on CPU.
 
 A `Pipeline` subclass loads the model once in `setup()`, then takes a
-base64-encoded image on each `POST /predict` and returns the upscaled PNG.
+base64-encoded image on each `POST /run` and returns the upscaled PNG.
 The processor pads inputs to its window size before upscaling, so output
 dimensions are at least 2x input but may be slightly larger. Registered as
 a BYOC capability, called through the gateway, response flows back
@@ -51,9 +51,9 @@ sequenceDiagram
     participant orchestrator
     participant image_upscale as image_upscale<br/>(SDK container)
 
-    curl->>gateway: POST /process/request/predict
+    curl->>gateway: POST /process/request/run
     gateway->>orchestrator: forward (Livepeer-signed)
-    orchestrator->>image_upscale: POST /predict {"image":"<base64>"}
+    orchestrator->>image_upscale: POST /run {"image":"<base64>"}
     image_upscale-->>orchestrator: {"image":"<base64>","width":W,"height":H}
     orchestrator-->>gateway: response
     gateway-->>curl: response
@@ -76,7 +76,7 @@ the orchestrator never sees a "registered but not loaded" container.
 Both `image` fields use Pydantic's `Base64Bytes`:
 
 - **Input** — `image` is a base64-encoded string in the JSON body. Pydantic
-  decodes to `bytes` before `predict()` runs.
+  decodes to `bytes` before `run()` runs.
 - **Output** — `image` is `bytes` in the pipeline; Pydantic encodes back to
   base64 in the JSON response.
 
@@ -103,7 +103,7 @@ LIVEPEER_HDR=$(printf '%s' \
   '{"request":"{}","parameters":"{}","capability":"image-upscale","timeout_seconds":60}' \
   | base64 -w0)
 
-curl -X POST http://localhost:9935/process/request/predict \
+curl -X POST http://localhost:9935/process/request/run \
     -H "Livepeer: ${LIVEPEER_HDR}" \
     -H "Content-Type: application/json" \
     -d "{\"image\":\"${INPUT_B64}\"}" \

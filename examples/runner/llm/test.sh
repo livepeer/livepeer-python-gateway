@@ -21,7 +21,7 @@ LIVEPEER_HDR=$(printf '%s' '{"request":"{}","parameters":"{}","capability":"llm"
 
 echo "Sending chat request through gateway (streaming)..."
 # -N disables curl output buffering so chunks arrive as they're generated.
-RESPONSE=$(curl -fsSN -X POST "${GATEWAY_URL}/process/request/predict" \
+RESPONSE=$(curl -fsSN -X POST "${GATEWAY_URL}/process/request/run" \
     -H "Livepeer: ${LIVEPEER_HDR}" \
     -H "Content-Type: application/json" \
     -d "{\"prompt\":\"${PROMPT}\"}")

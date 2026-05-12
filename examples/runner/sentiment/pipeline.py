@@ -26,7 +26,7 @@ class SentimentAnalyzer(Pipeline):
             model="distilbert-base-uncased-finetuned-sst-2-english",
         )
 
-    def predict(self, params: SentimentInput) -> SentimentOutput:
+    def run(self, params: SentimentInput) -> SentimentOutput:
         result = self.model(params.text)[0]
         return SentimentOutput(
             label=result["label"],

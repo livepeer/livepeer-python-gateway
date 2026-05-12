@@ -29,7 +29,7 @@ class ImageUpscaler(Pipeline):
         self.processor = Swin2SRImageProcessor.from_pretrained(model_id)
         self.model = Swin2SRForImageSuperResolution.from_pretrained(model_id)
 
-    def predict(self, params: UpscaleInput) -> UpscaleOutput:
+    def run(self, params: UpscaleInput) -> UpscaleOutput:
         src = Image.open(io.BytesIO(params.image)).convert("RGB")
 
         inputs = self.processor(images=src, return_tensors="pt")

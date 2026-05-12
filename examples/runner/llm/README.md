@@ -6,12 +6,12 @@
 
 A streaming chat capability built on
 [Qwen2.5-0.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct) —
-small enough to run on CPU. Demonstrates the SDK's SSE pattern: `predict()`
+small enough to run on CPU. Demonstrates the SDK's SSE pattern: `run()`
 returns an iterator, the SDK detects the generator and frames each yielded
 value as a Server-Sent Event.
 
 A `Pipeline` subclass loads the model once in `setup()`, then streams tokens
-on each `POST /predict` via HuggingFace's `TextIteratorStreamer`. Registered
+on each `POST /run` via HuggingFace's `TextIteratorStreamer`. Registered
 as a BYOC capability, called through the gateway, response flows back end-to-end.
 
 ## Run
@@ -49,9 +49,9 @@ sequenceDiagram
     participant orchestrator
     participant llm as llm<br/>(SDK container)
 
-    curl->>gateway: POST /process/request/predict
+    curl->>gateway: POST /process/request/run
     gateway->>orchestrator: forward (Livepeer-signed)
-    orchestrator->>llm: POST /predict {"prompt":"..."}
+    orchestrator->>llm: POST /run {"prompt":"..."}
     loop each token
         llm-->>orchestrator: data: {"token":"..."}
         orchestrator-->>gateway: data: {"token":"..."}
@@ -72,7 +72,7 @@ Four compose services:
 
 ## Streaming contract
 
-`predict()` returns `Iterator[ChatChunk]`. The SDK detects the generator and
+`run()` returns `Iterator[ChatChunk]`. The SDK detects the generator and
 wraps the response with `Content-Type: text/event-stream`. Each yielded
 `ChatChunk` becomes an SSE event, terminated by `[DONE]`:
 
@@ -95,7 +95,7 @@ LIVEPEER_HDR=$(printf '%s' \
   '{"request":"{}","parameters":"{}","capability":"llm","timeout_seconds":120}' \
   | base64 -w0)
 
-curl -N -X POST http://localhost:9935/process/request/predict \
+curl -N -X POST http://localhost:9935/process/request/run \
     -H "Livepeer: ${LIVEPEER_HDR}" \
     -H 'Content-Type: application/json' \
     -d '{"prompt":"Tell me a joke"}'
