@@ -166,30 +166,14 @@ class LiveRunnerRegistration:
         proxy, not end-user clients. Apps should normally pass the incoming
         request so the orchestrator-provided session headers are used.
         """
-        if not self.runner_id:
-            raise LivepeerGatewayError("Live runner trickle channel create requires runner_id")
-        session_id, token = _resolve_session_credentials(session, session_token=session_token)
-        _validate_trickle_channel_requests(channels)
-        data = await asyncio.to_thread(
-            post_json,
-            _join_endpoint(
-                self.orchestrator_url,
-                (
-                    f"/runner/{quote(self.runner_id, safe='')}"
-                    f"/session/{quote(session_id, safe='')}"
-                    "/channels"
-                ),
-            ),
-            {"channels": channels},
-            headers={"Livepeer-Session-Token": token},
+        return await create_trickle_channels(
+            session,
+            channels,
+            orchestrator_url=self.orchestrator_url,
+            runner_id=self.runner_id,
+            session_token=session_token,
             timeout=self._timeout,
         )
-        response_channels = data.get("channels")
-        if not isinstance(response_channels, list) or not all(
-            _is_trickle_channel_response(channel) for channel in response_channels
-        ):
-            raise LivepeerGatewayError("Live runner trickle channel create response missing channels")
-        return cast(list[LiveRunnerTrickleChannel], response_channels)
 
     async def remove_trickle_channels(
         self,
@@ -204,32 +188,14 @@ class LiveRunnerRegistration:
         proxy, not end-user clients. Apps should normally pass the incoming
         request so the orchestrator-provided session headers are used.
         """
-        if not self.runner_id:
-            raise LivepeerGatewayError("Live runner trickle channel remove requires runner_id")
-        session_id, token = _resolve_session_credentials(session, session_token=session_token)
-        data = await asyncio.to_thread(
-            request_json,
-            _join_endpoint(
-                self.orchestrator_url,
-                (
-                    f"/runner/{quote(self.runner_id, safe='')}"
-                    f"/session/{quote(session_id, safe='')}"
-                    "/channels"
-                ),
-            ),
-            method="DELETE",
-            payload={"channels": channels},
-            headers={"Livepeer-Session-Token": token},
+        return await remove_trickle_channels(
+            session,
+            channels,
+            orchestrator_url=self.orchestrator_url,
+            runner_id=self.runner_id,
+            session_token=session_token,
             timeout=self._timeout,
         )
-        if not isinstance(data, dict):
-            raise LivepeerGatewayError(
-                f"Live runner trickle channel remove expected JSON object, got {type(data).__name__}"
-            )
-        deleted = data.get("deleted")
-        if not isinstance(deleted, list) or not all(isinstance(channel, str) for channel in deleted):
-            raise LivepeerGatewayError("Live runner trickle channel remove response missing deleted")
-        return deleted
 
     def _payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -351,6 +317,70 @@ async def register_runner(
     return await registration.start()
 
 
+async def create_trickle_channels(
+    session: str | LiveRunnerSessionRequest,
+    channels: list[LiveRunnerTrickleChannelRequest],
+    *,
+    orchestrator_url: str = "",
+    runner_id: str = "",
+    session_token: str = "",
+    timeout: float = 5.0,
+) -> list[LiveRunnerTrickleChannel]:
+    """Create trickle channels for a live runner app session."""
+    runner, session_id, token, control_url = _resolve_session_credentials(
+        session,
+        runner_id=runner_id,
+        session_token=session_token,
+    )
+    _validate_trickle_channel_requests(channels)
+    data = await asyncio.to_thread(
+        post_json,
+        _trickle_channels_endpoint(orchestrator_url, runner, session_id, control_url),
+        {"channels": channels},
+        headers={"Livepeer-Session-Token": token},
+        timeout=timeout,
+    )
+    response_channels = data.get("channels")
+    if not isinstance(response_channels, list) or not all(
+        _is_trickle_channel_response(channel) for channel in response_channels
+    ):
+        raise LivepeerGatewayError("Live runner trickle channel create response missing channels")
+    return cast(list[LiveRunnerTrickleChannel], response_channels)
+
+
+async def remove_trickle_channels(
+    session: str | LiveRunnerSessionRequest,
+    channels: list[str],
+    *,
+    orchestrator_url: str = "",
+    runner_id: str = "",
+    session_token: str = "",
+    timeout: float = 5.0,
+) -> list[str]:
+    """Remove trickle channels for a live runner app session."""
+    runner, session_id, token, control_url = _resolve_session_credentials(
+        session,
+        runner_id=runner_id,
+        session_token=session_token,
+    )
+    data = await asyncio.to_thread(
+        request_json,
+        _trickle_channels_endpoint(orchestrator_url, runner, session_id, control_url),
+        method="DELETE",
+        payload={"channels": channels},
+        headers={"Livepeer-Session-Token": token},
+        timeout=timeout,
+    )
+    if not isinstance(data, dict):
+        raise LivepeerGatewayError(
+            f"Live runner trickle channel remove expected JSON object, got {type(data).__name__}"
+        )
+    deleted = data.get("deleted")
+    if not isinstance(deleted, list) or not all(isinstance(channel, str) for channel in deleted):
+        raise LivepeerGatewayError("Live runner trickle channel remove response missing deleted")
+    return deleted
+
+
 def detect_process_gpu() -> Optional[LiveRunnerGPU]:
     for detector in (_detect_gpu_pynvml, _detect_gpu_torch, _detect_gpu_nvidia_smi):
         try:
@@ -378,6 +408,28 @@ def _join_endpoint(base_url: str, suffix: str) -> str:
     suffix_path = suffix if suffix.startswith("/") else f"/{suffix}"
     path = f"{parsed.path.rstrip('/')}{suffix_path}"
     return urlunparse((parsed.scheme, parsed.netloc, path, "", parsed.query, ""))
+
+
+def _trickle_channels_endpoint(
+    orchestrator_url: str,
+    runner_id: str,
+    session_id: str,
+    control_url: str = "",
+) -> str:
+    if control_url:
+        return _join_endpoint(control_url, "channels")
+    if not orchestrator_url:
+        raise LivepeerGatewayError("Live runner trickle channel request requires session_control")
+    if not runner_id:
+        raise LivepeerGatewayError("Live runner trickle channel request requires runner_id")
+    return _join_endpoint(
+        orchestrator_url,
+        (
+            f"/runner/{quote(runner_id, safe='')}"
+            f"/session/{quote(session_id, safe='')}"
+            "/channels"
+        ),
+    )
 
 
 def _parse_go_duration_s(value: object, *, default: Optional[float]) -> Optional[float]:
@@ -408,10 +460,13 @@ def _is_invalid_authorization_error(exc: LivepeerGatewayError) -> bool:
 def _resolve_session_credentials(
     session: str | LiveRunnerSessionRequest,
     *,
+    runner_id: str = "",
     session_token: str = "",
-) -> tuple[str, str]:
+) -> tuple[str, str, str, str]:
+    runner = runner_id.strip()
     session_id = ""
     token = session_token.strip()
+    control_url = ""
 
     if isinstance(session, str):
         session_id = session.strip()
@@ -420,18 +475,24 @@ def _resolve_session_credentials(
         if headers is not None:
             get = getattr(headers, "get", None)
             if callable(get):
+                runner_value = get("Livepeer-Runner-Route", "")
                 session_id_value = get("Livepeer-Session-Id", "")
                 token_value = get("Livepeer-Session-Token", "")
+                control_value = get("Livepeer-Session-Control", "")
+                if not runner and isinstance(runner_value, str):
+                    runner = runner_value.strip()
                 if isinstance(session_id_value, str):
                     session_id = session_id_value.strip()
                 if not token and isinstance(token_value, str):
                     token = token_value.strip()
+                if isinstance(control_value, str):
+                    control_url = control_value.strip()
 
     if not session_id:
         raise LivepeerGatewayError("Live runner trickle channel request requires session_id")
     if not token:
         raise LivepeerGatewayError("Live runner trickle channel request requires session_token")
-    return session_id, token
+    return runner, session_id, token, control_url
 
 
 def _validate_trickle_channel_requests(channels: list[LiveRunnerTrickleChannelRequest]) -> None:
