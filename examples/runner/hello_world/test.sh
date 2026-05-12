@@ -12,12 +12,20 @@ NAME="${NAME:-livepeer}"
 EXPECTED_MSG="hello, ${NAME}"
 
 echo "Waiting for capability registration..."
-if ! docker logs register_capability 2>&1 | grep -q "registered hello-world"; then
-    echo "FAIL: register_capability hasn't logged success."
+# SDK self-registers inside the hello_world container; look for the log line
+# emitted by livepeer_gateway.runner.registration.register().
+for _ in $(seq 30); do
+    if docker logs hello_world 2>&1 | grep -q "registered capability=hello-world"; then
+        echo "  registered."
+        break
+    fi
+    sleep 1
+done
+if ! docker logs hello_world 2>&1 | grep -q "registered capability=hello-world"; then
+    echo "FAIL: hello_world container hasn't logged registration success."
     echo "Make sure 'docker compose up -d --wait --build' completed first."
     exit 1
 fi
-echo "  registered."
 LIVEPEER_HDR=$(printf '%s' '{"request":"{}","parameters":"{}","capability":"hello-world","timeout_seconds":30}' | base64 -w0)
 
 echo "Sending request through gateway..."

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from livepeer_gateway.runner import LivePipeline, serve
 from livepeer_gateway.runner.frames import VideoFrame
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 
 # 128/128 = neutral 8-bit YUV chroma → no color, i.e. grayscale.

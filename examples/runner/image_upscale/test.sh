@@ -13,12 +13,20 @@ INPUT_WIDTH="${INPUT_WIDTH:-64}"
 INPUT_HEIGHT="${INPUT_HEIGHT:-64}"
 
 echo "Waiting for capability registration..."
-if ! docker logs register_capability 2>&1 | grep -q "registered image-upscale"; then
-    echo "FAIL: register_capability hasn't logged success."
-    echo "Make sure 'docker compose up -d --wait --build' completed first."
+# SDK self-registers inside the pipeline container; look for the log line
+# emitted by livepeer_gateway.runner.registration.register().
+for _ in $(seq 30); do
+    if docker logs image_upscale 2>&1 | grep -q "registered capability=image-upscale"; then
+        echo "  registered."
+        break
+    fi
+    sleep 1
+done
+if ! docker logs image_upscale 2>&1 | grep -q "registered capability=image-upscale"; then
+    echo "FAIL: image_upscale container hasn't logged registration success." >&2
+    echo "Make sure 'docker compose up -d --wait --build' completed first." >&2
     exit 1
 fi
-echo "  registered."
 
 INPUT_B64=$(base64 -w0 < "${TEST_IMAGE}")
 LIVEPEER_HDR=$(printf '%s' '{"request":"{}","parameters":"{}","capability":"image-upscale","timeout_seconds":60}' | base64 -w0)

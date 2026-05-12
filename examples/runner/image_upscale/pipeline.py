@@ -2,6 +2,7 @@
 
 import base64
 import io
+import logging
 
 import numpy as np
 import torch
@@ -10,6 +11,8 @@ from pydantic import Base64Bytes, BaseModel, Field
 from transformers import Swin2SRForImageSuperResolution, Swin2SRImageProcessor
 
 from livepeer_gateway.runner import Pipeline, serve
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 
 class UpscaleInput(BaseModel):

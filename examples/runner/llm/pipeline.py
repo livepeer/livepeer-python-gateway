@@ -1,5 +1,6 @@
 """LLM chat BYOC pipeline using HuggingFace transformers. Streams tokens via SSE."""
 
+import logging
 from threading import Thread
 from typing import Iterator
 
@@ -7,6 +8,8 @@ from pydantic import BaseModel, Field
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
 from livepeer_gateway.runner import Pipeline, serve
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 
 class ChatInput(BaseModel):

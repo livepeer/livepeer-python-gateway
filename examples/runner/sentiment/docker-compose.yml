@@ -51,25 +51,13 @@ services:
       timeout: 5s
       retries: 30
       start_period: 60s
+    environment:
+      LIVEPEER_ORCH_URL:        https://orchestrator:8935
+      LIVEPEER_ORCH_SECRET:     orch-secret
+      LIVEPEER_CAPABILITY_NAME: sentiment
+      LIVEPEER_CAPABILITY_URL:  http://sentiment:5000
     depends_on:
       - orchestrator
-
-  register_capability:
-    image: python:3.11-slim
-    container_name: register_capability
-    command: sh -c "pip install --quiet requests && python /app/register_capability.py"
-    volumes:
-      - ./register_capability.py:/app/register_capability.py:ro
-    environment:
-      ORCH_URL: https://orchestrator:8935
-      ORCH_SECRET: orch-secret
-      CAPABILITY_NAME: sentiment
-      CAPABILITY_URL: http://sentiment:5000
-    depends_on:
-      sentiment:
-        condition: service_healthy
-      orchestrator:
-        condition: service_started
 
 networks:
   default:

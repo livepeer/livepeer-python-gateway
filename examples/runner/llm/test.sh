@@ -11,12 +11,20 @@ GATEWAY_URL="${GATEWAY_URL:-http://localhost:9935}"
 PROMPT="${PROMPT:-Say hello in three words}"
 
 echo "Waiting for capability registration..."
-if ! docker logs register_capability 2>&1 | grep -q "registered llm"; then
-    echo "FAIL: register_capability hasn't logged success."
-    echo "Make sure 'docker compose up -d --wait --build' completed first."
+# SDK self-registers inside the pipeline container; look for the log line
+# emitted by livepeer_gateway.runner.registration.register().
+for _ in $(seq 30); do
+    if docker logs llm 2>&1 | grep -q "registered capability=llm"; then
+        echo "  registered."
+        break
+    fi
+    sleep 1
+done
+if ! docker logs llm 2>&1 | grep -q "registered capability=llm"; then
+    echo "FAIL: llm container hasn't logged registration success." >&2
+    echo "Make sure 'docker compose up -d --wait --build' completed first." >&2
     exit 1
 fi
-echo "  registered."
 LIVEPEER_HDR=$(printf '%s' '{"request":"{}","parameters":"{}","capability":"llm","timeout_seconds":120}' | base64 -w0)
 
 echo "Sending chat request through gateway (streaming)..."

@@ -1,11 +1,14 @@
 """Sentiment-analysis BYOC pipeline. Run via ``docker compose up`` — see README.md."""
 
+import logging
 from typing import Literal
 
 from pydantic import BaseModel, Field
 from transformers import pipeline as hf_pipeline
 
 from livepeer_gateway.runner import Pipeline, serve
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 
 class SentimentInput(BaseModel):

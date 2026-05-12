@@ -21,7 +21,7 @@ gateway, response flows back end-to-end.
 > compose down` in the other example's directory first.
 
 ```bash
-docker compose up -d --wait
+docker compose up -d --wait --build
 ./test.sh
 docker compose down
 ```
