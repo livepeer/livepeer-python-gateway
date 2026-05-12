@@ -43,6 +43,14 @@ class LiveRunnerSessionHeaders(Protocol):
 class LiveRunnerSessionRequest(Protocol):
     headers: LiveRunnerSessionHeaders
 
+
+@dataclass(frozen=True)
+class LiveRunnerSession:
+    session_id: str
+    app_url: str
+    session_url: str
+
+
 @dataclass(frozen=True)
 class LiveRunnerGPU:
     id: str = ""
@@ -281,8 +289,8 @@ async def register_runner(
     secret: str,
     runner_url: str,
     app: str,
-    price_per_unit: int,
-    pixels_per_unit: int,
+    price_per_unit: int = 0,
+    pixels_per_unit: int = 1,
     price_unit: str = "USD",
     runner_id: str = "",
     label: str = "",
@@ -379,6 +387,48 @@ async def remove_trickle_channels(
     if not isinstance(deleted, list) or not all(isinstance(channel, str) for channel in deleted):
         raise LivepeerGatewayError("Live runner trickle channel remove response missing deleted")
     return deleted
+
+
+async def reserve_runner_session(
+    session_url: str,
+    *,
+    timeout: float = 5.0,
+) -> LiveRunnerSession:
+    session_url = session_url.strip()
+    if not session_url:
+        raise LivepeerGatewayError("Live runner session reserve requires session_url")
+    data = await asyncio.to_thread(
+        post_json,
+        session_url,
+        {},
+        timeout=timeout,
+    )
+    session_id = data.get("session_id")
+    app_url = data.get("app_url")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise LivepeerGatewayError("Live runner session reserve response missing session_id")
+    if not isinstance(app_url, str) or not app_url.strip():
+        raise LivepeerGatewayError("Live runner session reserve response missing app_url")
+    return LiveRunnerSession(session_id=session_id.strip(), app_url=app_url.strip(), session_url=session_url)
+
+
+async def stop_runner_session(
+    session: LiveRunnerSession,
+    *,
+    timeout: float = 5.0,
+) -> None:
+    session_url = session.session_url.strip()
+    session_id = session.session_id.strip()
+    if not session_url:
+        raise LivepeerGatewayError("Live runner session stop requires session_url")
+    if not session_id:
+        raise LivepeerGatewayError("Live runner session stop requires session_id")
+    await asyncio.to_thread(
+        _post_empty,
+        _join_endpoint(session_url, f"/{quote(session_id, safe='')}/stop"),
+        {},
+        timeout,
+    )
 
 
 def detect_process_gpu() -> Optional[LiveRunnerGPU]:

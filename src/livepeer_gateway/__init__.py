@@ -49,6 +49,8 @@ from .live_runner import (
     create_trickle_channels,
     register_runner,
     remove_trickle_channels,
+    reserve_runner_session,
+    stop_runner_session,
 )
 from .orch_info import get_orch_info
 from .orchestrator import discover_orchestrators
@@ -79,6 +81,7 @@ __all__ = [
     "LiveRunnerGPU",
     "LiveRunnerPriceInfo",
     "LiveRunnerRegistration",
+    "LiveRunnerSession",
     "LivepeerGatewayError",
     "NoOrchestratorAvailableError",
     "OrchestratorRejection",
@@ -110,8 +113,10 @@ __all__ = [
     "create_trickle_channels",
     "register_runner",
     "remove_trickle_channels",
+    "reserve_runner_session",
     "start_lv2v",
     "start_scope",
+    "stop_runner_session",
     "TricklePublishError",
     "TricklePublisher",
     "TricklePublisherStats",
