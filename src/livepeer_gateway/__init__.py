@@ -41,7 +41,15 @@ from .media_output import (
 )
 from .errors import OrchestratorRejection
 from .lv2v import LiveVideoToVideo, StartJobRequest, start_lv2v
-from .live_runner import LiveRunnerGPU, LiveRunnerPriceInfo, LiveRunnerRegistration, register_runner
+from .live_runner import (
+    LiveRunnerGPU,
+    LiveRunnerPriceInfo,
+    LiveRunnerRegistration,
+    LiveRunnerSession,
+    create_trickle_channels,
+    register_runner,
+    remove_trickle_channels,
+)
 from .orch_info import get_orch_info
 from .orchestrator import discover_orchestrators
 from .remote_signer import PaymentSession
@@ -99,7 +107,9 @@ __all__ = [
     "SelectionCursor",
     "orchestrator_selector",
     "StartJobRequest",
+    "create_trickle_channels",
     "register_runner",
+    "remove_trickle_channels",
     "start_lv2v",
     "start_scope",
     "TricklePublishError",
