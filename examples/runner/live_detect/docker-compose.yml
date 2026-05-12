@@ -2,10 +2,8 @@ services:
   # Mirrors go-livepeer/doc/byoc.md: on-chain mode against a public Arbitrum
   # RPC, but `pricePerUnit 0` keeps the registration free — no balance ever
   # leaves the auto-generated keystore. No real chain interaction occurs.
-  #
-  # TODO: revert to `:master` once livepeer/go-livepeer#3925 merges.
   orchestrator:
-    image: livepeer/go-livepeer:trickle-next-endpoint
+    image: livepeer/go-livepeer:master
     container_name: orchestrator
     command: >
       -network arbitrum-one-mainnet
@@ -19,7 +17,7 @@ services:
 
   # TODO: see README — service removed after migration to the Python client SDK.
   gateway:
-    image: livepeer/go-livepeer:trickle-next-endpoint
+    image: livepeer/go-livepeer:master
     container_name: gateway
     command: >
       -network arbitrum-one-mainnet
