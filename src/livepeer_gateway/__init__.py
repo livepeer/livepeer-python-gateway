@@ -33,6 +33,7 @@ from .media_decode import (
     VideoDecodedMediaFrame,
 )
 from .media_output import (
+    MediaBytesCallback,
     MediaFrameCallback,
     MediaOutput,
     MediaOutputStats,
@@ -83,6 +84,7 @@ __all__ = [
     "AudioOutputConfig",
     "MediaOutput",
     "MediaOutputStats",
+    "MediaBytesCallback",
     "MediaFrameCallback",
     "MediaPacketCallback",
     "AudioDecodedMediaFrame",
