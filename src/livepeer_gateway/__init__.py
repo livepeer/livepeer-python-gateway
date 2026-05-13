@@ -52,6 +52,7 @@ from .live_runner import (
     reserve_runner_session,
     stop_runner_session,
 )
+from .discovery import discover_runners
 from .orch_info import get_orch_info
 from .orchestrator import discover_orchestrators
 from .remote_signer import PaymentSession
@@ -76,6 +77,7 @@ __all__ = [
     "CapabilityId",
     "build_capabilities",
     "discover_orchestrators",
+    "discover_runners",
     "get_orch_info",
     "LiveVideoToVideo",
     "LiveRunnerGPU",
