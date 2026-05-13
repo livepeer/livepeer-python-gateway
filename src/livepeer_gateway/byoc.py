@@ -599,7 +599,37 @@ def submit_training_job(
         timeout_seconds=req.timeout_seconds,
         job_id=job_id,
     )
-    livepeer_hdr = _build_livepeer_header(byoc_req, job_id)
+
+    # Sign the job request if signer is available — mirror submit_byoc_job.
+    # The orch's training handler runs setupOrchJob → verifyJobCreds (same
+    # code path as inference) and rejects with HTTP 400 "Could not verify
+    # job creds" if Livepeer-Job-Request / -Token are missing. The original
+    # unsigned path worked only against an older orch that lacked the
+    # /process/train/ route; the v2-with-training merge brings that route
+    # online and demands signed creds.
+    sender = ""
+    sig = ""
+    if signer_url:
+        try:
+            request_json = json.dumps(byoc_req.payload)
+            parameters_json = json.dumps(byoc_req.parameters) if byoc_req.parameters else ""
+            sign_resp = _sign_byoc_job(
+                signer_url=signer_url,
+                signer_headers=signer_headers,
+                job_id=job_id,
+                capability=req.capability,
+                request_json=request_json,
+                parameters_json=parameters_json,
+                timeout_seconds=req.timeout_seconds,
+            )
+            sender = sign_resp.get("sender", "")
+            sig = sign_resp.get("signature", "")
+            _LOG.info("Training job %s: signed by sender=%s", job_id,
+                      sender[:12] + "..." if sender else "none")
+        except Exception as e:
+            _LOG.warning("Training job %s: signing failed: %s", job_id, e)
+
+    livepeer_hdr = _build_livepeer_header(byoc_req, job_id, sender=sender, sig=sig)
 
     # Build training body
     body = json.dumps({
@@ -619,6 +649,31 @@ def submit_training_job(
             "Livepeer": livepeer_hdr,
             "Livepeer-Capability": req.capability,
         }
+
+        # On-chain payment ticket — same flow as inference. Required for
+        # the orch's verifyJobCreds + per-second metering to succeed.
+        # On staging the capability price is 0 so deduction is a no-op,
+        # but the orch still validates the ticket structure.
+        if signer_url:
+            try:
+                payment_headers = _create_byoc_payment(
+                    orch_origin=orch_origin,
+                    capability=req.capability,
+                    livepeer_hdr=livepeer_hdr,
+                    signer_url=signer_url,
+                    signer_headers=signer_headers,
+                    timeout=http_timeout,
+                )
+                headers.update(payment_headers)
+                _LOG.info("Training job %s: payment tickets created for %s",
+                          job_id, orch_origin)
+            except Exception as e:
+                _LOG.warning("Training job %s: payment creation failed for %s: %s",
+                             job_id, orch_origin, e)
+                rejections.append(OrchestratorRejection(
+                    url=orch_origin, reason=f"payment failed: {e}",
+                ))
+                continue
 
         http_req = Request(url, data=body, headers=headers, method="POST")
         _LOG.info("Training job %s: trying orchestrator %s", job_id, orch_origin)
