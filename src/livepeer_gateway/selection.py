@@ -7,7 +7,7 @@ from typing import Optional, Sequence, Tuple
 from . import lp_rpc_pb2
 from .errors import NoOrchestratorAvailableError, OrchestratorRejection
 from .orch_info import get_orch_info
-from .orchestrator import discover_orchestrators
+from .discovery import discover_orchestrators
 
 _LOG = logging.getLogger(__name__)
 

@@ -52,9 +52,8 @@ from .live_runner import (
     reserve_runner_session,
     stop_runner_session,
 )
-from .discovery import discover_runners
+from .discovery import discover_orchestrators, discover_runners
 from .orch_info import get_orch_info
-from .orchestrator import discover_orchestrators
 from .remote_signer import PaymentSession
 from .scope import start_scope
 from .selection import SelectionCursor, orchestrator_selector
