@@ -7,7 +7,7 @@ from .capabilities import CapabilityId, build_capabilities
 from .control import ControlConfig
 from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, OrchestratorRejection
 from .lv2v import LiveVideoToVideo, StartJobRequest
-from .orchestrator import _http_origin, post_json
+from .orchestrator import _http_origin, post_json_sync
 from .remote_signer import PaymentSession
 from .selection import orchestrator_selector
 from .token import parse_token
@@ -135,7 +135,7 @@ def start_scope(
             url = f"{base}/scope"
             payload = req.to_json()
             payload.setdefault("model_id", "scope")
-            data = post_json(url, payload, headers=headers, timeout=timeout)
+            data = post_json_sync(url, payload, headers=headers, timeout=timeout)
             job = LiveVideoToVideo.from_json(
                 data,
                 signer_url=resolved_signer_url,

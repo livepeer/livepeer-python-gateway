@@ -5,13 +5,12 @@ import logging
 import os
 import re
 import shutil
-import ssl
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol, TypedDict, cast
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse, urlunparse
-from urllib.request import Request, urlopen
+
+import aiohttp
 
 from .errors import LivepeerGatewayError
 from .orchestrator import post_json, request_json
@@ -146,8 +145,7 @@ class LiveRunnerRegistration:
                 _LOG.warning("Skipping live runner unregister without heartbeat secret")
                 return
             try:
-                await asyncio.to_thread(
-                    _post_empty,
+                await _post_empty(
                     _join_endpoint(self.orchestrator_url, f"/runners/{quote(self.runner_id, safe='')}/unregister"),
                     {"Authorization": secret},
                     self._timeout,
@@ -274,8 +272,7 @@ class LiveRunnerRegistration:
             raise LivepeerGatewayError("Live runner heartbeat response missing heartbeat_secret")
 
     async def _post_heartbeat(self, auth: str) -> dict[str, Any]:
-        return await asyncio.to_thread(
-            post_json,
+        return await post_json(
             _join_endpoint(self.orchestrator_url, "/runners/heartbeat"),
             self._payload(),
             headers={"Authorization": auth},
@@ -341,8 +338,7 @@ async def create_trickle_channels(
         session_token=session_token,
     )
     _validate_trickle_channel_requests(channels)
-    data = await asyncio.to_thread(
-        post_json,
+    data = await post_json(
         _trickle_channels_endpoint(orchestrator_url, runner, session_id, control_url),
         {"channels": channels},
         headers={"Livepeer-Session-Token": token},
@@ -371,8 +367,7 @@ async def remove_trickle_channels(
         runner_id=runner_id,
         session_token=session_token,
     )
-    data = await asyncio.to_thread(
-        request_json,
+    data = await request_json(
         _trickle_channels_endpoint(orchestrator_url, runner, session_id, control_url),
         method="DELETE",
         payload={"channels": channels},
@@ -397,8 +392,7 @@ async def reserve_runner_session(
     session_url = session_url.strip()
     if not session_url:
         raise LivepeerGatewayError("Live runner session reserve requires session_url")
-    data = await asyncio.to_thread(
-        post_json,
+    data = await post_json(
         session_url,
         {},
         timeout=timeout,
@@ -423,8 +417,7 @@ async def stop_runner_session(
         raise LivepeerGatewayError("Live runner session stop requires session_url")
     if not session_id:
         raise LivepeerGatewayError("Live runner session stop requires session_id")
-    await asyncio.to_thread(
-        _post_empty,
+    await _post_empty(
         _join_endpoint(session_url, f"/{quote(session_id, safe='')}/stop"),
         {},
         timeout,
@@ -564,17 +557,23 @@ def _is_trickle_channel_response(value: object) -> bool:
     )
 
 
-def _post_empty(url: str, headers: dict[str, str], timeout: float) -> None:
-    req = Request(url, data=b"", headers=headers, method="POST")
-    ssl_ctx = ssl._create_unverified_context()
+async def _post_empty(url: str, headers: dict[str, str], timeout: float) -> None:
     try:
-        with urlopen(req, timeout=timeout, context=ssl_ctx) as resp:
-            resp.read()
-    except HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        raise LivepeerGatewayError(f"HTTP empty POST error: HTTP {e.code}; body={body!r}") from e
-    except URLError as e:
-        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'reason', e)}") from e
+        client_timeout = aiohttp.ClientTimeout(total=timeout)
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(timeout=client_timeout, connector=connector) as session:
+            async with session.post(url, data=b"", headers=headers) as resp:
+                body = await resp.text()
+                if resp.status >= 400:
+                    raise LivepeerGatewayError(
+                        f"HTTP empty POST error: HTTP {resp.status}; body={body!r}"
+                    )
+    except LivepeerGatewayError:
+        raise
+    except getattr(aiohttp, "ClientConnectorError", ()) as e:
+        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
 
 
 def _detect_gpu_pynvml() -> Optional[LiveRunnerGPU]:
