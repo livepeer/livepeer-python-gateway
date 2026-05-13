@@ -14,12 +14,27 @@ class OrchestratorRejection:
     reason: str
 
 
+@dataclass
+class RunnerRejection:
+    """Records a single runner that was tried and rejected."""
+    url: str
+    reason: str
+
+
 class NoOrchestratorAvailableError(LivepeerGatewayError):
     """Raised when no orchestrator could be selected."""
 
     def __init__(self, message: str, rejections: list[OrchestratorRejection] | None = None) -> None:
         super().__init__(message)
         self.rejections: list[OrchestratorRejection] = rejections or []
+
+
+class NoRunnerAvailableError(LivepeerGatewayError):
+    """Raised when no runner could be selected."""
+
+    def __init__(self, message: str, rejections: list[RunnerRejection] | None = None) -> None:
+        super().__init__(message)
+        self.rejections: list[RunnerRejection] = rejections or []
 
 
 class SignerRefreshRequired(LivepeerGatewayError):

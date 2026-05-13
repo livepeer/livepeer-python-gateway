@@ -44,10 +44,23 @@ class LiveRunnerSessionRequest(Protocol):
 
 
 @dataclass(frozen=True)
+class LiveRunnerInstance:
+    """A normalized live runner discovered from an orchestrator entry."""
+
+    url: str
+    app: str
+    runner_id: str
+    mode: str
+    orchestrator_url: str
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class LiveRunnerSession:
     session_id: str
     app_url: str
     session_url: str
+    runner: Optional[LiveRunnerInstance] = None
 
 
 @dataclass(frozen=True)
@@ -385,11 +398,12 @@ async def remove_trickle_channels(
 
 
 async def reserve_runner_session(
-    session_url: str,
+    session_url: str = "",
     *,
+    runner: Optional[LiveRunnerInstance] = None,
     timeout: float = 5.0,
 ) -> LiveRunnerSession:
-    session_url = session_url.strip()
+    session_url = session_url.strip() or (runner.url.strip() if runner is not None else "")
     if not session_url:
         raise LivepeerGatewayError("Live runner session reserve requires session_url")
     data = await post_json(
@@ -403,7 +417,12 @@ async def reserve_runner_session(
         raise LivepeerGatewayError("Live runner session reserve response missing session_id")
     if not isinstance(app_url, str) or not app_url.strip():
         raise LivepeerGatewayError("Live runner session reserve response missing app_url")
-    return LiveRunnerSession(session_id=session_id.strip(), app_url=app_url.strip(), session_url=session_url)
+    return LiveRunnerSession(
+        session_id=session_id.strip(),
+        app_url=app_url.strip(),
+        session_url=session_url,
+        runner=runner,
+    )
 
 
 async def stop_runner_session(
