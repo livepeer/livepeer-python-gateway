@@ -30,6 +30,8 @@ TINT_V=180
 echo "Waiting for capability registration..."
 # SDK self-registers inside the pipeline container; look for the log line
 # emitted by livepeer_gateway.runner.registration.register().
+# TODO: switch to `curl /status` once the SDK exposes a status endpoint
+# (Phase 2 of auto-registration). Structured check beats log grep.
 for _ in $(seq 30); do
     if docker logs live_tint 2>&1 | grep -q "registered capability=live-tint"; then
         echo "  registered."

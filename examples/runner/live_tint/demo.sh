@@ -47,12 +47,22 @@ case "$(uname -s)" in
 esac
 
 echo "Waiting for capability registration..."
-if ! docker logs register_capability 2>&1 | grep -q "registered live-tint"; then
-    echo "FAIL: register_capability hasn't logged success."
-    echo "Make sure 'docker compose up -d --wait --build' completed first."
+# SDK self-registers inside the pipeline container; look for the log line
+# emitted by livepeer_gateway.runner.registration.register().
+# TODO: switch to `curl /status` once the SDK exposes a status endpoint
+# (Phase 2 of auto-registration). Structured check beats log grep.
+for _ in $(seq 30); do
+    if docker logs live_tint 2>&1 | grep -q "registered capability=live-tint"; then
+        echo "  registered."
+        break
+    fi
+    sleep 1
+done
+if ! docker logs live_tint 2>&1 | grep -q "registered capability=live-tint"; then
+    echo "FAIL: live_tint container hasn't logged registration success." >&2
+    echo "Make sure 'docker compose up -d --wait --build' completed first." >&2
     exit 1
 fi
-echo "  registered."
 
 # `parameters` is a stringified JSON; enable_video_{ingress,egress} drive
 # trickle channel creation (go-livepeer byoc/types.go). 600s timeout for long demos.

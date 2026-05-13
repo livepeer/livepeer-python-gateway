@@ -37,6 +37,7 @@ case "$(uname -s)" in
     Linux*)
         VIDEO_INPUT=(-f v4l2 -framerate 15 -video_size 640x480 -i "${VIDEO_DEVICE:-/dev/video0}")
         AUDIO_INPUT=(-f pulse -i "${PULSE_SOURCE:-default}")
+        AUDIO_MAP="1:a"
         ;;
     Darwin*)
         # AVFoundation: <video>:<audio>. Enumerate via:
@@ -44,6 +45,7 @@ case "$(uname -s)" in
         VIDEO_INPUT=(-f avfoundation -framerate 15 -video_size 640x480 \
                      -i "${MAC_VIDEO_DEVICE:-0}:${MAC_AUDIO_DEVICE:-0}")
         AUDIO_INPUT=()
+        AUDIO_MAP="0:a"
         ;;
     *)
         echo "Unsupported platform $(uname -s); only Linux and macOS are wired up." >&2
@@ -52,12 +54,22 @@ case "$(uname -s)" in
 esac
 
 echo "Waiting for capability registration..."
-if ! docker logs register_capability 2>&1 | grep -q "registered live-detect"; then
-    echo "FAIL: register_capability hasn't logged success."
-    echo "Make sure 'docker compose up -d --wait --build' completed first."
+# SDK self-registers inside the pipeline container; look for the log line
+# emitted by livepeer_gateway.runner.registration.register().
+# TODO: switch to `curl /status` once the SDK exposes a status endpoint
+# (Phase 2 of auto-registration). Structured check beats log grep.
+for _ in $(seq 30); do
+    if docker logs live_detect 2>&1 | grep -q "registered capability=live-detect"; then
+        echo "  registered."
+        break
+    fi
+    sleep 1
+done
+if ! docker logs live_detect 2>&1 | grep -q "registered capability=live-detect"; then
+    echo "FAIL: live_detect container hasn't logged registration success." >&2
+    echo "Make sure 'docker compose up -d --wait --build' completed first." >&2
     exit 1
 fi
-echo "  registered."
 
 # enable_data_output makes the gateway create the data trickle channel and
 # proxy it as SSE on /process/stream/{id}/data. Long timeout for a chatty demo.
@@ -100,7 +112,7 @@ sleep 1
 "${FFMPEG}" -loglevel error -re \
     "${VIDEO_INPUT[@]}" \
     "${AUDIO_INPUT[@]}" \
-    -map 0:v -map "${#AUDIO_INPUT[@]:+1}:a" \
+    -map 0:v -map "${AUDIO_MAP}" \
     -c:v libx264 -preset ultrafast -tune zerolatency -g 15 \
     -c:a aac -ar 48000 \
     -t "${DURATION}" -f flv "${RTMP_IN}" </dev/null 2>/dev/null &

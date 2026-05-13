@@ -47,12 +47,22 @@ case "$(uname -s)" in
 esac
 
 echo "Waiting for capability registration..."
-if ! docker logs register_capability 2>&1 | grep -q "registered live-transcribe"; then
-    echo "FAIL: register_capability hasn't logged success."
-    echo "Make sure 'docker compose up -d --wait --build' completed first."
+# SDK self-registers inside the pipeline container; look for the log line
+# emitted by livepeer_gateway.runner.registration.register().
+# TODO: switch to `curl /status` once the SDK exposes a status endpoint
+# (Phase 2 of auto-registration). Structured check beats log grep.
+for _ in $(seq 30); do
+    if docker logs live_transcribe 2>&1 | grep -q "registered capability=live-transcribe"; then
+        echo "  registered."
+        break
+    fi
+    sleep 1
+done
+if ! docker logs live_transcribe 2>&1 | grep -q "registered capability=live-transcribe"; then
+    echo "FAIL: live_transcribe container hasn't logged registration success." >&2
+    echo "Make sure 'docker compose up -d --wait --build' completed first." >&2
     exit 1
 fi
-echo "  registered."
 
 # enable_data_output makes the gateway create the data trickle channel and
 # proxy it as SSE on /process/stream/{id}/data. Long timeout for a chatty demo.
