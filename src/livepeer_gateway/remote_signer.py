@@ -212,6 +212,10 @@ class PaymentSession:
                 "orchestrator": orch_b64,
                 "type": self._type,
             }
+            if self._capabilities is not None:
+                payload["capabilities"] = base64.b64encode(
+                    self._capabilities.SerializeToString()
+                ).decode("ascii")
             if self._manifest_id is not None:
                 payload["ManifestID"] = self._manifest_id
             if self._state is not None:

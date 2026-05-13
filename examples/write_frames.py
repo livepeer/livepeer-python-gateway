@@ -25,6 +25,11 @@ def _parse_args() -> argparse.Namespace:
         help="Remote signer URL (no path). If omitted, runs in offchain mode.",
     )
     p.add_argument(
+        "--token",
+        default=None,
+        help="Base64-encoded gateway token (signer, discovery, headers); overrides missing signer/orchestrator.",
+    )
+    p.add_argument(
         "--model",
         default=DEFAULT_MODEL_ID,
         help=f"Pipeline model to start via /live-video-to-video. Default: {DEFAULT_MODEL_ID}",
@@ -52,6 +57,7 @@ async def main() -> None:
         job = start_lv2v(
             args.orchestrator,
             StartJobRequest(model_id=args.model),
+            token=args.token,
             signer_url=args.signer,
         )
 
