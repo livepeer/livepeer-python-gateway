@@ -7,7 +7,7 @@ from .capabilities import CapabilityId, build_capabilities
 from .control import ControlConfig
 from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, OrchestratorRejection
 from .lv2v import LiveVideoToVideo, StartJobRequest
-from .orchestrator import _http_origin, post_json_sync
+from .http import _http_origin, post_json_sync
 from .remote_signer import PaymentSession
 from .selection import orchestrator_selector
 from .token import parse_token

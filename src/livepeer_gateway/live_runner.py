@@ -13,7 +13,7 @@ from urllib.parse import quote, urlparse, urlunparse
 import aiohttp
 
 from .errors import LivepeerGatewayError
-from .orchestrator import post_json, request_json
+from .http import post_json, request_json
 
 _LOG = logging.getLogger(__name__)
 

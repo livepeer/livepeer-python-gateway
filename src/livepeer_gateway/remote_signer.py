@@ -78,7 +78,7 @@ def get_orch_info_sig(
     Fetch signer material exactly once per (signer_url, headers) combination
     for the lifetime of the process. Subsequent calls return cached data.
     """
-    from .orchestrator import _extract_error_message, _http_origin, post_json_sync as post_json
+    from .http import _extract_error_message, _http_origin, post_json_sync as post_json
 
     # check for offchain mode
     if not signer_url:
@@ -201,7 +201,7 @@ class PaymentSession:
             return GetPaymentResponse(seg_creds=seg, payment="")
 
         def _payment_request() -> GetPaymentResponse:
-            from .orchestrator import _http_origin, post_json_sync as post_json
+            from .http import _http_origin, post_json_sync as post_json
 
             base = _http_origin(self._signer_url)
             url = f"{base}/generate-live-payment"
@@ -272,7 +272,7 @@ class PaymentSession:
         Generate a payment (via get_payment) and forward it
         to the orchestrator via POST {orch}/payment.
         """
-        from .orchestrator import _extract_error_message, _http_origin
+        from .http import _extract_error_message, _http_origin
 
         p = self.get_payment()
         if not self._info.transcoder:
