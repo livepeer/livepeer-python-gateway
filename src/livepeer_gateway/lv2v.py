@@ -24,7 +24,7 @@ from .media_output import (
     MediaPacketCallback,
 )
 from .media_publish import MediaPublish, MediaPublishConfig
-from .orchestrator import _http_origin, post_json
+from .orchestrator import _http_origin, post_json_sync
 from .selection import orchestrator_selector
 from .remote_signer import PaymentSession
 from .token import parse_token
@@ -373,7 +373,7 @@ def start_lv2v(
 
             base = _http_origin(info.transcoder)
             url = f"{base}/live-video-to-video"
-            data = post_json(url, req.to_json(), headers=headers, timeout=timeout)
+            data = post_json_sync(url, req.to_json(), headers=headers, timeout=timeout)
             job = LiveVideoToVideo.from_json(
                 data,
                 signer_url=resolved_signer_url,
