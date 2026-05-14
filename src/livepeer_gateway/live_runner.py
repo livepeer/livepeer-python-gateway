@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -12,12 +13,14 @@ from urllib.parse import quote, urlparse, urlunparse
 
 import aiohttp
 
-from .errors import LivepeerGatewayError
+from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
 from .http import post_json, request_json
+from .remote_signer import LivePaymentSession, _freeze_headers, get_signer_info
 
 _LOG = logging.getLogger(__name__)
 
 _DEFAULT_HEARTBEAT_INTERVAL_S = 5.0
+_LIVE_RUNNER_PAYER_ADDRESS_HEADER = "Livepeer-Payer-Address"
 
 # golang format duration, eg "10s"
 _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u00b5s|ms|s|m|h)\s*$")
@@ -61,6 +64,7 @@ class LiveRunnerSession:
     app_url: str
     session_url: str
     runner: Optional[LiveRunnerInstance] = None
+    manifest_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -401,16 +405,166 @@ async def reserve_runner_session(
     session_url: str = "",
     *,
     runner: Optional[LiveRunnerInstance] = None,
+    signer_url: Optional[str] = None,
+    signer_headers: Optional[dict[str, str]] = None,
     timeout: float = 5.0,
+    max_payment_challenge_retries: int = 3,
 ) -> LiveRunnerSession:
     session_url = session_url.strip() or (runner.url.strip() if runner is not None else "")
     if not session_url:
         raise LivepeerGatewayError("Live runner session reserve requires session_url")
-    data = await post_json(
-        session_url,
-        {},
+    challenge_headers: Optional[dict[str, str]] = None
+    if signer_url:
+        signer = await get_signer_info(signer_url, _freeze_headers(signer_headers))
+        challenge_headers = {
+            _LIVE_RUNNER_PAYER_ADDRESS_HEADER: cast(str, signer.address),
+        }
+    attempts = max(0, int(max_payment_challenge_retries)) + 1
+    for attempt in range(attempts):
+        try:
+            request_kwargs: dict[str, Any] = {"timeout": timeout}
+            if challenge_headers is not None:
+                request_kwargs["headers"] = challenge_headers
+            data = await post_json(
+                session_url,
+                {},
+                **request_kwargs,
+            )
+            return _live_runner_session_from_json(
+                data,
+                session_url=session_url,
+                runner=runner,
+                manifest_id="",
+            )
+        except LivepeerHTTPError as e:
+            if e.status_code != 402:
+                raise
+            if not signer_url:
+                raise LivepeerGatewayError("Live runner paid reservation requires signer_url") from e
+            challenge = _parse_runner_payment_challenge(e)
+
+        try:
+            data = await _pay_runner_reservation_challenge(
+                session_url,
+                challenge,
+                signer_url=signer_url,
+                signer_headers=signer_headers,
+                timeout=timeout,
+            )
+            return _live_runner_session_from_json(
+                data,
+                session_url=session_url,
+                runner=runner,
+                manifest_id=challenge.manifest_id,
+            )
+        except SignerRefreshRequired as e:
+            if attempt + 1 >= attempts:
+                raise
+            # Could happen if embedded payment params expire; just retry in this case.
+            _LOG.info(
+                "Live runner reservation payment challenge needs refresh; retrying with a fresh challenge: %s",
+                e,
+            )
+
+    raise LivepeerGatewayError("Live runner session reserve exhausted payment challenge retries")
+
+
+@dataclass(frozen=True)
+class _RunnerPaymentChallenge:
+    payment_params: str
+    orchestrator_url: str
+    manifest_id: str
+
+
+def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentChallenge:
+    try:
+        data = json.loads(error.body)
+    except json.JSONDecodeError as e:
+        raise LivepeerGatewayError("Live runner payment challenge response was not valid JSON") from e
+    if not isinstance(data, dict):
+        raise LivepeerGatewayError("Live runner payment challenge response must be a JSON object")
+
+    payment_params = data.get("payment_params")
+    orchestrator_url = data.get("orchestrator")
+    manifest_id = data.get("manifest_id")
+    if not isinstance(payment_params, str) or not payment_params:
+        raise LivepeerGatewayError("Live runner payment challenge missing payment_params")
+    if not isinstance(orchestrator_url, str) or not orchestrator_url:
+        raise LivepeerGatewayError("Live runner payment challenge missing orchestrator")
+    if not isinstance(manifest_id, str) or not manifest_id:
+        raise LivepeerGatewayError("Live runner payment challenge missing manifest_id")
+
+    return _RunnerPaymentChallenge(
+        payment_params=payment_params,
+        orchestrator_url=orchestrator_url,
+        manifest_id=manifest_id,
+    )
+
+
+@dataclass(frozen=True)
+class _RunnerPayment:
+    payment: str
+    seg_creds: str
+
+
+async def _get_runner_payment(
+    challenge: _RunnerPaymentChallenge,
+    *,
+    signer_url: str,
+    signer_headers: Optional[dict[str, str]],
+    timeout: float,
+) -> _RunnerPayment:
+    del timeout
+    session = LivePaymentSession(
+        signer_url,
+        signer_headers=signer_headers,
+        type="lv2v",
+        payment_params=challenge.payment_params,
+        manifest_id=challenge.manifest_id,
+    )
+    data = await session.get_payment()
+    if not data.payment:
+        raise LivepeerGatewayError("Live runner payment response missing payment")
+    if not data.seg_creds:
+        raise LivepeerGatewayError("Live runner payment response missing segCreds")
+    return _RunnerPayment(payment=data.payment, seg_creds=data.seg_creds)
+
+
+async def _pay_runner_reservation_challenge(
+    session_url: str,
+    challenge: _RunnerPaymentChallenge,
+    *,
+    signer_url: Optional[str],
+    signer_headers: Optional[dict[str, str]],
+    timeout: float,
+) -> dict[str, Any]:
+    if not signer_url:
+        raise LivepeerGatewayError("Live runner paid reservation requires signer_url")
+
+    payment = await _get_runner_payment(
+        challenge,
+        signer_url=signer_url,
+        signer_headers=signer_headers,
         timeout=timeout,
     )
+    return await post_json(
+        session_url,
+        {},
+        headers={
+            "Livepeer-Payment": payment.payment,
+            "Livepeer-Segment": payment.seg_creds,
+        },
+        timeout=timeout,
+    )
+
+
+def _live_runner_session_from_json(
+    data: dict[str, Any],
+    *,
+    session_url: str,
+    runner: Optional[LiveRunnerInstance],
+    manifest_id: str,
+) -> LiveRunnerSession:
     session_id = data.get("session_id")
     app_url = data.get("app_url")
     if not isinstance(session_id, str) or not session_id.strip():
@@ -422,6 +576,7 @@ async def reserve_runner_session(
         app_url=app_url.strip(),
         session_url=session_url,
         runner=runner,
+        manifest_id=manifest_id,
     )
 
 

@@ -11,10 +11,13 @@ from urllib.request import Request, urlopen
 import aiohttp
 
 from .errors import (
+    LivepeerHTTPError,
     LivepeerGatewayError,
     SignerRefreshRequired,
     SkipPaymentCycle,
 )
+
+_REFRESH_SESSION_ORCHESTRATOR_URL_HEADER = "Livepeer-Orchestrator-URL"
 
 
 def _truncate(s: str, max_len: int = 2000) -> str:
@@ -73,6 +76,14 @@ def _extract_error_message(e: HTTPError) -> str:
     return _extract_error_message_from_body(_http_error_body(e))
 
 
+def _header_value(headers: dict[str, str], name: str) -> Optional[str]:
+    needle = name.lower()
+    for key, value in headers.items():
+        if key.lower() == needle and isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _json_request_parts(
     url: str,
     *,
@@ -95,19 +106,28 @@ def _json_request_parts(
     return resolved_method, req_headers, body
 
 
-def _raise_http_json_error(status: int, url: str, body: str = "") -> None:
+def _raise_http_json_error(
+    status: int,
+    url: str,
+    body: str = "",
+    headers: Optional[dict[str, str]] = None,
+) -> None:
     message = _extract_error_message_from_body(body)
     body_part = f"; body={message!r}" if message else ""
     if status == 480:
         raise SignerRefreshRequired(
-            f"Signer returned HTTP 480 (refresh session required) (url={url}){body_part}"
+            f"Signer returned HTTP 480 (refresh session required) (url={url}){body_part}",
+            orchestrator_url=_header_value(headers or {}, _REFRESH_SESSION_ORCHESTRATOR_URL_HEADER),
         )
     if status == 482:
         raise SkipPaymentCycle(
             f"Signer returned HTTP 482 (skip payment cycle) (url={url}){body_part}"
         )
-    raise LivepeerGatewayError(
-        f"HTTP JSON error: HTTP {status} from endpoint (url={url}){body_part}"
+    raise LivepeerHTTPError(
+        status,
+        url,
+        body,
+        f"HTTP {status} from endpoint (url={url}){body_part}",
     )
 
 
@@ -150,18 +170,26 @@ def request_json_sync(
             raw = resp.read().decode("utf-8")
         data: Any = json.loads(raw)
     except HTTPError as e:
-        body_text = _extract_error_message(e)
+        raw_body = _http_error_body(e)
+        body_text = _extract_error_message_from_body(raw_body)
         body_part = f"; body={body_text!r}" if body_text else ""
         if e.code == 480:
             raise SignerRefreshRequired(
-                f"Signer returned HTTP 480 (refresh session required) (url={url}){body_part}"
+                f"Signer returned HTTP 480 (refresh session required) (url={url}){body_part}",
+                orchestrator_url=_header_value(
+                    dict(e.headers.items()),
+                    _REFRESH_SESSION_ORCHESTRATOR_URL_HEADER,
+                ),
             ) from e
         if e.code == 482:
             raise SkipPaymentCycle(
                 f"Signer returned HTTP 482 (skip payment cycle) (url={url}){body_part}"
             ) from e
-        raise LivepeerGatewayError(
-            f"HTTP JSON error: HTTP {e.code} from endpoint (url={url}){body_part}"
+        raise LivepeerHTTPError(
+            e.code,
+            url,
+            raw_body,
+            f"HTTP {e.code} from endpoint (url={url}){body_part}",
         ) from e
     except ConnectionRefusedError as e:
         raise LivepeerGatewayError(
@@ -241,7 +269,7 @@ async def request_json(
             async with session.request(resolved_method, url, data=body, headers=req_headers) as resp:
                 raw = await resp.text()
                 if resp.status >= 400:
-                    _raise_http_json_error(resp.status, url, raw)
+                    _raise_http_json_error(resp.status, url, raw, dict(resp.headers.items()))
         data: Any = json.loads(raw)
     except (SignerRefreshRequired, SkipPaymentCycle, LivepeerGatewayError):
         raise
