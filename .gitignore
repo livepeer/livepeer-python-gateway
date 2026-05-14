@@ -12,3 +12,4 @@ lp_rpc.proto
 
 # environment file
 env
+.DS_Store
