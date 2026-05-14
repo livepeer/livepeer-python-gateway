@@ -15,7 +15,7 @@ from .byoc import (
     wait_for_training,
     list_capabilities,
 )
-from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, NoRunnerAvailableError, PaymentError
+from .errors import LivepeerHTTPError, LivepeerGatewayError, NoOrchestratorAvailableError, NoRunnerAvailableError, PaymentError
 from .events import Events
 from .media_publish import (
     AudioOutputConfig,
@@ -55,7 +55,7 @@ from .live_runner import (
 )
 from .discovery import discover_orchestrators, discover_runners
 from .orch_info import get_orch_info
-from .remote_signer import PaymentSession
+from .remote_signer import LivePaymentSession, PaymentSession
 from .scope import start_scope
 from .selection import RunnerSelectionCursor, SelectionCursor, orchestrator_selector, runner_selector
 from .token import parse_token
@@ -91,7 +91,9 @@ __all__ = [
     "LiveRunnerPriceInfo",
     "LiveRunnerRegistration",
     "LiveRunnerSession",
+    "LivePaymentSession",
     "LivepeerGatewayError",
+    "LivepeerHTTPError",
     "NoOrchestratorAvailableError",
     "NoRunnerAvailableError",
     "OrchestratorRejection",

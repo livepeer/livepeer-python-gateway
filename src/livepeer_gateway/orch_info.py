@@ -15,7 +15,7 @@ import grpc
 from . import lp_rpc_pb2
 from . import lp_rpc_pb2_grpc
 from .errors import LivepeerGatewayError
-from .remote_signer import _freeze_headers, get_orch_info_sig
+from .remote_signer import _freeze_headers, _hex_to_bytes, get_orch_info_sig
 
 _LOG = logging.getLogger(__name__)
 
@@ -125,9 +125,19 @@ def get_orch_info(
             cause=e,
         ) from None
 
+    try:
+        address = _hex_to_bytes(signer.address, expected_len=20) if signer.address else b""
+        sig = _hex_to_bytes(signer.sig) if signer.sig else b""
+    except ValueError as e:
+        raise OrchestratorRpcError(
+            orch_url,
+            f"invalid signer material: {e}",
+            cause=e,
+        ) from None
+
     request = lp_rpc_pb2.OrchestratorRequest(
-        address=signer.address,
-        sig=signer.sig,
+        address=address,
+        sig=sig,
         ignoreCapacityCheck=True,
     )
     if capabilities is not None:

@@ -251,7 +251,12 @@ def runner_selector(
     if operation is None:
 
         async def reserve_candidate(runner: LiveRunnerInstance) -> LiveRunnerSession:
-            return await reserve_runner_session(runner=runner, timeout=timeout)
+            kwargs: dict[str, Any] = {"runner": runner, "timeout": timeout}
+            if signer_url is not None:
+                kwargs["signer_url"] = signer_url
+            if signer_headers is not None:
+                kwargs["signer_headers"] = signer_headers
+            return await reserve_runner_session(**kwargs)
 
         operation = reserve_candidate
 
