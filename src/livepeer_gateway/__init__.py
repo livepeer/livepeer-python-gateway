@@ -10,6 +10,7 @@ from .byoc import (
     ByocTrainingStatus,
     submit_byoc_job,
     submit_training_job,
+    refresh_training_payment,
     get_training_status,
     wait_for_training,
     list_capabilities,

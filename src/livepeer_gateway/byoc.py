@@ -719,6 +719,123 @@ def submit_training_job(
     )
 
 
+def refresh_training_payment(
+    job_id: str,
+    orch_url: str,
+    capability: str,
+    *,
+    signer_url: str,
+    signer_headers: Optional[dict[str, str]] = None,
+    timeout: float = 30.0,
+    max_attempts: int = 3,
+) -> dict[str, str]:
+    """
+    Top up the orch's deposit ledger for an in-flight async training job.
+
+    Called by the SDK's status-poll loop when the orch-reported balance
+    approaches zero (refresh-on-watermark per design §3.A). Generates a
+    fresh ticket batch from the same wallet that signed the submit, then
+    POSTs it to the orch at /process/job/{job_id}/refresh-payment.
+
+    Invariants per §10.1:
+    - I5 (no double-charge on retry): orch idempotency key is
+      (job_id, ticket_nonce). The signer's /generate-live-payment
+      includes nonce in the payment payload; orch deduplicates.
+    - I6 (sender attribution): the refresh ticket is signed by the SAME
+      wallet as the submit (signer_url resolves bearer → wallet
+      deterministically; bearer is the same for the same SDK session).
+
+    Args:
+        job_id: training job_id assigned by orch on submit.
+        orch_url: orchestrator URL accepting the job.
+        capability: capability name (needed by signer to pick correct
+            ticket_params).
+        signer_url: remote signer with /generate-live-payment.
+        signer_headers: pass-through headers (notably Authorization
+            Bearer of the user).
+        timeout: per-request timeout in seconds.
+        max_attempts: retry count for signer/orch transient errors.
+            Default 3 with simple linear backoff (no exponential — keeps
+            refresh latency bounded under SDK's watermark budget).
+
+    Returns:
+        dict with at least {"credited_wei", "new_balance_wei"} fields
+        returned by the orch. Subset is reported to the SDK caller.
+
+    Raises:
+        LivepeerGatewayError on permanent failure after max_attempts.
+    """
+    last_err: Optional[Exception] = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # 1. Get fresh orch info + ticket params
+            payment_headers = _create_byoc_payment(
+                orch_origin=_http_origin(orch_url),
+                capability=capability,
+                livepeer_hdr="",  # not used by refresh path
+                signer_url=signer_url,
+                signer_headers=signer_headers,
+                timeout=timeout,
+            )
+
+            if not payment_headers.get("Livepeer-Payment"):
+                # Signer signaled "no payment needed" (face_value=0).
+                # Refresh is a no-op; just return.
+                _LOG.info(
+                    "Training refresh %s attempt %d: signer reports no payment needed",
+                    job_id, attempt,
+                )
+                return {"credited_wei": "0", "new_balance_wei": "n/a", "noop": "true"}
+
+            # 2. POST to orch's refresh endpoint
+            url = f"{_http_origin(orch_url)}/process/job/{job_id}/refresh-payment"
+            headers = {
+                "Content-Type": "application/json",
+                **payment_headers,  # Livepeer-Payment + Livepeer-Segment
+            }
+            # Empty JSON body — refresh carries everything in headers
+            http_req = Request(url, data=b"{}", headers=headers, method="POST")
+
+            with urlopen(http_req, timeout=timeout, context=_ssl_ctx) as resp:
+                body = resp.read().decode("utf-8")
+                if resp.status not in (200, 202):
+                    raise LivepeerGatewayError(
+                        f"Refresh rejected: HTTP {resp.status}: {body[:200]}"
+                    )
+                try:
+                    return json.loads(body) or {"credited_wei": "unknown"}
+                except json.JSONDecodeError:
+                    # Older orch may return empty body; treat as success.
+                    return {"credited_wei": "unknown", "raw": body[:200]}
+
+        except (HTTPError, URLError, OSError) as e:
+            last_err = e
+            # HTTP 4xx (other than 408/429) are not transient — fail fast
+            if isinstance(e, HTTPError) and e.code not in (408, 429, 502, 503, 504):
+                err_body = ""
+                try:
+                    err_body = e.read().decode("utf-8", errors="replace")[:200]
+                except Exception:
+                    pass
+                raise LivepeerGatewayError(
+                    f"Training refresh permanent failure for {job_id}: "
+                    f"HTTP {e.code}: {err_body}"
+                ) from e
+
+            _LOG.warning(
+                "Training refresh %s attempt %d/%d failed (%s); retrying",
+                job_id, attempt, max_attempts, type(e).__name__,
+            )
+            if attempt < max_attempts:
+                import time
+                time.sleep(0.5 * attempt)  # linear backoff: 0.5s, 1.0s
+
+    raise LivepeerGatewayError(
+        f"Training refresh exhausted {max_attempts} attempts for {job_id}: {last_err}"
+    )
+
+
 def get_training_status(
     job_id: str,
     orch_url: str,
