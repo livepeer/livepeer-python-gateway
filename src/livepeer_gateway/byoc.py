@@ -220,6 +220,17 @@ def _create_byoc_payment(
     if payment_data.get("segCreds"):
         result["Livepeer-Segment"] = payment_data["segCreds"]
 
+    # Distinguish "signer returned empty payment" (bug) from "orch
+    # face_value=0" (noop, returned at line 186-190 above as `{}`).
+    # If we reached this point, the orch wanted a payment but the signer
+    # gave us nothing — raise rather than silently return `{}` so the
+    # caller sees a real error.
+    if not result:
+        raise LivepeerGatewayError(
+            "BYOC payment generation: signer returned 200 but empty "
+            "payment/segCreds. This is a signer bug or misconfiguration."
+        )
+
     _LOG.info("BYOC payment tickets generated for %s", orch_origin)
     return result
 
@@ -765,38 +776,52 @@ def refresh_training_payment(
     Raises:
         LivepeerGatewayError on permanent failure after max_attempts.
     """
+    # Mint the ticket ONCE, outside the retry loop. Re-minting on each
+    # retry would burn N distinct nonces for a single refresh attempt,
+    # and if the orch already credited the first ticket but the response
+    # was lost on the network, the second mint would double-credit.
+    # Reviewer note (I1): per-job idempotency at the PM layer keys on
+    # ticket nonce; identical headers credit once, distinct nonces credit
+    # separately. The fix is to never produce distinct nonces for a
+    # single logical refresh.
+    try:
+        payment_headers = _create_byoc_payment(
+            orch_origin=_http_origin(orch_url),
+            capability=capability,
+            livepeer_hdr="",  # not used by refresh path
+            signer_url=signer_url,
+            signer_headers=signer_headers,
+            timeout=timeout,
+        )
+    except LivepeerGatewayError as e:
+        # _create_byoc_payment raises on signer bug; surface as a refresh
+        # error rather than retrying (the signer state is what's wrong,
+        # not a network blip).
+        raise LivepeerGatewayError(
+            f"Training refresh {job_id}: payment generation failed: {e}"
+        ) from e
+
+    if not payment_headers.get("Livepeer-Payment"):
+        # The orch's `ticket_params.face_value` is zero — the only way
+        # _create_byoc_payment returns an empty result without raising
+        # (it raises on signer-empty per the C1 fix). This means refresh
+        # is a no-op for this cap on this orch.
+        _LOG.info("Training refresh %s: orch face_value=0, noop", job_id)
+        return {"credited_wei": "0", "new_balance_wei": "n/a", "noop": "true"}
+
+    # Retry only the orch POST. The payment headers above are pinned to
+    # one nonce; identical headers on every attempt → idempotent credit.
+    url = f"{_http_origin(orch_url)}/process/job/{job_id}/refresh-payment"
+    headers = {
+        "Content-Type": "application/json",
+        **payment_headers,  # Livepeer-Payment + Livepeer-Segment
+    }
+
     last_err: Optional[Exception] = None
-
     for attempt in range(1, max_attempts + 1):
+        # Empty JSON body — refresh carries everything in headers
+        http_req = Request(url, data=b"{}", headers=headers, method="POST")
         try:
-            # 1. Get fresh orch info + ticket params
-            payment_headers = _create_byoc_payment(
-                orch_origin=_http_origin(orch_url),
-                capability=capability,
-                livepeer_hdr="",  # not used by refresh path
-                signer_url=signer_url,
-                signer_headers=signer_headers,
-                timeout=timeout,
-            )
-
-            if not payment_headers.get("Livepeer-Payment"):
-                # Signer signaled "no payment needed" (face_value=0).
-                # Refresh is a no-op; just return.
-                _LOG.info(
-                    "Training refresh %s attempt %d: signer reports no payment needed",
-                    job_id, attempt,
-                )
-                return {"credited_wei": "0", "new_balance_wei": "n/a", "noop": "true"}
-
-            # 2. POST to orch's refresh endpoint
-            url = f"{_http_origin(orch_url)}/process/job/{job_id}/refresh-payment"
-            headers = {
-                "Content-Type": "application/json",
-                **payment_headers,  # Livepeer-Payment + Livepeer-Segment
-            }
-            # Empty JSON body — refresh carries everything in headers
-            http_req = Request(url, data=b"{}", headers=headers, method="POST")
-
             with urlopen(http_req, timeout=timeout, context=_ssl_ctx) as resp:
                 body = resp.read().decode("utf-8")
                 if resp.status not in (200, 202):

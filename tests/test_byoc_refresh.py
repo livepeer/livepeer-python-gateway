@@ -166,8 +166,14 @@ def test_refresh_zero_price_is_noop():
 
 
 def test_refresh_retries_on_503():
-    """Transient 503 from orch → retry (up to max_attempts), eventually succeed."""
+    """Transient 503 from orch → retry (up to max_attempts), eventually succeed.
+
+    Reviewer I2 strengthening: also verify that signer is called ONCE
+    (not once per retry) and that all retry attempts send the SAME
+    Livepeer-Payment header value (no re-minting → no nonce drift).
+    """
     call_count = {"signer": 0, "orch": 0}
+    orch_payment_headers: list[str] = []
 
     class _MockResponse:
         def __init__(self, body, status=200):
@@ -181,8 +187,11 @@ def test_refresh_retries_on_503():
         url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
         if "generate-live-payment" in url:
             call_count["signer"] += 1
-            return _MockResponse(json.dumps({"payment": "T", "segCreds": "S"}).encode())
-        # orch refresh
+            return _MockResponse(json.dumps({"payment": "PINNED_T", "segCreds": "PINNED_S"}).encode())
+        # orch refresh — capture the Livepeer-Payment header so we can
+        # assert all retries used the same ticket batch
+        hdrs = {k.lower(): v for k, v in req.header_items()}
+        orch_payment_headers.append(hdrs.get("livepeer-payment", ""))
         call_count["orch"] += 1
         if call_count["orch"] < 3:
             raise HTTPError(url, 503, "service unavailable", {}, None)
@@ -201,6 +210,17 @@ def test_refresh_retries_on_503():
         )
 
     assert call_count["orch"] == 3, f"expected 3 orch attempts, got {call_count['orch']}"
+    assert call_count["signer"] == 1, (
+        f"signer was called {call_count['signer']} times; should mint ONCE outside retry "
+        "loop to avoid nonce drift (Invariant I5)"
+    )
+    assert len(set(orch_payment_headers)) == 1, (
+        f"orch attempts sent different Livepeer-Payment headers: {orch_payment_headers}; "
+        "all retries must reuse the same ticket batch"
+    )
+    assert orch_payment_headers[0] == "PINNED_T", (
+        f"expected pinned ticket value 'PINNED_T', got {orch_payment_headers[0]!r}"
+    )
     assert result["credited_wei"] == "500"
 
 
