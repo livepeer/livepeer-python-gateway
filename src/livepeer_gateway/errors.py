@@ -7,6 +7,16 @@ class LivepeerGatewayError(RuntimeError):
     """Base error for the library."""
 
 
+class LivepeerHTTPError(LivepeerGatewayError):
+    """Raised when an HTTP endpoint returns a non-success status."""
+
+    def __init__(self, status_code: int, url: str, body: str = "", message: str | None = None) -> None:
+        self.status_code = int(status_code)
+        self.url = url
+        self.body = body
+        super().__init__(message or f"HTTP {status_code} from endpoint (url={url})")
+
+
 @dataclass
 class OrchestratorRejection:
     """Records a single orchestrator that was tried and rejected."""
@@ -39,6 +49,15 @@ class NoRunnerAvailableError(LivepeerGatewayError):
 
 class SignerRefreshRequired(LivepeerGatewayError):
     """Raised when the remote signer returns HTTP 480 and a refresh is required."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        orchestrator_url: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.orchestrator_url = orchestrator_url
 
 
 class SkipPaymentCycle(LivepeerGatewayError):
