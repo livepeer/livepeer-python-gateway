@@ -62,7 +62,7 @@ class LiveRunnerInstance:
 class LiveRunnerSession:
     session_id: str
     app_url: str
-    session_url: str
+    runner_url: str
     runner: Optional[LiveRunnerInstance] = None
     manifest_id: str = ""
 
@@ -402,7 +402,7 @@ async def remove_trickle_channels(
 
 
 async def reserve_runner_session(
-    session_url: str = "",
+    runner_url: str = "",
     *,
     runner: Optional[LiveRunnerInstance] = None,
     signer_url: Optional[str] = None,
@@ -410,9 +410,9 @@ async def reserve_runner_session(
     timeout: float = 5.0,
     max_payment_challenge_retries: int = 3,
 ) -> LiveRunnerSession:
-    session_url = session_url.strip() or (runner.url.strip() if runner is not None else "")
-    if not session_url:
-        raise LivepeerGatewayError("Live runner session reserve requires session_url")
+    runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
+    if not runner_url:
+        raise LivepeerGatewayError("Live runner session reserve requires runner_url")
     challenge_headers: Optional[dict[str, str]] = None
     if signer_url:
         signer = await get_signer_info(signer_url, _freeze_headers(signer_headers))
@@ -426,13 +426,13 @@ async def reserve_runner_session(
             if challenge_headers is not None:
                 request_kwargs["headers"] = challenge_headers
             data = await post_json(
-                session_url,
+                runner_url,
                 {},
                 **request_kwargs,
             )
             return _live_runner_session_from_json(
                 data,
-                session_url=session_url,
+                runner_url=runner_url,
                 runner=runner,
                 manifest_id="",
             )
@@ -445,7 +445,7 @@ async def reserve_runner_session(
 
         try:
             data = await _pay_runner_reservation_challenge(
-                session_url,
+                runner_url,
                 challenge,
                 signer_url=signer_url,
                 signer_headers=signer_headers,
@@ -453,7 +453,7 @@ async def reserve_runner_session(
             )
             return _live_runner_session_from_json(
                 data,
-                session_url=session_url,
+                runner_url=runner_url,
                 runner=runner,
                 manifest_id=challenge.manifest_id,
             )
@@ -531,7 +531,7 @@ async def _get_runner_payment(
 
 
 async def _pay_runner_reservation_challenge(
-    session_url: str,
+    runner_url: str,
     challenge: _RunnerPaymentChallenge,
     *,
     signer_url: Optional[str],
@@ -548,7 +548,7 @@ async def _pay_runner_reservation_challenge(
         timeout=timeout,
     )
     return await post_json(
-        session_url,
+        runner_url,
         {},
         headers={
             "Livepeer-Payment": payment.payment,
@@ -561,7 +561,7 @@ async def _pay_runner_reservation_challenge(
 def _live_runner_session_from_json(
     data: dict[str, Any],
     *,
-    session_url: str,
+    runner_url: str,
     runner: Optional[LiveRunnerInstance],
     manifest_id: str,
 ) -> LiveRunnerSession:
@@ -574,7 +574,7 @@ def _live_runner_session_from_json(
     return LiveRunnerSession(
         session_id=session_id.strip(),
         app_url=app_url.strip(),
-        session_url=session_url,
+        runner_url=runner_url,
         runner=runner,
         manifest_id=manifest_id,
     )
@@ -585,14 +585,14 @@ async def stop_runner_session(
     *,
     timeout: float = 5.0,
 ) -> None:
-    session_url = session.session_url.strip()
+    runner_url = session.runner_url.strip()
     session_id = session.session_id.strip()
-    if not session_url:
-        raise LivepeerGatewayError("Live runner session stop requires session_url")
+    if not runner_url:
+        raise LivepeerGatewayError("Live runner session stop requires runner_url")
     if not session_id:
         raise LivepeerGatewayError("Live runner session stop requires session_id")
     await _post_empty(
-        _join_endpoint(session_url, f"/{quote(session_id, safe='')}/stop"),
+        _join_endpoint(runner_url, f"/{quote(session_id, safe='')}/stop"),
         {},
         timeout,
     )
