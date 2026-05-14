@@ -144,7 +144,7 @@ async def main() -> None:
 
     try:
         session = await select_runner(args.discovery)
-        _log("runner_url:", session.runner.url if session.runner is not None else session.session_url)
+        _log("runner_url:", session.runner.url if session.runner is not None else session.runner_url)
         _log("session_id:", session.session_id)
         _log("app_url:", session.app_url)
 
