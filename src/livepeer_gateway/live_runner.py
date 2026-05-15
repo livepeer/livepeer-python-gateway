@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol, TypedDict, cast
 from urllib.parse import quote, urlparse, urlunparse
 
@@ -15,7 +15,12 @@ import aiohttp
 
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
 from .http import post_json, request_json
-from .remote_signer import LivePaymentSession, _freeze_headers, get_signer_info
+from .remote_signer import (
+    GetPaymentResponse,
+    LivePaymentSession,
+    _freeze_headers,
+    get_signer_info,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -72,6 +77,11 @@ class LiveRunnerCallResult:
     runner_url: str
     runner: Optional[LiveRunnerInstance] = None
     session_id: str = ""
+    payment_session: Optional[LivePaymentSession] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -423,18 +433,44 @@ async def call_runner(
     if not runner_url:
         raise LivepeerGatewayError("Live runner call requires runner_url")
     request_payload = payload or {}
-    challenge_headers: Optional[dict[str, str]] = None
+    payer_address = ""
     if signer_url:
         signer = await get_signer_info(signer_url, _freeze_headers(signer_headers))
-        challenge_headers = {
-            _LIVE_RUNNER_PAYER_ADDRESS_HEADER: cast(str, signer.address),
-        }
-    attempts = max(0, int(max_payment_challenge_retries)) + 1
+        payer_address = cast(str, signer.address)
+    challenge: Optional[_RunnerPaymentChallenge] = None
+    attempts = (max(0, int(max_payment_challenge_retries)) + 1) * 2
     for attempt in range(attempts):
+        payment_session: Optional[LivePaymentSession] = None
+        session_id = ""
+        request_headers: dict[str, str] = {}
+        if signer_url:
+            request_headers[_LIVE_RUNNER_PAYER_ADDRESS_HEADER] = payer_address
+        # Pending challenge means payment is needed.
+        if challenge is not None:
+            try:
+                payment_session, payment = await _get_runner_payment(
+                    challenge,
+                    signer_url=signer_url or "",
+                    signer_headers=signer_headers,
+                )
+            except SignerRefreshRequired as e:
+                if attempt + 1 >= attempts:
+                    raise
+                # Could happen if embedded payment params expire; just retry in this case.
+                _LOG.info(
+                    "Live runner reservation payment challenge needs refresh; retrying with a fresh challenge: %s",
+                    e,
+                )
+                challenge = None
+                continue
+            request_headers["Livepeer-Payment"] = payment.payment
+            request_headers["Livepeer-Segment"] = payment.seg_creds or ""
+            session_id = challenge.manifest_id
+
         try:
             request_kwargs: dict[str, Any] = {"timeout": timeout}
-            if challenge_headers is not None:
-                request_kwargs["headers"] = challenge_headers
+            if request_headers:
+                request_kwargs["headers"] = request_headers
             data = await request_json(
                 runner_url,
                 method=method,
@@ -449,7 +485,11 @@ async def call_runner(
                 data,
                 runner_url=runner_url,
                 runner=runner,
-                session_id=data["session_id"].strip() if isinstance(data.get("session_id"), str) else "",
+                session_id=(
+                    session_id
+                    or (data["session_id"].strip() if isinstance(data.get("session_id"), str) else "")
+                ),
+                payment_session=payment_session,
             )
         except LivepeerHTTPError as e:
             if e.status_code != 402:
@@ -457,31 +497,7 @@ async def call_runner(
             if not signer_url:
                 raise LivepeerGatewayError("Live runner paid call requires signer_url") from e
             challenge = _parse_runner_payment_challenge(e)
-
-        try:
-            data = await _pay_runner_reservation_challenge(
-                runner_url,
-                challenge,
-                payload=request_payload,
-                method=method,
-                signer_url=signer_url,
-                signer_headers=signer_headers,
-                timeout=timeout,
-            )
-            return LiveRunnerCallResult(
-                data,
-                runner_url=runner_url,
-                runner=runner,
-                session_id=challenge.manifest_id,
-            )
-        except SignerRefreshRequired as e:
-            if attempt + 1 >= attempts:
-                raise
-            # Could happen if embedded payment params expire; just retry in this case.
-            _LOG.info(
-                "Live runner reservation payment challenge needs refresh; retrying with a fresh challenge: %s",
-                e,
-            )
+            continue
 
     raise LivepeerGatewayError("Live runner call exhausted payment challenge retries")
 
@@ -518,69 +534,26 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
     )
 
 
-@dataclass(frozen=True)
-class _RunnerPayment:
-    payment: str
-    seg_creds: str
-
-
 async def _get_runner_payment(
     challenge: _RunnerPaymentChallenge,
     *,
     signer_url: str,
     signer_headers: Optional[dict[str, str]],
-    timeout: float,
-) -> _RunnerPayment:
-    del timeout
+) -> tuple[LivePaymentSession, GetPaymentResponse]:
     session = LivePaymentSession(
-        signer_url,
+        signer_url=signer_url,
         signer_headers=signer_headers,
         type="lv2v",
         payment_params=challenge.payment_params,
         manifest_id=challenge.manifest_id,
+        orchestrator_url=challenge.orchestrator_url,
     )
-    data = await session.get_payment()
-    if not data.payment:
+    payment = await session.get_payment()
+    if not payment.payment:
         raise LivepeerGatewayError("Live runner payment response missing payment")
-    if not data.seg_creds:
+    if not payment.seg_creds:
         raise LivepeerGatewayError("Live runner payment response missing segCreds")
-    return _RunnerPayment(payment=data.payment, seg_creds=data.seg_creds)
-
-
-async def _pay_runner_reservation_challenge(
-    runner_url: str,
-    challenge: _RunnerPaymentChallenge,
-    *,
-    payload: dict[str, Any],
-    method: str,
-    signer_url: Optional[str],
-    signer_headers: Optional[dict[str, str]],
-    timeout: float,
-) -> dict[str, Any]:
-    if not signer_url:
-        raise LivepeerGatewayError("Live runner paid call requires signer_url")
-
-    payment = await _get_runner_payment(
-        challenge,
-        signer_url=signer_url,
-        signer_headers=signer_headers,
-        timeout=timeout,
-    )
-    data = await request_json(
-        runner_url,
-        method=method,
-        payload=payload,
-        headers={
-            "Livepeer-Payment": payment.payment,
-            "Livepeer-Segment": payment.seg_creds,
-        },
-        timeout=timeout,
-    )
-    if not isinstance(data, dict):
-        raise LivepeerGatewayError(
-            f"Live runner paid call expected JSON object, got {type(data).__name__}"
-        )
-    return data
+    return session, payment
 
 
 def _live_runner_session_from_json(
