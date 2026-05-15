@@ -157,11 +157,15 @@ class RunnerSelectionCursor:
         self,
         candidates: Sequence[LiveRunnerInstance],
         *,
+        body: Optional[dict[str, Any]] = None,
+        method: str = "POST",
         signer_url: Optional[str] = None,
         signer_headers: Optional[dict[str, str]] = None,
         timeout: float = 5.0,
     ) -> None:
         self._candidates = list(candidates)
+        self._body = dict(body or {})
+        self._method = method
         self._signer_url = signer_url
         self._signer_headers = signer_headers
         self._timeout = timeout
@@ -173,7 +177,12 @@ class RunnerSelectionCursor:
             runner = self._candidates[self._next_index]
             self._next_index += 1
             try:
-                kwargs: dict[str, Any] = {"runner": runner, "timeout": self._timeout}
+                kwargs: dict[str, Any] = {
+                    "runner": runner,
+                    "payload": self._body,
+                    "method": self._method,
+                    "timeout": self._timeout,
+                }
                 if self._signer_url is not None:
                     kwargs["signer_url"] = self._signer_url
                 if self._signer_headers is not None:
@@ -204,6 +213,8 @@ class RunnerSelectionCursor:
 
 def runner_selector(
     *,
+    body: Optional[dict[str, Any]] = None,
+    method: str = "POST",
     signer_url: Optional[str] = None,
     signer_headers: Optional[dict[str, str]] = None,
     discovery_url: Optional[str] = None,
@@ -228,6 +239,8 @@ def runner_selector(
 
     return RunnerSelectionCursor(
         candidates,
+        body=body,
+        method=method,
         signer_url=signer_url,
         signer_headers=signer_headers,
         timeout=timeout,

@@ -413,6 +413,7 @@ async def call_runner(
     *,
     runner: Optional[LiveRunnerInstance] = None,
     payload: Optional[dict[str, Any]] = None,
+    method: str = "POST",
     signer_url: Optional[str] = None,
     signer_headers: Optional[dict[str, str]] = None,
     timeout: float = 5.0,
@@ -434,11 +435,16 @@ async def call_runner(
             request_kwargs: dict[str, Any] = {"timeout": timeout}
             if challenge_headers is not None:
                 request_kwargs["headers"] = challenge_headers
-            data = await post_json(
+            data = await request_json(
                 runner_url,
-                request_payload,
+                method=method,
+                payload=request_payload,
                 **request_kwargs,
             )
+            if not isinstance(data, dict):
+                raise LivepeerGatewayError(
+                    f"Live runner call expected JSON object, got {type(data).__name__}"
+                )
             return LiveRunnerCallResult(
                 data,
                 runner_url=runner_url,
@@ -457,6 +463,7 @@ async def call_runner(
                 runner_url,
                 challenge,
                 payload=request_payload,
+                method=method,
                 signer_url=signer_url,
                 signer_headers=signer_headers,
                 timeout=timeout,
@@ -545,6 +552,7 @@ async def _pay_runner_reservation_challenge(
     challenge: _RunnerPaymentChallenge,
     *,
     payload: dict[str, Any],
+    method: str,
     signer_url: Optional[str],
     signer_headers: Optional[dict[str, str]],
     timeout: float,
@@ -558,15 +566,21 @@ async def _pay_runner_reservation_challenge(
         signer_headers=signer_headers,
         timeout=timeout,
     )
-    return await post_json(
+    data = await request_json(
         runner_url,
-        payload,
+        method=method,
+        payload=payload,
         headers={
             "Livepeer-Payment": payment.payment,
             "Livepeer-Segment": payment.seg_creds,
         },
         timeout=timeout,
     )
+    if not isinstance(data, dict):
+        raise LivepeerGatewayError(
+            f"Live runner paid call expected JSON object, got {type(data).__name__}"
+        )
+    return data
 
 
 def _live_runner_session_from_json(
