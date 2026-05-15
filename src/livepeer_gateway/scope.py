@@ -3,68 +3,45 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional, Sequence
 
-from .capabilities import CapabilityId, build_capabilities
-from .control import ControlConfig
-from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, OrchestratorRejection
+from .errors import LivepeerGatewayError, NoRunnerAvailableError
 from .lv2v import LiveVideoToVideo, StartJobRequest
-from .http import _http_origin, post_json_sync
-from .remote_signer import PaymentSession
-from .selection import orchestrator_selector
+from .selection import runner_selector
 from .token import parse_token
 
+_SCOPE_RUNNER_APP = "live-video-to-video/scope"
 _LOG = logging.getLogger(__name__)
 
 
-def start_scope(
+async def start_scope(
     orch_url: Optional[Sequence[str] | str],
     req: StartJobRequest,
     *,
-    start_payments: bool = True,
     token: Optional[str] = None,
     signer_url: Optional[str] = None,
     signer_headers: Optional[dict[str, str]] = None,
     discovery_url: Optional[str] = None,
     discovery_headers: Optional[dict[str, str]] = None,
-    control_config: Optional[ControlConfig] = None,
-    use_tofu: bool = True,
     timeout: float = 5.0,
 ) -> LiveVideoToVideo:
     """
-    Start a scope job.
+    Start a Scope job through a live runner.
 
-    Selects an orchestrator with Scope capability and calls
-    POST {info.transcoder}/scope with JSON body.
-
-    If ``start_payments`` is true and the call happens within a running
-    asyncio event loop, a background task is automatically started to
-    send per-segment payments. Otherwise a warning is logged and
-    payments can be started later via ``job.start_payment_sender()``.
+    Scope is treated as a single-shot live runner app. The request body is sent
+    to a discovered ``live-video-to-video/scope`` runner and any paid runner
+    challenge is handled by the live-runner payment flow.
 
     Optional ``token`` can be provided as a base64-encoded JSON object.
     Token values take precedence over explicit keyword arguments.
     Explicit keyword arguments are used only for fields missing in the token.
 
-    Orchestrator selection/discovery precedence (highest -> lowest):
-    1) token ``orchestrators`` value
-    2) explicit ``orch_url`` list
+    Runner discovery precedence (highest -> lowest):
+    1) token ``orchestrators`` value, converted by appending ``/discovery``
+    2) explicit ``orch_url`` value, converted by appending ``/discovery``
     3) token ``discovery`` value
     4) explicit ``discovery_url`` argument
     5) remote signer discovery endpoint derived from the resolved signer URL
 
-    ``timeout`` controls only the initial HTTP POST to
-    ``/scope`` after an orchestrator has been selected.
-    Discovery and ``GetOrchestrator`` calls use their own timeouts.
-
-    ``use_tofu`` controls TLS mode for ``GetOrchestrator``:
-    - True: trust-on-first-use certificate pinning
-    - False: default gRPC/system CA roots
-
-    ``control_config`` controls control-channel behavior. Use
-    ``ControlConfig(mode=ControlMode.DISABLED)`` to disable keepalives.
-
-    ``model_id`` is ignored for now; internally this is hard-coded to "scope".
     """
-
     token_data: Optional[dict[str, Any]] = None
     if token is not None:
         token_data = parse_token(token)
@@ -89,67 +66,49 @@ def start_scope(
     if resolved_discovery_headers is None:
         resolved_discovery_headers = discovery_headers
 
-    capabilities = build_capabilities(CapabilityId.LIVE_VIDEO_TO_VIDEO, "scope")
-    # Orchestrator discovery precedence after token-first field resolution:
-    # token orchestrators -> explicit orch_url -> token discovery ->
-    # explicit discovery_url -> signer_url
-    cursor = orchestrator_selector(
-        resolved_orch_url,
+    result = await _select_scope_runner(
+        body=req.to_json(),
         signer_url=resolved_signer_url,
         signer_headers=resolved_signer_headers,
         discovery_url=resolved_discovery_url,
         discovery_headers=resolved_discovery_headers,
-        capabilities=capabilities,
-        use_tofu=use_tofu,
+        orch_url=resolved_orch_url,
+        timeout=timeout,
     )
 
-    start_rejections: list[OrchestratorRejection] = []
-    while True:
-        try:
-            selected_url, info = cursor.next()
-        except NoOrchestratorAvailableError as e:
-            all_rejections = list(e.rejections) + start_rejections
-            if all_rejections:
-                raise NoOrchestratorAvailableError(
-                    f"All orchestrators failed ({len(all_rejections)} tried)",
-                    rejections=all_rejections,
-                ) from None
-            raise
+    job = LiveVideoToVideo.from_json(
+        result.data,
+        signer_url=resolved_signer_url,
+        payment_session=result.payment_session,
+    )
+    if not job.manifest_id:
+        raise LivepeerGatewayError("LiveVideoToVideo response missing manifest_id")
+    return job
 
-        try:
-            session = PaymentSession(
-                resolved_signer_url,
-                info,
-                signer_headers=resolved_signer_headers,
-                type="lv2v",
-                capabilities=capabilities,
-                use_tofu=use_tofu,
-            )
-            p = session.get_payment()
-            headers: dict[str, str] = {
-                "Livepeer-Payment": p.payment,
-                "Livepeer-Segment": p.seg_creds,
-            }
 
-            base = _http_origin(info.transcoder)
-            url = f"{base}/scope"
-            payload = req.to_json()
-            payload.setdefault("model_id", "scope")
-            data = post_json_sync(url, payload, headers=headers, timeout=timeout)
-            job = LiveVideoToVideo.from_json(
-                data,
-                signer_url=resolved_signer_url,
-                orchestrator_info=info,
-                payment_session=session,
-            )
-            if not job.manifest_id:
-                raise LivepeerGatewayError("LiveVideoToVideo response missing manifest_id")
-            session.set_manifest_id(job.manifest_id)
-            return job
-        except LivepeerGatewayError as e:
-            _LOG.debug(
-                "start_scope candidate failed, trying fallback if available: %s (%s)",
-                selected_url,
-                str(e),
-            )
-            start_rejections.append(OrchestratorRejection(url=selected_url, reason=str(e)))
+async def _select_scope_runner(
+    *,
+    body: dict[str, Any],
+    signer_url: Optional[str],
+    signer_headers: Optional[dict[str, str]],
+    discovery_url: Optional[str],
+    discovery_headers: Optional[dict[str, str]],
+    orch_url: Optional[Sequence[str] | str],
+    timeout: float,
+):
+    cursor = await runner_selector(
+        body=body,
+        signer_url=signer_url,
+        signer_headers=signer_headers,
+        orchestrators=orch_url,
+        discovery_url=discovery_url,
+        discovery_headers=discovery_headers,
+        app=_SCOPE_RUNNER_APP,
+        timeout=timeout,
+    )
+    try:
+        return await cursor.next()
+    except NoRunnerAvailableError as e:
+        for rejection in e.rejections:
+            _LOG.info("scope runner rejected: %s: %s", rejection.url, rejection.reason)
+        raise
