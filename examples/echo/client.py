@@ -33,7 +33,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("input")
     parser.add_argument("--discovery", default=DEFAULT_DISCOVERY)
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
-    parser.add_argument("--mode", default="echo", choices=("echo", "gray", "invert", "blur"))
     parser.add_argument("--radius", type=int, default=75)
     parser.add_argument("--max-frames", type=int, default=0, help="Stop after this many input video frames (0 = full file).")
     parser.add_argument("--blur", action="store_true", help="Sweep blur radius while publishing the sample.")
@@ -84,7 +83,6 @@ async def _publish_video(
                     and current_pts_time >= next_update_pts_time
                 ):
                     await post_json(f"{app_url.rstrip('/')}/update", {"mode": "blur", "radius": blur_radius})
-                    _log(f"mode -> blur radius={blur_radius}")
                     if blur_radius == MAX_BLUR_RADIUS:
                         blur_direction = -1
                     elif blur_radius == 0:
@@ -130,7 +128,7 @@ async def main() -> None:
         _log("session_id:", session.session_id)
         _log("app_url:", session.app_url)
 
-        echo = await post_json(f"{session.app_url.rstrip('/')}/echo", {"mode": args.mode, "radius": args.radius})
+        echo = await post_json(f"{session.app_url.rstrip('/')}/echo", {"radius": args.radius})
         in_url = _channel_url(echo, "in")
         out_url = _channel_url(echo, "out")
         _log("in:", in_url)
