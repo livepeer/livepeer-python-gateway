@@ -5,7 +5,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional, Sequence, Tuple
 
 from . import lp_rpc_pb2
-from .discovery import FilterValue, discover_orchestrators, discover_runners
+from .discovery import (
+    FilterValue,
+    discover_orchestrator_runners,
+    discover_orchestrators,
+    discover_runners,
+)
 from .errors import (
     LivepeerGatewayError,
     NoOrchestratorAvailableError,
@@ -211,10 +216,11 @@ class RunnerSelectionCursor:
         )
 
 
-def runner_selector(
+async def runner_selector(
     *,
     body: Optional[dict[str, Any]] = None,
     method: str = "POST",
+    orchestrators: Optional[Sequence[str] | str] = None,
     signer_url: Optional[str] = None,
     signer_headers: Optional[dict[str, str]] = None,
     discovery_url: Optional[str] = None,
@@ -223,14 +229,22 @@ def runner_selector(
     gpu: Optional[FilterValue] = None,
     timeout: float = 5.0,
 ) -> RunnerSelectionCursor:
-    entries = discover_runners(
-        signer_url=signer_url,
-        signer_headers=signer_headers,
-        discovery_url=discovery_url,
-        discovery_headers=discovery_headers,
-        app=app,
-        gpu=gpu,
-    )
+    if orchestrators is not None:
+        entries = await discover_orchestrator_runners(
+            orchestrators,
+            app=app,
+            gpu=gpu,
+        )
+    else:
+        entries = await discover_runners(
+            signer_url=signer_url,
+            signer_headers=signer_headers,
+            discovery_url=discovery_url,
+            discovery_headers=discovery_headers,
+            app=app,
+            gpu=gpu,
+        )
+
     candidates = _runner_candidates_from_discovery(entries)
 
     if not candidates:
@@ -257,7 +271,7 @@ async def reserve_session(
     gpu: Optional[FilterValue] = None,
     timeout: float = 5.0,
 ) -> LiveRunnerSession:
-    result = await runner_selector(
+    cursor = await runner_selector(
         signer_url=signer_url,
         signer_headers=signer_headers,
         discovery_url=discovery_url,
@@ -265,7 +279,8 @@ async def reserve_session(
         app=app,
         gpu=gpu,
         timeout=timeout,
-    ).next()
+    )
+    result = await cursor.next()
     session_id = result.data.get("session_id")
     app_url = result.data.get("app_url")
     if not isinstance(session_id, str) or not session_id.strip():

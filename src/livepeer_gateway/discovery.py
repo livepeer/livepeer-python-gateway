@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional, Sequence
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
@@ -8,11 +9,12 @@ from . import lp_rpc_pb2
 from .capabilities import capabilities_to_query
 from .errors import LivepeerGatewayError
 from .remote_signer import RemoteSignerError
-from .http import _http_origin, _parse_http_url, get_json_sync
+from .http import _http_origin, _parse_http_url, get_json, get_json_sync
 
 _LOG = logging.getLogger(__name__)
 
 FilterValue = str | Sequence[str]
+_RUNNER_DISCOVERY_BATCH_SIZE = 5
 
 
 def _normalize_filter_values(value: Optional[FilterValue]) -> list[str]:
@@ -140,7 +142,7 @@ def discover_orchestrators(
     return orch_list
 
 
-def discover_runners(
+async def discover_runners(
     *,
     signer_url: Optional[str] = None,
     signer_headers: Optional[dict[str, str]] = None,
@@ -160,7 +162,7 @@ def discover_runners(
         discovery_endpoint = _parse_http_url(discovery_url).geturl()
         request_headers = discovery_headers
     elif signer_url:
-        discovery_endpoint = f"{_http_origin(signer_url)}/discovery"
+        discovery_endpoint = f"{_http_origin(signer_url)}/discover-orchestrators"
         request_headers = signer_headers
     else:
         _LOG.debug("discover_runners failed: no discovery inputs")
@@ -172,7 +174,7 @@ def discover_runners(
 
     try:
         _LOG.debug("discover_runners running discovery: %s", discovery_endpoint)
-        data = get_json_sync(discovery_endpoint, headers=request_headers)
+        data = await get_json(discovery_endpoint, headers=request_headers)
     except LivepeerGatewayError as e:
         _LOG.debug("discover_runners discovery failed: %s", e)
         raise RemoteSignerError(
@@ -195,6 +197,62 @@ def discover_runners(
     entries = _filter_runner_discovery_entries(data, app_filters=app_filters, gpu_filters=gpu_filters)
     _LOG.debug("discover_runners discovered %d orchestrator entries", len(entries))
     return entries
+
+
+async def discover_orchestrator_runners(
+    orchestrators: Optional[Sequence[str] | str],
+    *,
+    app: Optional[FilterValue] = None,
+    gpu: Optional[FilterValue] = None,
+    batch_size: int = _RUNNER_DISCOVERY_BATCH_SIZE,
+) -> list[dict[str, Any]]:
+    first_error: Exception | None = None
+    urls = orchestrator_discovery_urls(orchestrators)
+    for batch_start in range(0, len(urls), batch_size):
+        batch = urls[batch_start : batch_start + batch_size]
+        results = await asyncio.gather(
+            *(discover_runners(discovery_url=discovery_url, app=app, gpu=gpu) for discovery_url in batch),
+            return_exceptions=True,
+        )
+        for discovery_url, result in zip(batch, results):
+            if isinstance(result, Exception):
+                if first_error is None:
+                    first_error = result
+                _LOG.debug("discover_orchestrator_runners failed: %s (%s)", discovery_url, result)
+                continue
+            if result:
+                return result
+
+    if first_error is not None:
+        raise first_error
+    return []
+
+
+def orchestrator_discovery_urls(orchestrators: Optional[Sequence[str] | str]) -> list[str]:
+    if orchestrators is None:
+        return []
+    if isinstance(orchestrators, str):
+        candidates = [item.strip() for item in orchestrators.split(",")]
+    else:
+        try:
+            candidates = [item.strip() for item in orchestrators if isinstance(item, str)]
+        except TypeError as e:
+            raise LivepeerGatewayError(
+                "orchestrator_discovery_urls requires a list of orchestrator URLs or a comma-delimited string"
+            ) from e
+
+    urls = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = _parse_http_url(candidate, context="orchestrator URL")
+        except ValueError as e:
+            raise LivepeerGatewayError(f"Invalid orchestrator URL: {candidate!r}") from e
+        base_path = parsed.path.rstrip("/")
+        discovery_path = f"{base_path}/discovery" if base_path else "/discovery"
+        urls.append(parsed._replace(path=discovery_path, query="", fragment="").geturl())
+    return urls
 
 
 def _filter_runner_discovery_entries(
