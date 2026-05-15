@@ -2,23 +2,23 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Awaitable, Callable, Generic, Optional, Sequence, Tuple, TypeVar, overload
+from typing import Any, Optional, Sequence, Tuple
 
 from . import lp_rpc_pb2
 from .discovery import FilterValue, discover_orchestrators, discover_runners
 from .errors import (
+    LivepeerGatewayError,
     NoOrchestratorAvailableError,
     NoRunnerAvailableError,
     OrchestratorRejection,
     RunnerRejection,
 )
-from .live_runner import LiveRunnerInstance, LiveRunnerSession, reserve_runner_session
+from .live_runner import LiveRunnerCallResult, LiveRunnerInstance, LiveRunnerSession, call_runner
 from .orch_info import get_orch_info
 
 _LOG = logging.getLogger(__name__)
 
 _BATCH_SIZE = 5
-T = TypeVar("T")
 
 
 class SelectionCursor:
@@ -144,10 +144,7 @@ def orchestrator_selector(
     )
 
 
-RunnerOperation = Callable[[LiveRunnerInstance], Awaitable[T]]
-
-
-class RunnerSelectionCursor(Generic[T]):
+class RunnerSelectionCursor:
     """
     Stateful selector that advances through live runners sequentially.
 
@@ -160,19 +157,28 @@ class RunnerSelectionCursor(Generic[T]):
         self,
         candidates: Sequence[LiveRunnerInstance],
         *,
-        operation: RunnerOperation[T],
+        signer_url: Optional[str] = None,
+        signer_headers: Optional[dict[str, str]] = None,
+        timeout: float = 5.0,
     ) -> None:
         self._candidates = list(candidates)
-        self._operation = operation
+        self._signer_url = signer_url
+        self._signer_headers = signer_headers
+        self._timeout = timeout
         self._next_index = 0
         self.rejections: list[RunnerRejection] = []
 
-    async def next(self) -> tuple[LiveRunnerInstance, T]:
+    async def next(self) -> LiveRunnerCallResult:
         while self._next_index < len(self._candidates):
             runner = self._candidates[self._next_index]
             self._next_index += 1
             try:
-                result = await self._operation(runner)
+                kwargs: dict[str, Any] = {"runner": runner, "timeout": self._timeout}
+                if self._signer_url is not None:
+                    kwargs["signer_url"] = self._signer_url
+                if self._signer_headers is not None:
+                    kwargs["signer_headers"] = self._signer_headers
+                result = await call_runner(**kwargs)
             except Exception as e:
                 reason = str(e)
                 _LOG.debug(
@@ -184,7 +190,7 @@ class RunnerSelectionCursor(Generic[T]):
                 continue
 
             _LOG.debug("select_runner selected: %s", runner.url)
-            return runner, result
+            return result
 
         _LOG.debug(
             "select_runner failed: all %d runners rejected",
@@ -196,7 +202,6 @@ class RunnerSelectionCursor(Generic[T]):
         )
 
 
-@overload
 def runner_selector(
     *,
     signer_url: Optional[str] = None,
@@ -206,34 +211,7 @@ def runner_selector(
     app: Optional[FilterValue] = None,
     gpu: Optional[FilterValue] = None,
     timeout: float = 5.0,
-) -> RunnerSelectionCursor[LiveRunnerSession]: ...
-
-
-@overload
-def runner_selector(
-    *,
-    signer_url: Optional[str] = None,
-    signer_headers: Optional[dict[str, str]] = None,
-    discovery_url: Optional[str] = None,
-    discovery_headers: Optional[dict[str, str]] = None,
-    app: Optional[FilterValue] = None,
-    gpu: Optional[FilterValue] = None,
-    operation: RunnerOperation[T],
-    timeout: float = 5.0,
-) -> RunnerSelectionCursor[T]: ...
-
-
-def runner_selector(
-    *,
-    signer_url: Optional[str] = None,
-    signer_headers: Optional[dict[str, str]] = None,
-    discovery_url: Optional[str] = None,
-    discovery_headers: Optional[dict[str, str]] = None,
-    app: Optional[FilterValue] = None,
-    gpu: Optional[FilterValue] = None,
-    timeout: float = 5.0,
-    operation: Optional[RunnerOperation[Any]] = None,
-) -> RunnerSelectionCursor[Any]:
+) -> RunnerSelectionCursor:
     entries = discover_runners(
         signer_url=signer_url,
         signer_headers=signer_headers,
@@ -248,19 +226,45 @@ def runner_selector(
         _LOG.debug("select_runner failed: empty runner list")
         raise NoRunnerAvailableError("No runners available to select")
 
-    if operation is None:
+    return RunnerSelectionCursor(
+        candidates,
+        signer_url=signer_url,
+        signer_headers=signer_headers,
+        timeout=timeout,
+    )
 
-        async def reserve_candidate(runner: LiveRunnerInstance) -> LiveRunnerSession:
-            kwargs: dict[str, Any] = {"runner": runner, "timeout": timeout}
-            if signer_url is not None:
-                kwargs["signer_url"] = signer_url
-            if signer_headers is not None:
-                kwargs["signer_headers"] = signer_headers
-            return await reserve_runner_session(**kwargs)
 
-        operation = reserve_candidate
-
-    return RunnerSelectionCursor(candidates, operation=operation)
+async def reserve_session(
+    *,
+    signer_url: Optional[str] = None,
+    signer_headers: Optional[dict[str, str]] = None,
+    discovery_url: Optional[str] = None,
+    discovery_headers: Optional[dict[str, str]] = None,
+    app: Optional[FilterValue] = None,
+    gpu: Optional[FilterValue] = None,
+    timeout: float = 5.0,
+) -> LiveRunnerSession:
+    result = await runner_selector(
+        signer_url=signer_url,
+        signer_headers=signer_headers,
+        discovery_url=discovery_url,
+        discovery_headers=discovery_headers,
+        app=app,
+        gpu=gpu,
+        timeout=timeout,
+    ).next()
+    session_id = result.data.get("session_id")
+    app_url = result.data.get("app_url")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise LivepeerGatewayError("runner session response missing session_id")
+    if not isinstance(app_url, str) or not app_url.strip():
+        raise LivepeerGatewayError("runner session response missing app_url")
+    return LiveRunnerSession(
+        session_id=session_id.strip(),
+        app_url=app_url.strip(),
+        runner_url=result.runner_url,
+        runner=result.runner,
+    )
 
 
 def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list[LiveRunnerInstance]:
