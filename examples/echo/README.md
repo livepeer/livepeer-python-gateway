@@ -29,7 +29,7 @@ The resulting file is stored at echo-out.ts. To use a different file
 or redirect to stdout for live playback:
 
 ```sh
-uv run client.py --blur -output - ~/samples/bbb_720p.mp4 | ffplay -
+uv run client.py --blur --output - ~/samples/bbb_720p.mp4 | ffplay -
 ```
 
 The client discovers the `livepeer-sample/echo` runner automatically. To use a
