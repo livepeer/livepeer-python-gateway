@@ -27,11 +27,9 @@ class SignerMaterial:
     Material returned by the remote signer.
     address: 20-byte broadcaster ETH address
     sig: signature bytes (length depends on scheme; commonly 65 bytes for ECDSA)
-    address_hex: original hex string from signer (preserves EIP-55 checksum casing)
     """
     address: bytes
     sig: bytes
-    address_hex: str = ""
 
 
 @dataclass
@@ -107,8 +105,7 @@ def get_orch_info_sig(
                 cause=None,
             ) from None
 
-        address_hex_str = str(data["address"])
-        address = _hex_to_bytes(address_hex_str, expected_len=20)
+        address = _hex_to_bytes(str(data["address"]), expected_len=20)
         sig = _hex_to_bytes(str(data["signature"]))  # signature length may vary
 
     except LivepeerGatewayError as e:
@@ -152,7 +149,7 @@ def get_orch_info_sig(
             cause=cause if isinstance(cause, BaseException) else e,
         ) from None
 
-    return SignerMaterial(address=address, sig=sig, address_hex=address_hex_str)
+    return SignerMaterial(address=address, sig=sig)
 
 
 class PaymentSession:
