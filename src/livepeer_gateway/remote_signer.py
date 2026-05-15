@@ -205,6 +205,7 @@ class LivePaymentSession:
         type: str,
         payment_params: str,
         manifest_id: str,
+        orchestrator_url: Optional[str] = None,
         max_refresh_retries: int = 3,
     ) -> None:
         self._signer_url = signer_url
@@ -214,7 +215,7 @@ class LivePaymentSession:
         self._manifest_id = manifest_id
         self._max_refresh_retries = max(0, int(max_refresh_retries))
         self._state: Optional[dict[str, Any]] = None
-        self._orchestrator_url: Optional[str] = None
+        self._orchestrator_url = orchestrator_url
 
     async def get_payment(self) -> GetPaymentResponse:
         if not self._signer_url:
