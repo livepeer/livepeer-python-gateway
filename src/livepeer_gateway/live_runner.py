@@ -64,7 +64,14 @@ class LiveRunnerSession:
     app_url: str
     runner_url: str
     runner: Optional[LiveRunnerInstance] = None
-    manifest_id: str = ""
+
+
+@dataclass(frozen=True)
+class LiveRunnerCallResult:
+    data: dict[str, Any]
+    runner_url: str
+    runner: Optional[LiveRunnerInstance] = None
+    session_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -401,18 +408,20 @@ async def remove_trickle_channels(
     return deleted
 
 
-async def reserve_runner_session(
+async def call_runner(
     runner_url: str = "",
     *,
     runner: Optional[LiveRunnerInstance] = None,
+    payload: Optional[dict[str, Any]] = None,
     signer_url: Optional[str] = None,
     signer_headers: Optional[dict[str, str]] = None,
     timeout: float = 5.0,
     max_payment_challenge_retries: int = 3,
-) -> LiveRunnerSession:
+) -> LiveRunnerCallResult:
     runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
     if not runner_url:
-        raise LivepeerGatewayError("Live runner session reserve requires runner_url")
+        raise LivepeerGatewayError("Live runner call requires runner_url")
+    request_payload = payload or {}
     challenge_headers: Optional[dict[str, str]] = None
     if signer_url:
         signer = await get_signer_info(signer_url, _freeze_headers(signer_headers))
@@ -427,35 +436,36 @@ async def reserve_runner_session(
                 request_kwargs["headers"] = challenge_headers
             data = await post_json(
                 runner_url,
-                {},
+                request_payload,
                 **request_kwargs,
             )
-            return _live_runner_session_from_json(
+            return LiveRunnerCallResult(
                 data,
                 runner_url=runner_url,
                 runner=runner,
-                manifest_id="",
+                session_id=data["session_id"].strip() if isinstance(data.get("session_id"), str) else "",
             )
         except LivepeerHTTPError as e:
             if e.status_code != 402:
                 raise
             if not signer_url:
-                raise LivepeerGatewayError("Live runner paid reservation requires signer_url") from e
+                raise LivepeerGatewayError("Live runner paid call requires signer_url") from e
             challenge = _parse_runner_payment_challenge(e)
 
         try:
             data = await _pay_runner_reservation_challenge(
                 runner_url,
                 challenge,
+                payload=request_payload,
                 signer_url=signer_url,
                 signer_headers=signer_headers,
                 timeout=timeout,
             )
-            return _live_runner_session_from_json(
+            return LiveRunnerCallResult(
                 data,
                 runner_url=runner_url,
                 runner=runner,
-                manifest_id=challenge.manifest_id,
+                session_id=challenge.manifest_id,
             )
         except SignerRefreshRequired as e:
             if attempt + 1 >= attempts:
@@ -466,7 +476,7 @@ async def reserve_runner_session(
                 e,
             )
 
-    raise LivepeerGatewayError("Live runner session reserve exhausted payment challenge retries")
+    raise LivepeerGatewayError("Live runner call exhausted payment challenge retries")
 
 
 @dataclass(frozen=True)
@@ -534,12 +544,13 @@ async def _pay_runner_reservation_challenge(
     runner_url: str,
     challenge: _RunnerPaymentChallenge,
     *,
+    payload: dict[str, Any],
     signer_url: Optional[str],
     signer_headers: Optional[dict[str, str]],
     timeout: float,
 ) -> dict[str, Any]:
     if not signer_url:
-        raise LivepeerGatewayError("Live runner paid reservation requires signer_url")
+        raise LivepeerGatewayError("Live runner paid call requires signer_url")
 
     payment = await _get_runner_payment(
         challenge,
@@ -549,7 +560,7 @@ async def _pay_runner_reservation_challenge(
     )
     return await post_json(
         runner_url,
-        {},
+        payload,
         headers={
             "Livepeer-Payment": payment.payment,
             "Livepeer-Segment": payment.seg_creds,
@@ -563,7 +574,6 @@ def _live_runner_session_from_json(
     *,
     runner_url: str,
     runner: Optional[LiveRunnerInstance],
-    manifest_id: str,
 ) -> LiveRunnerSession:
     session_id = data.get("session_id")
     app_url = data.get("app_url")
@@ -576,9 +586,7 @@ def _live_runner_session_from_json(
         app_url=app_url.strip(),
         runner_url=runner_url,
         runner=runner,
-        manifest_id=manifest_id,
     )
-
 
 async def stop_runner_session(
     session: LiveRunnerSession,

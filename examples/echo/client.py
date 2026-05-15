@@ -10,12 +10,12 @@ from pathlib import Path
 
 import av
 
-from livepeer_gateway.errors import LivepeerGatewayError, NoRunnerAvailableError
-from livepeer_gateway.live_runner import LiveRunnerSession, stop_runner_session
+from livepeer_gateway.errors import LivepeerGatewayError
+from livepeer_gateway.live_runner import stop_runner_session
 from livepeer_gateway.media_output import MediaOutput
 from livepeer_gateway.media_publish import MediaPublish
 from livepeer_gateway.http import post_json
-from livepeer_gateway.selection import runner_selector
+from livepeer_gateway.selection import reserve_session
 
 DEFAULT_DISCOVERY = "http://localhost:8935/discovery"
 ECHO_APP_ID = "livepeer-sample/echo"
@@ -38,24 +38,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-frames", type=int, default=0, help="Stop after this many input video frames (0 = full file).")
     parser.add_argument("--blur", action="store_true", help="Sweep blur radius while publishing the sample.")
     return parser.parse_args()
-
-
-async def select_runner(discovery_url: str) -> LiveRunnerSession:
-    try:
-        cursor = runner_selector(discovery_url=discovery_url, app=ECHO_APP_ID)
-        _, session = await cursor.next()
-        return session
-    except NoRunnerAvailableError as exc:
-        errors = []
-        for rejection in exc.rejections:
-            errors.append(f"{rejection.url}: {rejection.reason}")
-            _log(f"runner {rejection.url} unavailable: {rejection.reason}")
-        if not errors:
-            raise LivepeerGatewayError(f"could not find a {ECHO_APP_ID!r} runner in discovery") from exc
-        raise LivepeerGatewayError(
-            "could not reserve any discovered echo runner"
-            + (": " + "; ".join(errors) if errors else "")
-        ) from exc
 
 
 def _channel_url(echo_response: dict[str, object], name: str) -> str:
@@ -143,7 +125,7 @@ async def main() -> None:
     session = None
 
     try:
-        session = await select_runner(args.discovery)
+        session = await reserve_session(discovery_url=args.discovery, app=ECHO_APP_ID)
         _log("runner_url:", session.runner.url if session.runner is not None else session.runner_url)
         _log("session_id:", session.session_id)
         _log("app_url:", session.app_url)

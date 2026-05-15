@@ -42,22 +42,29 @@ from .media_output import (
 from .errors import OrchestratorRejection, RunnerRejection
 from .lv2v import LiveVideoToVideo, StartJobRequest, start_lv2v
 from .live_runner import (
+    LiveRunnerCallResult,
     LiveRunnerGPU,
     LiveRunnerInstance,
     LiveRunnerPriceInfo,
     LiveRunnerRegistration,
     LiveRunnerSession,
+    call_runner,
     create_trickle_channels,
     register_runner,
     remove_trickle_channels,
-    reserve_runner_session,
     stop_runner_session,
 )
 from .discovery import discover_orchestrators, discover_runners
 from .orch_info import get_orch_info
 from .remote_signer import LivePaymentSession, PaymentSession
 from .scope import start_scope
-from .selection import RunnerSelectionCursor, SelectionCursor, orchestrator_selector, runner_selector
+from .selection import (
+    RunnerSelectionCursor,
+    SelectionCursor,
+    orchestrator_selector,
+    runner_selector,
+    reserve_session,
+)
 from .token import parse_token
 from .trickle_publisher import (
     TricklePublishError,
@@ -86,6 +93,7 @@ __all__ = [
     "get_training_status",
     "get_orch_info",
     "LiveVideoToVideo",
+    "LiveRunnerCallResult",
     "LiveRunnerGPU",
     "LiveRunnerInstance",
     "LiveRunnerPriceInfo",
@@ -124,11 +132,12 @@ __all__ = [
     "SelectionCursor",
     "orchestrator_selector",
     "runner_selector",
+    "reserve_session",
     "StartJobRequest",
+    "call_runner",
     "create_trickle_channels",
     "register_runner",
     "remove_trickle_channels",
-    "reserve_runner_session",
     "refresh_training_payment",
     "start_lv2v",
     "start_scope",
