@@ -181,7 +181,6 @@ async def _handle_update(request: web.Request) -> web.Response:
     mode = _parse_mode(json.loads(await request.read()))
     state.mode.mode = mode.mode
     state.mode.radius = mode.radius
-    print(f"updated session {session_id} mode={mode.mode} radius={mode.radius}")
     return web.json_response(state.to_json())
 
 
