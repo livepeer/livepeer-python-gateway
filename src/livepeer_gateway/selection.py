@@ -177,6 +177,10 @@ class RunnerSelectionCursor:
         self._next_index = 0
         self.rejections: list[RunnerRejection] = []
 
+    @property
+    def candidates(self) -> tuple[LiveRunnerInstance, ...]:
+        return tuple(self._candidates)
+
     async def next(self) -> LiveRunnerCallResult:
         while self._next_index < len(self._candidates):
             runner = self._candidates[self._next_index]
