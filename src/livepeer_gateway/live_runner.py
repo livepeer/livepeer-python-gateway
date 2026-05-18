@@ -26,6 +26,7 @@ _LOG = logging.getLogger(__name__)
 
 _DEFAULT_HEARTBEAT_INTERVAL_S = 5.0
 _LIVE_RUNNER_PAYER_ADDRESS_HEADER = "Livepeer-Payer-Address"
+_LIVE_RUNNER_MODES = frozenset({"session", "single-shot"})
 
 # golang format duration, eg "10s"
 _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u00b5s|ms|s|m|h)\s*$")
@@ -125,6 +126,7 @@ class LiveRunnerRegistration:
         app: str,
         price_info: LiveRunnerPriceInfo,
         runner_id: str = "",
+        mode: str = "session",
         label: str = "",
         version: str = "",
         status: str = "ready",
@@ -143,6 +145,7 @@ class LiveRunnerRegistration:
         self._heartbeat_secret: Optional[str] = None
         self._runner_url = runner_url
         self._app = app
+        self._mode = _normalize_runner_mode(mode)
         self._price_info = price_info
         self._label = label
         self._version = version
@@ -241,6 +244,7 @@ class LiveRunnerRegistration:
         payload: dict[str, Any] = {
             "runner_url": self._runner_url,
             "app": self._app,
+            "mode": self._mode,
             "capacity": self._capacity,
             "price_info": self._price_info.to_json(),
         }
@@ -324,6 +328,7 @@ async def register_runner(
     pixels_per_unit: int = 1,
     price_unit: str = "USD",
     runner_id: str = "",
+    mode: str = "session",
     label: str = "",
     version: str = "",
     status: str = "ready",
@@ -344,6 +349,7 @@ async def register_runner(
         app=app,
         price_info=LiveRunnerPriceInfo(price_per_unit, pixels_per_unit, price_unit),
         runner_id=runner_id,
+        mode=mode,
         label=label,
         version=version,
         status=status,
@@ -662,6 +668,13 @@ def _parse_go_duration_s(value: object, *, default: Optional[float]) -> Optional
         "h": 3600.0,
     }[unit]
     return number * scale
+
+
+def _normalize_runner_mode(mode: str) -> str:
+    normalized = mode.strip()
+    if normalized not in _LIVE_RUNNER_MODES:
+        raise ValueError(f"live runner mode must be one of {sorted(_LIVE_RUNNER_MODES)}")
+    return normalized
 
 
 def _is_invalid_authorization_error(exc: LivepeerGatewayError) -> bool:
