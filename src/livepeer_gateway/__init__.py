@@ -1,5 +1,5 @@
 from .capabilities import CapabilityId, build_capabilities
-from .channel_reader import ChannelReader, JSONLReader
+from .channel_reader import ChannelEventCallback, ChannelReader, JSONLReader
 from .channel_writer import ChannelWriter, JSONLWriter
 from .control import Control, ControlConfig, ControlMode
 from .byoc import (
@@ -122,6 +122,7 @@ __all__ = [
     "AudioDecodedMediaFrame",
     "DecodedMediaFrame",
     "DemuxedMediaPacket",
+    "ChannelEventCallback",
     "ChannelReader",
     "JSONLReader",
     "JSONLWriter",
