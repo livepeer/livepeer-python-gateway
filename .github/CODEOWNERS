@@ -1,8 +1,2 @@
-# Code owners for livepeer-python-gateway.
-#
-# Reviewers in this file are automatically requested for review on PRs
-# touching the listed paths. See:
-# https://docs.github.com/en/repositories/managing-your-repositories-settings-and-customizations/customizing-your-repository/about-code-owners
-
 # Default owner — repo-wide.
 * @j0sh
