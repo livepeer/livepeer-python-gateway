@@ -784,8 +784,7 @@ def _normalize_runner_mode(mode: str) -> str:
 
 
 def _is_invalid_authorization_error(exc: LivepeerGatewayError) -> bool:
-    message = str(exc).lower()
-    return "http 401" in message and "invalid authorization" in message
+    return isinstance(exc, LivepeerHTTPError) and exc.status_code == 401
 
 
 def _resolve_session_credentials(
