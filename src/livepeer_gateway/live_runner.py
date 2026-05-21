@@ -688,18 +688,27 @@ def _live_runner_session_from_json(
     )
 
 async def stop_runner_session(
-    session: LiveRunnerSession,
+    session: LiveRunnerSession | LiveRunnerSessionRequest,
     *,
     timeout: float = 5.0,
 ) -> None:
-    runner_url = session.runner_url.strip()
-    session_id = session.session_id.strip()
-    if not runner_url:
-        raise LivepeerGatewayError("Live runner session stop requires runner_url")
-    if not session_id:
-        raise LivepeerGatewayError("Live runner session stop requires session_id")
+    if isinstance(session, LiveRunnerSession):
+        runner_url = session.runner_url.strip()
+        session_id = session.session_id.strip()
+        if not runner_url:
+            raise LivepeerGatewayError("Live runner session stop requires runner_url")
+        if not session_id:
+            raise LivepeerGatewayError("Live runner session stop requires session_id")
+        url = _join_endpoint(runner_url, f"/{quote(session_id, safe='')}/stop")
+    else:
+        headers = getattr(session, "headers", None)
+        get = getattr(headers, "get", None)
+        control_url = get("Livepeer-Session-Control", "") if callable(get) else ""
+        if not isinstance(control_url, str) or not control_url.strip():
+            raise LivepeerGatewayError("Live runner session stop requires session_control")
+        url = _join_endpoint(control_url, "stop")
     await _post_empty(
-        _join_endpoint(runner_url, f"/{quote(session_id, safe='')}/stop"),
+        url,
         {},
         timeout,
     )
