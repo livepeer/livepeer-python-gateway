@@ -4,6 +4,7 @@ import logging
 from typing import Any, Optional, Sequence
 
 from .errors import LivepeerGatewayError, NoRunnerAvailableError
+from .http import post_json
 from .lv2v import LiveVideoToVideo, StartJobRequest
 from .selection import runner_selector
 from .token import parse_token
@@ -66,8 +67,9 @@ async def start_scope(
     if resolved_discovery_headers is None:
         resolved_discovery_headers = discovery_headers
 
+    body = req.to_json()
     result = await _select_scope_runner(
-        body=req.to_json(),
+        body=body,
         signer_url=resolved_signer_url,
         signer_headers=resolved_signer_headers,
         discovery_url=resolved_discovery_url,
@@ -76,13 +78,20 @@ async def start_scope(
         timeout=timeout,
     )
 
+    data = result.data
+    if not _is_serverless_runner(result.runner):
+        app_url = data.get("app_url")
+        if not isinstance(app_url, str) or not app_url.strip():
+            raise LivepeerGatewayError("Scope runner response missing app_url")
+        data = await post_json(f"{app_url.strip().rstrip('/')}/scope", body, timeout=timeout)
+
     job = LiveVideoToVideo.from_json(
-        result.data,
+        data,
         signer_url=resolved_signer_url,
         payment_session=result.payment_session,
     )
     if not job.manifest_id:
-        raise LivepeerGatewayError("LiveVideoToVideo response missing manifest_id")
+        raise LivepeerGatewayError("Scope response missing manifest_id")
     return job
 
 
@@ -112,3 +121,9 @@ async def _select_scope_runner(
         for rejection in e.rejections:
             _LOG.info("scope runner rejected: %s: %s", rejection.url, rejection.reason)
         raise
+
+
+def _is_serverless_runner(runner: object) -> bool:
+    raw = getattr(runner, "raw", None)
+    version = raw.get("version") if isinstance(raw, dict) else None
+    return isinstance(version, str) and version.startswith("serverless")
