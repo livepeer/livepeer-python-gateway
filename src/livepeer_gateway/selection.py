@@ -153,7 +153,7 @@ class RunnerSelectionCursor:
     """
     Stateful selector that advances through live runners sequentially.
 
-    Runner attempts are intentionally not parallelized: selecting a session
+    Runner attempts are intentionally not parallelized: selecting a persistent
     runner reserves capacity, and selecting a single-shot runner may perform
     the caller's actual app operation.
     """
