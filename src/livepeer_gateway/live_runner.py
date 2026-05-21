@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -8,11 +9,12 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any, Optional, Protocol, TypedDict, cast
+from typing import Any, Awaitable, Callable, Literal, Optional, Protocol, TypedDict, cast
 from urllib.parse import quote, urlparse, urlunparse
 
 import aiohttp
 
+from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
 from .http import post_json, request_json
 from .remote_signer import (
@@ -50,6 +52,17 @@ class LiveRunnerSessionHeaders(Protocol):
 
 class LiveRunnerSessionRequest(Protocol):
     headers: LiveRunnerSessionHeaders
+
+
+@dataclass(frozen=True)
+class LiveRunnerSessionEvent:
+    session_id: str
+    event: Literal["reserved", "released"]
+    timestamp: Optional[str]
+    raw: dict[str, Any]
+
+
+LiveRunnerSessionCallback = Callable[[LiveRunnerSessionEvent], None | Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -135,6 +148,8 @@ class LiveRunnerRegistration:
         timeout: float = 5.0,
         heartbeat_interval_s: Optional[float] = None,
         unregister_on_close: bool = True,
+        on_session_reserve: Optional[LiveRunnerSessionCallback] = None,
+        on_session_release: Optional[LiveRunnerSessionCallback] = None,
     ) -> None:
         self.orchestrator_url = _normalize_http_base(orchestrator_url)
         self.runner_id = runner_id
@@ -155,16 +170,38 @@ class LiveRunnerRegistration:
         self._timeout = timeout
         self._heartbeat_interval_override = heartbeat_interval_s
         self._unregister_on_close = unregister_on_close
+        self._on_session_reserve = on_session_reserve
+        self._on_session_release = on_session_release
+        self._active_session_ids: list[str] = []
+        self.o2r_channel: Optional[LiveRunnerTrickleChannel] = None
+        self._o2r_reader: Optional[ChannelReader] = None
         self._closed = False
         self._task: Optional[asyncio.Task[None]] = None
+        self._o2r_task: Optional[asyncio.Task[None]] = None
 
     async def start(self) -> "LiveRunnerRegistration":
         await self._send_heartbeat()
         self._task = asyncio.create_task(self._heartbeat_loop())
         return self
 
+    @property
+    def active_session_ids(self) -> tuple[str, ...]:
+        # Return an immutable snapshot; internal storage stays list-backed to preserve reservation order.
+        return tuple(self._active_session_ids)
+
     async def close(self) -> None:
         self._closed = True
+        o2r_reader = self._o2r_reader
+        self._o2r_reader = None
+        self._o2r_task = None
+        if o2r_reader is not None:
+            try:
+                await o2r_reader.close(wait_callback=False)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _LOG.exception("Live runner O2R reader failed during shutdown")
+
         task = self._task
         self._task = None
         if task is not None and not task.done():
@@ -247,6 +284,7 @@ class LiveRunnerRegistration:
             "mode": self._mode,
             "capacity": self._capacity,
             "price_info": self._price_info.to_json(),
+            "session_ids": list(self.active_session_ids),
         }
         if self.runner_id:
             payload["runner_id"] = self.runner_id
@@ -309,6 +347,9 @@ class LiveRunnerRegistration:
         elif is_initial_heartbeat:
             raise LivepeerGatewayError("Live runner heartbeat response missing heartbeat_secret")
 
+        if is_initial_heartbeat:
+            self._start_o2r(data.get("o2r"))
+
     async def _post_heartbeat(self, auth: str) -> dict[str, Any]:
         return await post_json(
             _join_endpoint(self.orchestrator_url, "/runners/heartbeat"),
@@ -316,6 +357,67 @@ class LiveRunnerRegistration:
             headers={"Authorization": auth},
             timeout=self._timeout,
         )
+
+    def _start_o2r(self, value: object) -> None:
+        if self._closed or self._o2r_reader is not None:
+            return
+        if not _is_trickle_channel_response(value):
+            if value is not None:
+                _LOG.warning("Ignoring malformed live runner O2R channel: %r", value)
+            return
+        channel = cast(LiveRunnerTrickleChannel, value)
+        url = channel.get("url", "").strip()
+        if not url:
+            return
+        self.o2r_channel = channel
+        reader = ChannelReader(url, start_seq=0, on_event=self._handle_o2r_message)
+        self._o2r_reader = reader
+        self._o2r_task = reader.callback_task()
+
+    async def _handle_o2r_message(self, message: dict[str, Any]) -> None:
+        if message.get("keep") == "alive":
+            return
+
+        event = message.get("event")
+        session_id = message.get("session")
+        if event not in ("reserved", "released") or not isinstance(session_id, str) or not session_id.strip():
+            _LOG.warning("Ignoring unknown live runner O2R message: %r", message)
+            return
+
+        session_id = session_id.strip()
+        typed_event = cast(Literal["reserved", "released"], event)
+        if typed_event == "reserved":
+            self._reserve_session_id(session_id)
+        else:
+            self._release_session_id(session_id)
+
+        timestamp = message.get("timestamp")
+        callback = self._on_session_reserve if typed_event == "reserved" else self._on_session_release
+        if callback is None:
+            return
+
+        session_event = LiveRunnerSessionEvent(
+            session_id=session_id,
+            event=typed_event,
+            timestamp=timestamp if isinstance(timestamp, str) else None,
+            raw=message,
+        )
+        try:
+            result = callback(session_event)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            _LOG.exception("Live runner %s callback failed for session %s", typed_event, session_id)
+
+    def _reserve_session_id(self, session_id: str) -> None:
+        if session_id not in self._active_session_ids:
+            self._active_session_ids.append(session_id)
+
+    def _release_session_id(self, session_id: str) -> None:
+        try:
+            self._active_session_ids.remove(session_id)
+        except ValueError:
+            pass
 
 
 async def register_runner(
@@ -338,6 +440,8 @@ async def register_runner(
     timeout: float = 5.0,
     heartbeat_interval_s: Optional[float] = None,
     unregister_on_close: bool = True,
+    on_session_reserve: Optional[LiveRunnerSessionCallback] = None,
+    on_session_release: Optional[LiveRunnerSessionCallback] = None,
 ) -> LiveRunnerRegistration:
     if gpu is None and auto_detect_gpu:
         gpu = detect_process_gpu()
@@ -358,6 +462,8 @@ async def register_runner(
         timeout=timeout,
         heartbeat_interval_s=heartbeat_interval_s,
         unregister_on_close=unregister_on_close,
+        on_session_reserve=on_session_reserve,
+        on_session_release=on_session_release,
     )
     return await registration.start()
 
