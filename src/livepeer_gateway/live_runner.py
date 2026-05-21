@@ -28,7 +28,7 @@ _LOG = logging.getLogger(__name__)
 
 _DEFAULT_HEARTBEAT_INTERVAL_S = 5.0
 _LIVE_RUNNER_PAYER_ADDRESS_HEADER = "Livepeer-Payer-Address"
-_LIVE_RUNNER_MODES = frozenset({"session", "single-shot"})
+_LIVE_RUNNER_MODES = frozenset({"persistent", "single-shot"})
 
 # golang format duration, eg "10s"
 _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u00b5s|ms|s|m|h)\s*$")
@@ -139,7 +139,7 @@ class LiveRunnerRegistration:
         app: str,
         price_info: LiveRunnerPriceInfo,
         runner_id: str = "",
-        mode: str = "session",
+        mode: str = "persistent",
         label: str = "",
         version: str = "",
         status: str = "ready",
@@ -430,7 +430,7 @@ async def register_runner(
     pixels_per_unit: int = 1,
     price_unit: str = "USD",
     runner_id: str = "",
-    mode: str = "session",
+    mode: str = "persistent",
     label: str = "",
     version: str = "",
     status: str = "ready",
