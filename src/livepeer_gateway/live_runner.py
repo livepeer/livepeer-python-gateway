@@ -692,6 +692,7 @@ async def stop_runner_session(
     *,
     timeout: float = 5.0,
 ) -> None:
+    request_headers: dict[str, str] = {}
     if isinstance(session, LiveRunnerSession):
         runner_url = session.runner_url.strip()
         session_id = session.session_id.strip()
@@ -704,12 +705,15 @@ async def stop_runner_session(
         headers = getattr(session, "headers", None)
         get = getattr(headers, "get", None)
         control_url = get("Livepeer-Session-Control", "") if callable(get) else ""
+        token = get("Livepeer-Session-Token", "") if callable(get) else ""
         if not isinstance(control_url, str) or not control_url.strip():
             raise LivepeerGatewayError("Live runner session stop requires session_control")
         url = _join_endpoint(control_url, "stop")
+        if isinstance(token, str) and token.strip():
+            request_headers = {"Livepeer-Session-Token": token}
     await _post_empty(
         url,
-        {},
+        request_headers,
         timeout,
     )
 
