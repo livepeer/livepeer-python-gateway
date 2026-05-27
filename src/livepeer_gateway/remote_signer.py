@@ -230,6 +230,8 @@ class LivePaymentSession:
                     raise PaymentError(
                         f"Signer refresh required after {attempts} retries: {e}"
                     ) from e
+                if self._state is None:
+                    raise
                 orchestrator_url = e.orchestrator_url
                 if not orchestrator_url:
                     raise PaymentError(
