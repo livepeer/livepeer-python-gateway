@@ -46,6 +46,13 @@ class NoRunnerAvailableError(LivepeerGatewayError):
         super().__init__(message)
         self.rejections: list[RunnerRejection] = rejections or []
 
+    def __str__(self) -> str:
+        message = super().__str__()
+        if not self.rejections:
+            return message
+        reasons = "; ".join(f"{r.url}: {r.reason}" for r in self.rejections)
+        return f"{message}: {reasons}"
+
 
 class SignerRefreshRequired(LivepeerGatewayError):
     """Raised when the remote signer returns HTTP 480 and a refresh is required."""
