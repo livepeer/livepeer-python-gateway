@@ -357,10 +357,14 @@ class MediaPublish:
             track._label = track.kind if count == 1 else f"{track.kind}_{track.index}"
 
         video_configs = [track.config for track in self._video_tracks if isinstance(track.config, VideoOutputConfig)]
+        # For video, segment_time is anchored to keyframe cadence. For
+        # audio-only, fall back to min_segment_wallclock_s rather than a
+        # hardcoded 2.0s — this is the dial that actually shrinks segments
+        # on the audio-only path. (Local patch.)
         self._segment_time_s = (
             min(float(track.keyframe_interval_s) for track in video_configs)
             if video_configs
-            else 2.0
+            else max(0.1, float(config.min_segment_wallclock_s))
         )
         self._next_state_index = 0
 
