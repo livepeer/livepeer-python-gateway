@@ -315,6 +315,12 @@ class LiveRunnerRegistration:
     async def _send_heartbeat(self) -> None:
         is_initial_heartbeat = self._heartbeat_secret is None
         auth = self._heartbeat_secret or self._bootstrap_secret
+        request_orchestrator_url = self.orchestrator_url
+        if is_initial_heartbeat:
+            _LOG.info(
+                "Registering live runner with orchestrator %s",
+                request_orchestrator_url,
+            )
         try:
             data = await self._post_heartbeat(auth)
         except LivepeerGatewayError as exc:
@@ -333,6 +339,18 @@ class LiveRunnerRegistration:
         orchestrator = data.get("orchestrator")
         if isinstance(orchestrator, str) and orchestrator.strip():
             self.orchestrator_url = _normalize_http_base(orchestrator)
+        if is_initial_heartbeat:
+            if self.orchestrator_url != request_orchestrator_url:
+                _LOG.info(
+                    "Live runner registration using orchestrator %s returned by %s",
+                    self.orchestrator_url,
+                    request_orchestrator_url,
+                )
+            else:
+                _LOG.info(
+                    "Live runner registration using orchestrator %s",
+                    self.orchestrator_url,
+                )
 
         if self._heartbeat_interval_override is None:
             self.heartbeat_interval_s = _parse_go_duration_s(
