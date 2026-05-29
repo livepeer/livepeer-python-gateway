@@ -260,13 +260,14 @@ class LivePaymentSession:
             timeout = aiohttp.ClientTimeout(total=5.0)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(url, data=b"", headers=headers) as resp:
-                    body = await resp.text()
                     if resp.status >= 400:
+                        body = await resp.text()
                         message = _extract_error_message_from_body(body)
                         body_part = f"; body={message!r}" if message else ""
                         raise PaymentError(
                             f"HTTP payment error: HTTP {resp.status} from endpoint (url={url}){body_part}"
                         )
+                    await resp.read()
         except PaymentError:
             raise
         except getattr(aiohttp, "ClientConnectorError", ()) as e:
