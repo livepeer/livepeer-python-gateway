@@ -9,7 +9,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal, Optional, Protocol, TypedDict, cast
+from typing import Any, Awaitable, Callable, Literal, NotRequired, Optional, Protocol, TypedDict, cast
 from urllib.parse import quote, urlparse, urlunparse
 
 import aiohttp
@@ -42,7 +42,13 @@ class LiveRunnerTrickleChannelRequest(TypedDict):
 class LiveRunnerTrickleChannel(TypedDict):
     name: str
     channel_name: str
+    # Public/external trickle URL.
     url: str
+    # Optional private-network URL for runner-to-orchestrator traffic. When the
+    # runner and orchestrator share a network, such as Docker, this can bypass
+    # public TLS/routing, but it is only present when the orchestrator is
+    # configured to return one.
+    internal_url: NotRequired[str]
     mime_type: str
 
 
@@ -872,7 +878,7 @@ def _is_trickle_channel_response(value: object) -> bool:
     return all(
         isinstance(value.get(key), str)
         for key in ("name", "channel_name", "url", "mime_type")
-    )
+    ) and ("internal_url" not in value or isinstance(value.get("internal_url"), str))
 
 
 async def _post_empty(url: str, headers: dict[str, str], timeout: float) -> None:
