@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Livepeer AI Video</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #111;
+    color: #eee;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 12px 20px;
+    background: #1a1a2e;
+    border-bottom: 1px solid #333;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 { font-size: 18px; font-weight: 600; }
+  .config-panel {
+    padding: 12px 20px;
+    background: #1a1a1a;
+    border-bottom: 1px solid #333;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-end;
+  }
+  .config-field { display: flex; flex-direction: column; gap: 3px; }
+  .config-field label { font-size: 11px; color: #999; text-transform: uppercase; }
+  .config-field input {
+    background: #222;
+    border: 1px solid #444;
+    color: #eee;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    width: 240px;
+  }
+  .config-field input:focus { outline: none; border-color: #6c63ff; }
+  .buttons { display: flex; gap: 8px; align-items: flex-end; }
+  button {
+    padding: 7px 18px;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  #btn-start { background: #4caf50; color: #fff; }
+  #btn-start:hover { background: #45a049; }
+  #btn-start:disabled { background: #555; cursor: not-allowed; }
+  #btn-stop { background: #f44336; color: #fff; }
+  #btn-stop:hover { background: #e53935; }
+  #btn-stop:disabled { background: #555; cursor: not-allowed; }
+  .main {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 20px;
+    padding: 20px;
+    flex-wrap: wrap;
+  }
+  .video-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .video-panel .label {
+    font-size: 12px;
+    color: #999;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  canvas {
+    background: #000;
+    border-radius: 6px;
+    border: 1px solid #333;
+  }
+  .stats {
+    padding: 8px 20px;
+    background: #1a1a1a;
+    border-top: 1px solid #333;
+    display: flex;
+    gap: 24px;
+    font-size: 12px;
+    color: #999;
+  }
+  .stats .stat { display: flex; gap: 4px; }
+  .stats .stat-value { color: #eee; font-variant-numeric: tabular-nums; }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 4px;
+  }
+  .status-dot.disconnected { background: #f44336; }
+  .status-dot.connecting { background: #ff9800; }
+  .status-dot.connected { background: #4caf50; }
+  #log {
+    padding: 8px 20px;
+    background: #0d0d0d;
+    border-top: 1px solid #222;
+    font-size: 11px;
+    color: #777;
+    max-height: 80px;
+    overflow-y: auto;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Livepeer AI Video</h1>
+</header>
+
+<div class="config-panel">
+  <div class="config-field">
+    <label>Server URL</label>
+    <input id="server-url" type="text" value="" placeholder="http://localhost:8000">
+  </div>
+  <div class="config-field">
+    <label>Model ID</label>
+    <input id="model-id" type="text" value="noop" placeholder="noop">
+  </div>
+  <div class="config-field">
+    <label>Orchestrator URL (optional)</label>
+    <input id="orch-url" type="text" value="" placeholder="host:port">
+  </div>
+  <div class="config-field">
+    <label>API Key (optional)</label>
+    <input id="api-key" type="password" value="" placeholder="Leave empty if auth disabled">
+  </div>
+  <div class="buttons">
+    <button id="btn-start">Start</button>
+    <button id="btn-stop" disabled>Stop</button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="video-panel">
+    <div class="label">Camera Input</div>
+    <canvas id="input-canvas" width="640" height="480"></canvas>
+  </div>
+  <div class="video-panel">
+    <div class="label">AI Output</div>
+    <canvas id="output-canvas" width="640" height="480"></canvas>
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat">
+    <span>Status:</span>
+    <span id="status-dot" class="status-dot disconnected"></span>
+    <span id="status-text" class="stat-value">Disconnected</span>
+  </div>
+  <div class="stat">
+    <span>Send FPS:</span>
+    <span id="send-fps" class="stat-value">0</span>
+  </div>
+  <div class="stat">
+    <span>Recv FPS:</span>
+    <span id="recv-fps" class="stat-value">0</span>
+  </div>
+  <div class="stat">
+    <span>Latency:</span>
+    <span id="latency" class="stat-value">--</span>
+  </div>
+  <div class="stat">
+    <span>Frames sent:</span>
+    <span id="frames-sent" class="stat-value">0</span>
+  </div>
+  <div class="stat">
+    <span>Frames recv:</span>
+    <span id="frames-recv" class="stat-value">0</span>
+  </div>
+</div>
+
+<div id="log"></div>
+
+<!-- Hidden video + canvas for camera capture -->
+<video id="camera-video" autoplay playsinline style="display:none"></video>
+<canvas id="capture-canvas" width="640" height="480" style="display:none"></canvas>
+
+<script>
+(function() {
+  // DOM elements
+  const serverUrlInput = document.getElementById('server-url');
+  const modelIdInput = document.getElementById('model-id');
+  const orchUrlInput = document.getElementById('orch-url');
+  const apiKeyInput = document.getElementById('api-key');
+  const btnStart = document.getElementById('btn-start');
+  const btnStop = document.getElementById('btn-stop');
+  const inputCanvas = document.getElementById('input-canvas');
+  const outputCanvas = document.getElementById('output-canvas');
+  const inputCtx = inputCanvas.getContext('2d');
+  const outputCtx = outputCanvas.getContext('2d');
+  const cameraVideo = document.getElementById('camera-video');
+  const captureCanvas = document.getElementById('capture-canvas');
+  const captureCtx = captureCanvas.getContext('2d');
+  const statusDot = document.getElementById('status-dot');
+  const statusText = document.getElementById('status-text');
+  const sendFpsEl = document.getElementById('send-fps');
+  const recvFpsEl = document.getElementById('recv-fps');
+  const latencyEl = document.getElementById('latency');
+  const framesSentEl = document.getElementById('frames-sent');
+  const framesRecvEl = document.getElementById('frames-recv');
+  const logEl = document.getElementById('log');
+
+  // Auto-detect server URL from current page
+  serverUrlInput.value = window.location.origin;
+
+  // State
+  let mediaStream = null;
+  let ws = null;
+  let jobId = null;
+  let sendInterval = null;
+  let cameraRafId = null;
+
+  // Stats
+  let framesSent = 0;
+  let framesRecv = 0;
+  let sendTimestamps = [];
+  let recvTimestamps = [];
+  let lastSendTime = 0;
+
+  function log(msg) {
+    const line = document.createElement('div');
+    const ts = new Date().toLocaleTimeString();
+    line.textContent = `[${ts}] ${msg}`;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+    // Keep max 50 lines
+    while (logEl.children.length > 50) {
+      logEl.removeChild(logEl.firstChild);
+    }
+  }
+
+  function setStatus(state, text) {
+    statusDot.className = 'status-dot ' + state;
+    statusText.textContent = text;
+  }
+
+  function getServerUrl() {
+    let url = serverUrlInput.value.trim();
+    if (!url) url = window.location.origin;
+    return url.replace(/\/+$/, '');
+  }
+
+  function getWsUrl() {
+    const http = getServerUrl();
+    return http.replace(/^http/, 'ws');
+  }
+
+  function updateFps() {
+    const now = Date.now();
+    const window = 2000; // 2 second window
+    sendTimestamps = sendTimestamps.filter(t => now - t < window);
+    recvTimestamps = recvTimestamps.filter(t => now - t < window);
+    sendFpsEl.textContent = Math.round(sendTimestamps.length / (window / 1000));
+    recvFpsEl.textContent = Math.round(recvTimestamps.length / (window / 1000));
+    framesSentEl.textContent = framesSent;
+    framesRecvEl.textContent = framesRecv;
+  }
+
+  // Camera preview loop
+  function drawCameraPreview() {
+    if (!mediaStream) return;
+    inputCtx.drawImage(cameraVideo, 0, 0, 640, 480);
+    cameraRafId = requestAnimationFrame(drawCameraPreview);
+  }
+
+  async function startCamera() {
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, frameRate: 24 },
+        audio: false,
+      });
+      cameraVideo.srcObject = mediaStream;
+      await cameraVideo.play();
+      cameraRafId = requestAnimationFrame(drawCameraPreview);
+      log('Camera started');
+    } catch (err) {
+      log('Camera error: ' + err.message);
+      throw err;
+    }
+  }
+
+  function stopCamera() {
+    if (cameraRafId) {
+      cancelAnimationFrame(cameraRafId);
+      cameraRafId = null;
+    }
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(t => t.stop());
+      mediaStream = null;
+    }
+    cameraVideo.srcObject = null;
+  }
+
+  async function startJob() {
+    const url = getServerUrl();
+    const body = { model_id: modelIdInput.value.trim() || 'noop' };
+    const orchUrl = orchUrlInput.value.trim();
+    if (orchUrl) body.orchestrator_url = orchUrl;
+
+    log('Starting job...');
+    setStatus('connecting', 'Starting job...');
+
+    const headers = { 'Content-Type': 'application/json' };
+    const apiKey = apiKeyInput.value.trim();
+    if (apiKey) headers['X-API-Key'] = apiKey;
+
+    const resp = await fetch(url + '/start-job', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: resp.statusText }));
+      throw new Error(err.error || 'Failed to start job');
+    }
+
+    const data = await resp.json();
+    jobId = data.job_id;
+    log('Job started: ' + jobId);
+    return jobId;
+  }
+
+  async function stopJob() {
+    if (!jobId) return;
+    const url = getServerUrl();
+    try {
+      const headers = {};
+      const apiKey = apiKeyInput.value.trim();
+      if (apiKey) headers['X-API-Key'] = apiKey;
+      await fetch(url + '/stop-job/' + jobId, { method: 'DELETE', headers: headers });
+      log('Job stopped: ' + jobId);
+    } catch (err) {
+      log('Error stopping job: ' + err.message);
+    }
+    jobId = null;
+  }
+
+  function connectWebSocket() {
+    let wsUrl = getWsUrl() + '/ws/stream?job_id=' + jobId;
+    const apiKey = apiKeyInput.value.trim();
+    if (apiKey) wsUrl += '&api_key=' + encodeURIComponent(apiKey);
+    log('Connecting WebSocket: ' + wsUrl.replace(/api_key=[^&]+/, 'api_key=***'));
+    setStatus('connecting', 'Connecting...');
+
+    ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = function() {
+      log('WebSocket connected');
+      setStatus('connected', 'Connected');
+      startSending();
+    };
+
+    ws.onmessage = function(event) {
+      framesRecv++;
+      recvTimestamps.push(Date.now());
+
+      // Calculate latency estimate
+      if (lastSendTime > 0) {
+        const latency = Date.now() - lastSendTime;
+        latencyEl.textContent = latency + 'ms';
+      }
+
+      // Render received JPEG frame
+      const blob = new Blob([event.data], { type: 'image/jpeg' });
+      createImageBitmap(blob).then(function(bmp) {
+        outputCtx.drawImage(bmp, 0, 0, 640, 480);
+        bmp.close();
+      }).catch(function() {});
+    };
+
+    ws.onclose = function(event) {
+      log('WebSocket closed: ' + (event.reason || event.code));
+      setStatus('disconnected', 'Disconnected');
+      stopSending();
+    };
+
+    ws.onerror = function() {
+      log('WebSocket error');
+    };
+  }
+
+  function startSending() {
+    if (sendInterval) return;
+    // Send frames at ~24 FPS
+    sendInterval = setInterval(function() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (!mediaStream) return;
+
+      // Capture current camera frame to hidden canvas
+      captureCtx.drawImage(cameraVideo, 0, 0, 640, 480);
+
+      // Convert to JPEG blob and send
+      captureCanvas.toBlob(function(blob) {
+        if (!blob) return;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(blob);
+        framesSent++;
+        lastSendTime = Date.now();
+        sendTimestamps.push(lastSendTime);
+      }, 'image/jpeg', 0.8);
+    }, 1000 / 24);
+  }
+
+  function stopSending() {
+    if (sendInterval) {
+      clearInterval(sendInterval);
+      sendInterval = null;
+    }
+  }
+
+  // Stats update interval
+  setInterval(updateFps, 500);
+
+  // Start button
+  btnStart.addEventListener('click', async function() {
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+
+    // Reset stats
+    framesSent = 0;
+    framesRecv = 0;
+    sendTimestamps = [];
+    recvTimestamps = [];
+    latencyEl.textContent = '--';
+
+    // Clear output canvas
+    outputCtx.clearRect(0, 0, 640, 480);
+
+    try {
+      await startCamera();
+      await startJob();
+      connectWebSocket();
+    } catch (err) {
+      log('Start error: ' + err.message);
+      setStatus('disconnected', 'Error');
+      btnStart.disabled = false;
+      btnStop.disabled = true;
+      stopCamera();
+    }
+  });
+
+  // Stop button
+  btnStop.addEventListener('click', async function() {
+    btnStop.disabled = true;
+
+    stopSending();
+
+    if (ws) {
+      ws.close();
+      ws = null;
+    }
+
+    await stopJob();
+    stopCamera();
+
+    setStatus('disconnected', 'Disconnected');
+    btnStart.disabled = false;
+  });
+})();
+</script>
+</body>
+</html>
