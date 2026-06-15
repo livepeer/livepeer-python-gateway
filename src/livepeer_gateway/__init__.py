@@ -54,6 +54,7 @@ from .live_runner import (
     create_trickle_channels,
     register_runner,
     remove_trickle_channels,
+    run_session_payments,
     stop_runner_session,
 )
 from .discovery import discover_orchestrators, discover_runners
@@ -138,6 +139,7 @@ __all__ = [
     "orchestrator_selector",
     "runner_selector",
     "reserve_session",
+    "run_session_payments",
     "StartJobRequest",
     "call_runner",
     "create_trickle_channels",

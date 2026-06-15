@@ -296,6 +296,7 @@ async def reserve_session(
         app_url=app_url.strip(),
         runner_url=result.runner_url,
         runner=result.runner,
+        payment_session=result.payment_session,
     )
 
 
