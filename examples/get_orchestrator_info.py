@@ -140,7 +140,7 @@ def _orch_info_summary(orch_url: str, info: Any) -> dict[str, Any]:
         if has_general_price:
             general = {
                 "price_per_unit_wei": int(info.price_info.pricePerUnit),
-                "pixels_per_unit": int(info.price_info.pixelsPerUnit if info.price_info.pixelsPerUnit > 0 else 1),
+                "pricing_unit_size": int(info.price_info.pixelsPerUnit if info.price_info.pixelsPerUnit > 0 else 1),
             }
 
         cap_specific = []
@@ -154,7 +154,7 @@ def _orch_info_summary(orch_url: str, info: Any) -> dict[str, Any]:
                     "capability_name": cap_name,
                     "constraint": cap_price.constraint or None,
                     "price_per_unit_wei": int(cap_price.pricePerUnit),
-                    "pixels_per_unit": int(cap_price.pixelsPerUnit if cap_price.pixelsPerUnit > 0 else 1),
+                    "pricing_unit_size": int(cap_price.pixelsPerUnit if cap_price.pixelsPerUnit > 0 else 1),
                 }
             )
 
@@ -253,8 +253,8 @@ def _print_text_info(orch_url: str, info: Any) -> None:
 
         if has_general_price:
             price_per_unit = info.price_info.pricePerUnit
-            pixels_per_unit = info.price_info.pixelsPerUnit if info.price_info.pixelsPerUnit > 0 else 1
-            print(f"  General: {price_per_unit} wei per {pixels_per_unit} pixel(s)")
+            pricing_unit_size = info.price_info.pixelsPerUnit if info.price_info.pixelsPerUnit > 0 else 1
+            print(f"  General: {price_per_unit} wei per {pricing_unit_size} work unit(s)")
 
         if has_cap_prices:
             if has_general_price:
@@ -264,10 +264,10 @@ def _print_text_info(orch_url: str, info: Any) -> None:
                     cap_id = cap_price.capability if cap_price.capability else "?"
                     cap_name = format_capability(cap_id) if cap_id != "?" else "unknown"
                     price_per_unit = cap_price.pricePerUnit
-                    pixels_per_unit = cap_price.pixelsPerUnit if cap_price.pixelsPerUnit > 0 else 1
+                    pricing_unit_size = cap_price.pixelsPerUnit if cap_price.pixelsPerUnit > 0 else 1
                     constraint = f" [{cap_price.constraint}]" if cap_price.constraint else ""
                     indent = "    " if has_general_price else "  "
-                    print(f"{indent}{cap_name} {constraint}: {price_per_unit} wei per {pixels_per_unit} pixel(s)")
+                    print(f"{indent}{cap_name} {constraint}: {price_per_unit} wei per {pricing_unit_size} work unit(s)")
 
         print()
     else:
