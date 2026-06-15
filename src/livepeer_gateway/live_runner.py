@@ -89,6 +89,13 @@ class LiveRunnerSession:
     app_url: str
     runner_url: str
     runner: Optional[LiveRunnerInstance] = None
+    # Present when the session was reserved on-chain (signer_url given). Drive it
+    # with run_session_payments() to keep a long-lived session funded.
+    payment_session: Optional[LivePaymentSession] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -1051,3 +1058,27 @@ def _decode_maybe_bytes(value: object) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value or "")
+
+
+async def run_session_payments(
+    session: LiveRunnerSession,
+    *,
+    interval: float = 3.0,
+) -> None:
+    """Keep a reserved live-runner session funded for its whole lifetime.
+
+    The orchestrator meters an open session by wall-clock time and releases it
+    when the balance runs dry, so any held-open transport (trickle, websocket)
+    must keep paying. This sends one payment every ``interval`` seconds until
+    cancelled.
+
+    No-op for offchain sessions (no ``payment_session``). ``interval`` must stay
+    at or below the orchestrator's payment interval so the balance stays ahead;
+    tune it to the deployment.
+    """
+    payment_session = session.payment_session
+    if payment_session is None:
+        return
+    while True:
+        await asyncio.sleep(interval)
+        await payment_session.send_payment()
