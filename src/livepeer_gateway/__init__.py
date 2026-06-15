@@ -43,6 +43,7 @@ from .errors import OrchestratorRejection, RunnerRejection
 from .lv2v import LiveVideoToVideo, StartJobRequest, start_lv2v
 from .live_runner import (
     LiveRunnerCallResult,
+    LiveRunnerCallStream,
     LiveRunnerGPU,
     LiveRunnerInstance,
     LiveRunnerPriceInfo,
@@ -96,6 +97,7 @@ __all__ = [
     "get_orch_info",
     "LiveVideoToVideo",
     "LiveRunnerCallResult",
+    "LiveRunnerCallStream",
     "LiveRunnerGPU",
     "LiveRunnerInstance",
     "LiveRunnerPriceInfo",

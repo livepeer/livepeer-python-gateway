@@ -300,6 +300,46 @@ async def request_json(
     return data
 
 
+async def open_stream(
+    url: str,
+    *,
+    method: Optional[str] = None,
+    payload: Optional[dict[str, Any]] = None,
+    headers: Optional[dict[str, str]] = None,
+    connect_timeout: float = 10.0,
+) -> "tuple[aiohttp.ClientSession, aiohttp.ClientResponse]":
+    """
+    Open an HTTP request and return the live (session, response) without reading the
+    body, for streaming responses (SSE, chunked). The caller owns both and must close
+    them.
+
+    No total timeout (streams run indefinitely) only connect/first-byte are bounded.
+    Raises LivepeerHTTPError on >= 400 (e.g. the 402 payment retry).
+    """
+    resolved_method, req_headers, body = _json_request_parts(
+        url,
+        method=method,
+        payload=payload,
+        headers=headers,
+    )
+
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=connect_timeout, sock_read=None)
+    session = aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(ssl=False))
+    try:
+        resp = await session.request(resolved_method, url, data=body, headers=req_headers)
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        await session.close()
+        raise LivepeerGatewayError(
+            f"HTTP stream error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
+        ) from e
+    if resp.status >= 400:
+        raw = await resp.text()
+        resp.release()
+        await session.close()
+        _raise_http_json_error(resp.status, url, raw, dict(resp.headers.items()))
+    return session, resp
+
+
 async def post_json(
     url: str,
     payload: dict[str, Any],
