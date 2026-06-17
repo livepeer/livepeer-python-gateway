@@ -15,7 +15,7 @@ from urllib.parse import quote, urlparse, urlunparse
 import aiohttp
 
 from .channel_reader import ChannelReader
-from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
+from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired, SkipPaymentCycle
 from .http import post_json, request_json
 from .remote_signer import (
     GetPaymentResponse,
@@ -98,7 +98,8 @@ class LiveRunnerSession:
         compare=False,
     )
     # Seconds between session payments while the session is held open. Must stay
-    # at or below the orchestrator's payment interval so the balance leads.
+    # at or below the orchestrator's livePaymentInterval (5s default) so credits
+    # lead its server-side debit ticker. Default 3s keeps margin under that.
     payment_interval: float = 3.0
     # Background payment task, owned by this session once start_payments() runs.
     _payment_task: Optional[asyncio.Task] = field(
@@ -1125,18 +1126,23 @@ async def run_session_payments(
 ) -> None:
     """Keep a reserved live-runner session funded for its whole lifetime.
 
-    The orchestrator meters an open session by wall-clock time and releases it
-    when the balance runs dry, so any held-open transport (trickle, websocket)
-    must keep paying. This sends an initial payment immediately, then one every
-    ``interval`` seconds until cancelled.
+    After the reservation payment, go-livepeer holds the session as a prepaid
+    balance: a server-side ticker (``-livePaymentInterval``, default 5s) debits it
+    and releases the session once it runs dry. The client must keep crediting it
+    out-of-band, so this pushes payments on a cadence below that server tick. It
+    sends an initial payment immediately, then one every ``interval`` seconds until
+    cancelled.
 
     The immediate first payment matters: a cold start can leave a long gap after
-    the reservation payment, so top up before the first sleep. Per-cycle failures
-    are logged and retried rather than killing the loop.
+    the reservation payment, so top up before the first sleep. The orchestrator
+    can answer a payment with a skip signal (HTTP 482, ``SkipPaymentCycle``) when
+    the balance is still sufficient; that is a normal "paid up" response, not a
+    failure. Other per-cycle failures are logged and retried rather than killing
+    the loop.
 
     No-op for offchain sessions (no ``payment_session``). ``interval`` must stay
-    at or below the orchestrator's payment interval so the balance stays ahead;
-    tune it to the deployment.
+    at or below the orchestrator's ``livePaymentInterval`` (5s default) so the
+    balance stays ahead; tune it to the deployment.
     """
     payment_session = session.payment_session
     if payment_session is None:
@@ -1144,6 +1150,9 @@ async def run_session_payments(
     while True:
         try:
             await payment_session.send_payment()
+        except SkipPaymentCycle as exc:
+            # Orchestrator says the balance is current; this is a healthy gate, not an error.
+            _LOG.debug("Live runner session payment skipped (balance current): %s", exc)
         except Exception as exc:  # noqa: BLE001 - keep the loop alive across transient failures
             _LOG.warning("Live runner session payment failed: %s", exc)
         await asyncio.sleep(interval)
