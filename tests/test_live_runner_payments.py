@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from livepeer_gateway import live_runner
+from livepeer_gateway.errors import SkipPaymentCycle
 from livepeer_gateway.live_runner import LiveRunnerSession, run_session_payments
 
 
@@ -78,6 +79,30 @@ def test_run_session_payments_survives_payment_error() -> None:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        assert attempts["n"] >= 2
+
+    asyncio.run(go())
+
+
+def test_run_session_payments_treats_skip_cycle_as_paid_up() -> None:
+    async def go() -> None:
+        ps = _FakePaymentSession()
+        original = ps.send_payment
+        attempts = {"n": 0}
+
+        async def skip_then_pay(orchestrator_url: str | None = None) -> None:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise SkipPaymentCycle("HTTP 482 (skip payment cycle)")  # orchestrator: balance current
+            await original(orchestrator_url)
+
+        ps.send_payment = skip_then_pay  # type: ignore[assignment]
+        task = asyncio.create_task(run_session_payments(_session(ps), interval=0.01))
+        await asyncio.wait_for(ps.paid.wait(), timeout=1.0)  # set on the 2nd cycle, after the skip
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The skip did not kill the loop; it kept going and paid on the next cycle.
         assert attempts["n"] >= 2
 
     asyncio.run(go())
