@@ -90,12 +90,70 @@ class LiveRunnerSession:
     runner_url: str
     runner: Optional[LiveRunnerInstance] = None
     # Present when the session was reserved on-chain (signer_url given). Drive it
-    # with run_session_payments() to keep a long-lived session funded.
+    # with start_payments() / the async context manager to keep a long-lived
+    # session funded; run_session_payments() is the underlying loop.
     payment_session: Optional[LivePaymentSession] = field(
         default=None,
         repr=False,
         compare=False,
     )
+    # Seconds between session payments while the session is held open. Must stay
+    # at or below the orchestrator's payment interval so the balance leads.
+    payment_interval: float = 3.0
+    # Background payment task, owned by this session once start_payments() runs.
+    _payment_task: Optional[asyncio.Task] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def start_payments(self) -> Optional[asyncio.Task]:
+        """Start the background payment loop that keeps this session funded.
+
+        Idempotent and safe to call repeatedly. No-op offchain (no
+        ``payment_session``). Requires a running event loop; if called from sync
+        code it logs a warning and returns ``None``. Returns the task, or
+        ``None`` if payments could not be started.
+        """
+        if getattr(self, "_payment_task", None) is not None:
+            return self._payment_task
+        if self.payment_session is None:
+            return None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _LOG.warning(
+                "No running event loop; session payments not started. "
+                "Call session.start_payments() from async code to enable."
+            )
+            return None
+        task = loop.create_task(run_session_payments(self, interval=self.payment_interval))
+        object.__setattr__(self, "_payment_task", task)
+        return task
+
+    async def aclose(self) -> None:
+        """Cancel the payment loop (if running) and stop the runner session.
+
+        Best-effort: both steps run even if one fails, and the first
+        non-cancellation error is re-raised after cleanup.
+        """
+        awaitables: list[Awaitable[Any]] = []
+        task = getattr(self, "_payment_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            awaitables.append(task)
+        awaitables.append(stop_runner_session(self))
+        results = await asyncio.gather(*awaitables, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                raise result
+
+    async def __aenter__(self) -> "LiveRunnerSession":
+        self.start_payments()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
 
 
 @dataclass(frozen=True)
@@ -1069,8 +1127,12 @@ async def run_session_payments(
 
     The orchestrator meters an open session by wall-clock time and releases it
     when the balance runs dry, so any held-open transport (trickle, websocket)
-    must keep paying. This sends one payment every ``interval`` seconds until
-    cancelled.
+    must keep paying. This sends an initial payment immediately, then one every
+    ``interval`` seconds until cancelled.
+
+    The immediate first payment matters: a cold start can leave a long gap after
+    the reservation payment, so top up before the first sleep. Per-cycle failures
+    are logged and retried rather than killing the loop.
 
     No-op for offchain sessions (no ``payment_session``). ``interval`` must stay
     at or below the orchestrator's payment interval so the balance stays ahead;
@@ -1080,5 +1142,8 @@ async def run_session_payments(
     if payment_session is None:
         return
     while True:
+        try:
+            await payment_session.send_payment()
+        except Exception as exc:  # noqa: BLE001 - keep the loop alive across transient failures
+            _LOG.warning("Live runner session payment failed: %s", exc)
         await asyncio.sleep(interval)
-        await payment_session.send_payment()

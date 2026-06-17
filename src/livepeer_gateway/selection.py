@@ -274,6 +274,7 @@ async def reserve_session(
     app: Optional[FilterValue] = None,
     gpu: Optional[FilterValue] = None,
     timeout: float = 5.0,
+    payment_interval: float = 3.0,
 ) -> LiveRunnerSession:
     cursor = await runner_selector(
         signer_url=signer_url,
@@ -296,6 +297,7 @@ async def reserve_session(
         app_url=app_url.strip(),
         runner_url=result.runner_url,
         runner=result.runner,
+        payment_interval=payment_interval,
         payment_session=result.payment_session,
     )
 
