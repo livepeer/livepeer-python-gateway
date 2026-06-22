@@ -4,6 +4,7 @@ from fractions import Fraction
 
 import av
 
+from livepeer_gateway.auth_exchange import exchange_api_key_for_signer
 from livepeer_gateway.errors import LivepeerGatewayError
 from livepeer_gateway.lv2v import StartJobRequest, start_lv2v
 from livepeer_gateway.media_publish import MediaPublishConfig, VideoOutputConfig
@@ -23,6 +24,26 @@ def _parse_args() -> argparse.Namespace:
         "--signer",
         default=None,
         help="Remote signer URL (no path). If omitted, runs in offchain mode.",
+    )
+    p.add_argument(
+        "--discovery",
+        default=None,
+        help="Discovery service URL. Used when no orchestrator is specified.",
+    )
+    p.add_argument(
+        "--billing-url",
+        default=None,
+        help="Dashboard origin for API-key bearer exchange (e.g. https://dashboard.example.com).",
+    )
+    p.add_argument(
+        "--client-id",
+        default=None,
+        help="PymtHouse public client id (app_*) sent to the API-key exchange.",
+    )
+    p.add_argument(
+        "--api-key",
+        default=None,
+        help="PymtHouse API key (pmth_*) for non-interactive bearer exchange.",
     )
     p.add_argument(
         "--token",
@@ -54,11 +75,23 @@ async def main() -> None:
 
     job = None
     try:
+        signer_url = args.signer
+        signer_headers = None
+        if args.api_key and args.billing_url:
+            signer_url, signer_headers = exchange_api_key_for_signer(
+                args.billing_url,
+                args.api_key,
+                client_id=args.client_id,
+            )
+
         job = start_lv2v(
             args.orchestrator,
             StartJobRequest(model_id=args.model),
             token=args.token,
-            signer_url=args.signer,
+            signer_url=signer_url,
+            signer_headers=signer_headers,
+            discovery_url=args.discovery,
+            discovery_headers=signer_headers,
         )
 
         print("=== LiveVideoToVideo ===")

@@ -1,0 +1,30 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "write_frames (API key - vercel dashboard)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/examples/write_frames.py",
+            "args": [
+                "--discovery",
+                "https://discovery-service-production-8955.up.railway.app/v1/discovery/raw?serviceType=legacy",
+                "--billing-url",
+                "https://dashboard-66b39eyog-livepeer-foundation.vercel.app",
+                "--client-id",
+                "app_c5335e635593432ca975877a",
+                "--api-key",
+                "YOUR_API_KEY_HERE",
+                "--model",
+                "streamdiffusion-sdxl",
+                "--count",
+                "900000"
+            ],
+            "env": {
+                "LOG_LEVEL": "DEBUG"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
