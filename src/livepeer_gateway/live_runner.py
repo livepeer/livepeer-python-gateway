@@ -445,20 +445,20 @@ class LiveRunnerRegistration:
 
 
 async def register_runner(
-    orchestrator_url: str,
+    orchestrator_url: Optional[str] = None,
     *,
-    secret: str,
-    runner_url: str,
+    secret: Optional[str] = None,
+    runner_url: Optional[str] = None,
     app: str,
-    price_per_unit: int = 0,
-    pixels_per_unit: int = 1,
-    price_unit: str = "USD",
+    price_per_unit: Optional[int] = None,
+    pixels_per_unit: Optional[int] = None,
+    price_unit: Optional[str] = None,
     runner_id: str = "",
     mode: str = "persistent",
     label: str = "",
     version: str = "",
     status: str = "ready",
-    capacity: int = 1,
+    capacity: Optional[int] = None,
     gpu: Optional[LiveRunnerGPU] = None,
     auto_detect_gpu: bool = True,
     timeout: float = 5.0,
@@ -467,6 +467,26 @@ async def register_runner(
     on_session_reserve: Optional[LiveRunnerSessionCallback] = None,
     on_session_release: Optional[LiveRunnerSessionCallback] = None,
 ) -> LiveRunnerRegistration:
+    # Provisioning (connection, auth, pricing, capacity) falls back to LIVEPEER_*
+    # env vars when omitted, so an operator can configure it at deploy time instead
+    # of the app forwarding it in code; an explicit argument always wins.
+    orchestrator_url = orchestrator_url or os.environ.get("LIVEPEER_ORCHESTRATOR_URL")
+    secret = secret or os.environ.get("LIVEPEER_ORCH_SECRET")
+    runner_url = runner_url or os.environ.get("LIVEPEER_RUNNER_URL")
+    if not (orchestrator_url and secret and runner_url):
+        raise LivepeerGatewayError(
+            "orchestrator_url, secret and runner_url are required: pass them or set "
+            "LIVEPEER_ORCHESTRATOR_URL / LIVEPEER_ORCH_SECRET / LIVEPEER_RUNNER_URL"
+        )
+    if price_per_unit is None:
+        price_per_unit = int(os.environ.get("LIVEPEER_PRICE_PER_UNIT", "0"))
+    if pixels_per_unit is None:
+        pixels_per_unit = int(os.environ.get("LIVEPEER_PIXELS_PER_UNIT", "1"))
+    if price_unit is None:
+        price_unit = os.environ.get("LIVEPEER_PRICE_UNIT", "USD")
+    if capacity is None:
+        capacity = int(os.environ.get("LIVEPEER_CAPACITY", "1"))
+
     if gpu is None and auto_detect_gpu:
         gpu = detect_process_gpu()
 
