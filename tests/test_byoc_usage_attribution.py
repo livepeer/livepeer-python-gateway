@@ -207,3 +207,68 @@ def test_submit_byoc_job_threads_model_id_from_payload():
     assert body["capability"] == "nano-banana"
     assert body["model_id"] == "google/nano-banana"
     assert body["type"] == "lv2v"
+
+
+# ---------------------------------------------------------------------------
+# End-to-end through submit_training_job
+# ---------------------------------------------------------------------------
+
+
+def test_submit_training_job_uses_top_level_model_id_over_params():
+    """submit_training_job must attribute payment to the explicit top-level
+    training ``model_id`` (which also builds the orchestrator body), not a
+    ``model_id`` nested in ``params`` that would otherwise win the payload
+    merge and send the wrong model to the signer."""
+    from livepeer_gateway import byoc as byoc_mod
+    from livepeer_gateway.byoc import ByocTrainingRequest
+
+    captured: list[Request] = []
+
+    class _MockResponse:
+        def __init__(self, body: bytes, status: int = 200):
+            self._body = body
+            self.status = status
+            self.headers = {}
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake_urlopen(req, *args, **kwargs):
+        captured.append(req)
+        url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
+        if "generate-live-payment" in url:
+            return _MockResponse(b'{"payment":"TICKETS","segCreds":"SEG"}')
+        if "sign-byoc-job" in url:
+            return _MockResponse(b'{"sender":"0xabc","signature":"0xsig"}')
+        # orchestrator /process/train/<cap>
+        return _MockResponse(b'{"job_id":"train-123","status":"submitted"}', 200)
+
+    # Top-level training model differs from a stray params["model_id"].
+    req = ByocTrainingRequest(
+        capability="flux-lora-trainer",
+        model_id="fal-ai/flux-lora-fast-training",
+        params={"model_id": "wrong/params-model", "trigger_word": "TOK"},
+    )
+
+    with patch("livepeer_gateway.byoc.urlopen", side_effect=_fake_urlopen), patch(
+        "livepeer_gateway.orch_info.get_orch_info",
+        side_effect=lambda *a, **k: _stub_orch_info(),
+    ):
+        byoc_mod.submit_training_job(
+            req,
+            orch_url="https://orch.test:8936",
+            signer_url="https://signer.test",
+            signer_headers={"Authorization": "Bearer sk_test"},
+        )
+
+    body = _signer_body(captured)
+    assert body["capability"] == "flux-lora-trainer"
+    # The explicit training model_id wins — NOT the nested params value.
+    assert body["model_id"] == "fal-ai/flux-lora-fast-training"
+    assert body["type"] == "lv2v"

@@ -238,6 +238,11 @@ def _create_byoc_payment(
         "type": "lv2v",
         "capability": capability,
     }
+    # Defensively strip (and ignore non-strings): callers normally pass a value
+    # already cleaned by `_extract_model_id`, but a direct caller could pass a
+    # whitespace-only or non-string value, which must still be omitted so the
+    # wire body stays byte-identical to today and the signer falls back.
+    model_id = model_id.strip() if isinstance(model_id, str) else ""
     if model_id:
         payment_payload["model_id"] = model_id
     payment_body = json.dumps(payment_payload).encode("utf-8")
@@ -716,7 +721,11 @@ def submit_training_job(
                     livepeer_hdr=livepeer_hdr,
                     signer_url=signer_url,
                     signer_headers=signer_headers,
-                    model_id=_extract_model_id(byoc_req.payload, byoc_req.parameters),
+                    # Attribute payment to the explicit top-level training
+                    # model_id (matching the orchestrator body above), not the
+                    # merged payload where a `model_id` inside req.params could
+                    # otherwise override it and diverge from the real model.
+                    model_id=_extract_model_id({"model_id": req.model_id}, req.params),
                     timeout=http_timeout,
                 )
                 headers.update(payment_headers)
