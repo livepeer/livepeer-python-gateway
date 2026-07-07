@@ -272,6 +272,7 @@ async def reserve_session(
     signer_headers: Optional[dict[str, str]] = None,
     discovery_url: Optional[str] = None,
     discovery_headers: Optional[dict[str, str]] = None,
+    orchestrators: Optional[Sequence[str] | str] = None,
     app: Optional[FilterValue] = None,
     gpu: Optional[FilterValue] = None,
     timeout: float = 5.0,
