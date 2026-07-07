@@ -53,6 +53,21 @@ def _normalize_fps(fps: Optional[float]) -> int:
     return max(1, int(round(fps)))
 
 
+# Low-latency encoder options for the trickle output path. x264/x265 keep the
+# original superfast/zerolatency set (backward compatible); other codecs start
+# from empty defaults so they open cleanly -- the previously hardcoded x264-only
+# options (preset=superfast, tune=zerolatency, forced-idr) made non-x264 encoders
+# (libsvtav1, libvpx-vp9, *_nvenc, ...) fail at avcodec_open2. Callers add or
+# override any option via VideoOutputConfig.encoder_options.
+_X264_LOWLATENCY = {"bf": "0", "preset": "superfast", "tune": "zerolatency", "forced-idr": "1"}
+
+
+def _encoder_base_options(codec: str) -> dict:
+    if codec in ("libx264", "libx265"):
+        return dict(_X264_LOWLATENCY)
+    return {}
+
+
 @dataclass(frozen=True)
 class VideoOutputConfig:
     """
@@ -76,6 +91,14 @@ class VideoOutputConfig:
     codec: str = "libx264"
     # Output pixel format presented to the encoder.
     pix_fmt: str = "yuv420p"
+    # Target average video bitrate in bits/sec. None = encoder default (as before).
+    bit_rate: Optional[int] = None
+    # H.264/H.265 profile (e.g. "high", "main", "baseline"); codecs without such a
+    # profile ignore it. None = encoder default.
+    profile: Optional[str] = None
+    # Extra ffmpeg encoder options merged over the per-codec defaults, e.g.
+    # {"preset": "p4", "tune": "ll"} for av1_nvenc. Lets callers tune any encoder.
+    encoder_options: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -657,12 +680,11 @@ class MediaPublish:
                 assert isinstance(config, VideoOutputConfig)
                 if not isinstance(track._first_frame, av.VideoFrame):
                     continue
-                video_opts = {
-                    "bf": "0",
-                    "preset": "superfast",
-                    "tune": "zerolatency",
-                    "forced-idr": "1",
-                }
+                video_opts = _encoder_base_options(config.codec)
+                if config.profile:
+                    video_opts["profile"] = config.profile
+                if config.encoder_options:
+                    video_opts.update({str(k): str(v) for k, v in config.encoder_options.items()})
                 video_kwargs = {
                     "time_base": _OUT_TIME_BASE,
                     "width": track._first_frame.width,
@@ -676,6 +698,11 @@ class MediaPublish:
                     options=video_opts,
                     **video_kwargs,
                 )
+                if config.bit_rate:
+                    try:
+                        track._stream.codec_context.bit_rate = int(config.bit_rate)
+                    except Exception:  # pragma: no cover - encoder may reject
+                        pass
                 continue
 
             config = track.config
