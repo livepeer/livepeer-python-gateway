@@ -206,6 +206,7 @@ class LivePaymentSession:
         payment_params: str,
         manifest_id: str,
         orchestrator_url: Optional[str] = None,
+        capabilities: Optional[lp_rpc_pb2.Capabilities] = None,
         max_refresh_retries: int = 3,
     ) -> None:
         self._signer_url = signer_url
@@ -213,6 +214,7 @@ class LivePaymentSession:
         self._type = type
         self._payment_params = payment_params
         self._manifest_id = manifest_id
+        self._capabilities = capabilities
         self._max_refresh_retries = max(0, int(max_refresh_retries))
         self._state: Optional[dict[str, Any]] = None
         self._orchestrator_url = orchestrator_url
@@ -288,6 +290,10 @@ class LivePaymentSession:
             "type": self._type,
             "ManifestID": self._manifest_id,
         }
+        if self._capabilities is not None:
+            payload["capabilities"] = base64.b64encode(
+                self._capabilities.SerializeToString()
+            ).decode("ascii")
         if self._state is not None:
             payload["state"] = self._state
 

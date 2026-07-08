@@ -15,6 +15,7 @@ from urllib.parse import quote, urlparse, urlunparse
 import aiohttp
 
 from .channel_reader import ChannelReader
+from .capabilities import byoc_capabilities_from_app
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired, SkipPaymentCycle
 from .http import post_json, request_json
 from .remote_signer import (
@@ -654,6 +655,7 @@ async def call_runner(
                     challenge,
                     signer_url=signer_url or "",
                     signer_headers=signer_headers,
+                    runner=runner,
                 )
             except SignerRefreshRequired as e:
                 if attempt + 1 >= attempts:
@@ -741,7 +743,9 @@ async def _get_runner_payment(
     *,
     signer_url: str,
     signer_headers: Optional[dict[str, str]],
+    runner: Optional[LiveRunnerInstance] = None,
 ) -> tuple[LivePaymentSession, GetPaymentResponse]:
+    app = runner.app if runner is not None else ""
     session = LivePaymentSession(
         signer_url=signer_url,
         signer_headers=signer_headers,
@@ -749,6 +753,7 @@ async def _get_runner_payment(
         payment_params=challenge.payment_params,
         manifest_id=challenge.manifest_id,
         orchestrator_url=challenge.orchestrator_url,
+        capabilities=byoc_capabilities_from_app(app),
     )
     payment = await session.get_payment()
     if not payment.payment:
