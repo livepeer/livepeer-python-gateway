@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import ssl
@@ -37,6 +38,12 @@ def _http_error_body(e: HTTPError) -> str:
         if isinstance(b, bytes):
             return b.decode("utf-8", errors="replace")
         return str(b)
+    except http.client.IncompleteRead as ie:
+        # Error bodies can be truncated too (endpoint advertises a
+        # Content-Length but closes the connection early). Keep whatever
+        # bytes arrived rather than discarding the real error entirely, so
+        # _extract_error_message can still recover {"error":{"message":...}}.
+        return ie.partial.decode("utf-8", errors="replace")
     except Exception:
         return ""
 
@@ -126,6 +133,21 @@ def request_json(
     except URLError as e:
         raise LivepeerGatewayError(
             f"HTTP JSON error: failed to reach endpoint: {getattr(e, 'reason', e)} (url={url})"
+        ) from e
+    except http.client.IncompleteRead as e:
+        # The endpoint advertises a Content-Length but closes the connection
+        # early, so urllib raises IncompleteRead and discards the partial
+        # body — which usually carries the real error (e.g.
+        # {"error":{"message":"..."}}). IncompleteRead subclasses
+        # HTTPException (NOT HTTPError/URLError/OSError), so it slips past the
+        # handlers above; surface the partial bytes so the underlying failure
+        # is legible instead of an opaque "IncompleteRead(85, 108)".
+        partial = e.partial.decode("utf-8", errors="replace")
+        expected = len(e.partial) + e.expected
+        raise LivepeerGatewayError(
+            f"HTTP JSON error: endpoint truncated response "
+            f"({len(e.partial)} of {expected} bytes); "
+            f"partial body: {partial!r} (url={url})"
         ) from e
     except json.JSONDecodeError as e:
         raise LivepeerGatewayError(f"HTTP JSON error: endpoint did not return valid JSON: {e} (url={url})") from e
