@@ -267,6 +267,7 @@ async def runner_selector(
 
 async def reserve_session(
     *,
+    orchestrators: Optional[Sequence[str] | str] = None,
     signer_url: Optional[str] = None,
     signer_headers: Optional[dict[str, str]] = None,
     discovery_url: Optional[str] = None,
@@ -277,6 +278,7 @@ async def reserve_session(
     payment_interval: float = 3.0,
 ) -> LiveRunnerSession:
     cursor = await runner_selector(
+        orchestrators=orchestrators,
         signer_url=signer_url,
         signer_headers=signer_headers,
         discovery_url=discovery_url,
