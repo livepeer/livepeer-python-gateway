@@ -166,6 +166,7 @@ def _create_byoc_payment(
     from .remote_signer import get_orch_info_sig, _freeze_headers, PaymentSession
     from .orchestrator import _http_origin
     from .orch_info import get_orch_info
+    from .capabilities import build_capabilities, CapabilityId
 
     # Step 1: Get OrchestratorInfo via gRPC (port 8935)
     # The BYOC orch_origin is on :8936 (HTTP), but gRPC is on :8935.
@@ -194,10 +195,22 @@ def _create_byoc_payment(
 
     signer_origin = _http_origin(signer_url)
     payment_url = f"{signer_origin}/generate-live-payment"
+
+    # Attach the BYOC capability constraints protobuf so the remote signer can
+    # derive the usage label (pipeline=byoc, model_id=<capability>) via
+    # ConstrainedPipelineModelID and the per-cap price via ModelIDForCapability
+    # (Capability_BYOC), the same way the live-runner LivePaymentSession does
+    # (see remote_signer.LivePaymentSession._payment_request). Without this the
+    # signer meters one-shot /inference jobs as live-video-to-video/unknown at a
+    # flat base fee. The `capability` string below is kept for backward compat.
+    byoc_caps = build_capabilities(CapabilityId.BYOC, capability)
+    capabilities_b64 = base64.b64encode(byoc_caps.SerializeToString()).decode("ascii")
+
     payment_body = json.dumps({
         "orchestrator": orch_info_b64,
         "type": "lv2v",
         "capability": capability,
+        "capabilities": capabilities_b64,
     }).encode("utf-8")
     payment_headers = {
         "Content-Type": "application/json",
