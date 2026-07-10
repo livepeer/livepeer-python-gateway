@@ -41,6 +41,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from .capabilities import byoc_capabilities_from_app
 from .orchestrator import _http_origin, _parse_http_url, discover_orchestrators
 from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, OrchestratorRejection
 
@@ -189,16 +190,22 @@ def _create_byoc_payment(
         _LOG.info("BYOC orch has no ticket_params, skipping payment")
         return {}
 
-    # Step 2: Generate payment via signer
+    # Step 2: Generate payment via signer — Capability_BYOC + model constraint
+    # go in `capabilities` (proto b64), not a string `capability` field.
     orch_info_b64 = base64.b64encode(info.SerializeToString()).decode("ascii")
+    byoc_caps = byoc_capabilities_from_app(capability)
+    payment_payload: dict[str, Any] = {
+        "orchestrator": orch_info_b64,
+        "type": "byoc",
+    }
+    if byoc_caps is not None:
+        payment_payload["capabilities"] = base64.b64encode(
+            byoc_caps.SerializeToString()
+        ).decode("ascii")
 
     signer_origin = _http_origin(signer_url)
     payment_url = f"{signer_origin}/generate-live-payment"
-    payment_body = json.dumps({
-        "orchestrator": orch_info_b64,
-        "type": "lv2v",
-        "capability": capability,
-    }).encode("utf-8")
+    payment_body = json.dumps(payment_payload).encode("utf-8")
     payment_headers = {
         "Content-Type": "application/json",
         "Livepeer-Capability": capability,
@@ -759,8 +766,8 @@ def refresh_training_payment(
     Args:
         job_id: training job_id assigned by orch on submit.
         orch_url: orchestrator URL accepting the job.
-        capability: capability name (needed by signer to pick correct
-            ticket_params).
+        capability: capability/app name encoded into the BYOC capabilities
+            proto sent to the signer (not a separate string field).
         signer_url: remote signer with /generate-live-payment.
         signer_headers: pass-through headers (notably Authorization
             Bearer of the user).
