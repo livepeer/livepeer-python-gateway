@@ -1,9 +1,9 @@
 """
-Unit tests for submit_training_job sign + payment flow (PR-1).
+Unit tests for submit_training_job payment flow (PR-1).
 
 Per design doc §11.1, P1-P3:
-- P1: submit_training_job emits the same 4 headers as submit_byoc_job
-- P2: submit_training_job with signer_url=None proceeds with empty creds
+- P1: submit_training_job emits the same payment headers as submit_byoc_job
+- P2: submit_training_job with signer_url=None proceeds without payment
 - P3: refresh_training_payment uses same signer key (covered in test_byoc_refresh.py)
 
 These tests mock urllib.request.urlopen to capture the outgoing Request and
@@ -15,8 +15,6 @@ import json
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 from urllib.request import Request
-
-import pytest
 
 from livepeer_gateway.byoc import (
     ByocJobRequest,
@@ -47,7 +45,8 @@ def _mock_http(*, signer_responses, orch_response_status=200,
                orch_response_body=b'{"status":"submitted","job_id":"orch-123","status_url":"/process/job/orch-123"}'):
     """
     Mock urllib.request.urlopen used inside byoc.py. signer_responses are
-    consumed in order on signer-host calls. Orch call returns the response_*.
+    consumed in order on /generate-live-payment calls. Orch call returns the
+    response_*.
 
     Captures every Request object on the yielded list for assertion.
     """
@@ -74,11 +73,11 @@ def _mock_http(*, signer_responses, orch_response_status=200,
         captured_requests.append(req)
         url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
 
-        if "signer" in url or "/sign-byoc-job" in url or "/generate-live-payment" in url:
+        if "signer" in url or "/generate-live-payment" in url:
             try:
                 payload = next(signer_iter)
             except StopIteration:
-                payload = {"sender": "0xMOCKSENDER", "signature": "0xMOCKSIG"}
+                payload = {"payment": "0xMOCKPAY", "segCreds": "0xMOCKSEG"}
             return _MockResponse(json.dumps(payload).encode())
         return _MockResponse(orch_response_body, orch_response_status)
 
@@ -102,7 +101,6 @@ def test_p1_training_job_emits_same_headers_as_inference():
     """
     # 1. inference path
     with _mock_http(signer_responses=[
-        {"sender": "0xWALLET1", "signature": "0xSIGABC"},
         {"payment": "TICKETS_B64", "segCreds": "SEG_B64"},
     ]) as inf_reqs:
         submit_byoc_job(
@@ -118,7 +116,6 @@ def test_p1_training_job_emits_same_headers_as_inference():
     # 2. training path
     with _mock_http(
         signer_responses=[
-            {"sender": "0xWALLET1", "signature": "0xSIGABC"},
             {"payment": "TICKETS_B64", "segCreds": "SEG_B64"},
         ],
         orch_response_status=202,
@@ -157,8 +154,7 @@ def test_p1_training_job_emits_same_headers_as_inference():
 
 def test_p2_training_no_signer_proceeds_unsigned():
     """
-    With signer_url=None, training submit must skip signing AND payment,
-    and still POST to orch. Mirrors submit_byoc_job's behavior.
+    With signer_url=None, training submit must skip payment and still POST to orch.
     """
     with _mock_http(
         signer_responses=[],
@@ -174,7 +170,7 @@ def test_p2_training_no_signer_proceeds_unsigned():
             signer_url=None,
         )
 
-    signer_calls = [r for r in reqs if "signer" in r.full_url or "sign-byoc-job" in r.full_url]
+    signer_calls = [r for r in reqs if "generate-live-payment" in r.full_url]
     assert signer_calls == [], (
         f"unexpected signer calls in offchain mode: {[r.full_url for r in signer_calls]}"
     )
@@ -198,7 +194,6 @@ def test_training_body_includes_model_id_and_params():
     """submit_training_job sends model_id + params at top level of body."""
     with _mock_http(
         signer_responses=[
-            {"sender": "0xW", "signature": "0xS"},
             {"payment": "T", "segCreds": "S"},
         ],
         orch_response_status=202,
@@ -220,3 +215,36 @@ def test_training_body_includes_model_id_and_params():
     assert body["params"]["images_data_url"] == "https://x/zip"
     assert body["params"]["trigger_word"] == "PULSEX1"
     assert body["params"]["steps"] == 1000
+
+    payment_req = [r for r in reqs if "generate-live-payment" in r.full_url][0]
+    payment_body = json.loads(payment_req.data.decode())
+    assert payment_body["inPixels"] == 300
+    assert "type" not in payment_body
+    assert "capabilities" in payment_body
+
+
+def test_training_payment_uses_explicit_payment_seconds():
+    """Training payment credit uses payment_seconds, not HTTP timeout_seconds."""
+    with _mock_http(
+        signer_responses=[
+            {"payment": "T", "segCreds": "S"},
+        ],
+        orch_response_status=202,
+    ) as reqs:
+        submit_training_job(
+            req=ByocTrainingRequest(
+                capability="flux-lora-training",
+                model_id="flux-dev",
+                params={"images_data_url": "https://x/zip", "trigger_word": "TOK", "steps": 10},
+                timeout_seconds=900,
+                payment_seconds=180,
+            ),
+            orch_url="https://orch.test:8935",
+            signer_url="https://signer.test",
+            signer_headers={"Authorization": "Bearer sk_test"},
+        )
+
+    payment_req = [r for r in reqs if "generate-live-payment" in r.full_url][0]
+    payment_body = json.loads(payment_req.data.decode())
+    assert payment_body["inPixels"] == 180
+    assert "type" not in payment_body

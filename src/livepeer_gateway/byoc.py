@@ -68,7 +68,7 @@ class ByocJobRequest:
     """Request body payload (sent as JSON)."""
 
     timeout_seconds: int = 300
-    """Maximum time the orchestrator should wait for the worker response."""
+    """Maximum job wait time; also used as compute-seconds of payment credit."""
 
     job_id: Optional[str] = None
     """Optional job ID. Auto-generated if not provided."""
@@ -151,6 +151,7 @@ def _create_byoc_payment(
     capability: str,
     livepeer_hdr: str,
     signer_url: str,
+    billing_seconds: int,
     signer_headers: Optional[dict[str, str]] = None,
     timeout: float = 30.0,
 ) -> dict[str, str]:
@@ -158,26 +159,35 @@ def _create_byoc_payment(
     Create on-chain payment tickets for a BYOC job.
 
     Flow:
-      1. Get OrchestratorInfo via gRPC (same as LV2V) — contains ticket params + price
-      2. Generate payment via signer (/generate-live-payment)
+      1. Get OrchestratorInfo via gRPC with BYOC capabilities so TicketParams
+         and PriceInfo are issued at the capability price (avoids
+         recipientRandHash mismatch)
+      2. Generate payment via signer (/generate-live-payment) with the same
+         capabilities proto and explicit billable seconds as ``inPixels``
       3. Return headers to include in the job request
 
     Returns dict with Livepeer-Payment and Livepeer-Segment headers.
     """
-    from .remote_signer import get_orch_info_sig, _freeze_headers, PaymentSession
     from .orchestrator import _http_origin
     from .orch_info import get_orch_info
+
+    if billing_seconds <= 0:
+        raise LivepeerGatewayError(
+            f"BYOC payment requires positive billing_seconds, got {billing_seconds}"
+        )
 
     # Step 1: Get OrchestratorInfo via gRPC (port 8935)
     # The BYOC orch_origin is on :8936 (HTTP), but gRPC is on :8935.
     # Derive the gRPC URL from the HTTP origin.
     parsed = urlparse(orch_origin)
     grpc_url = f"https://{parsed.hostname}:8935"
+    byoc_caps = byoc_capabilities_from_app(capability)
 
     info = get_orch_info(
         grpc_url,
         signer_url=signer_url,
         signer_headers=signer_headers,
+        capabilities=byoc_caps,
     )
 
     # Check if orch has a price set — if price is 0, skip payment
@@ -190,13 +200,12 @@ def _create_byoc_payment(
         _LOG.info("BYOC orch has no ticket_params, skipping payment")
         return {}
 
-    # Step 2: Generate payment via signer — Capability_BYOC + model constraint
-    # go in `capabilities` (proto b64), not a string `capability` field.
+    # Step 2: Generate payment via signer — orch PriceInfo/TicketParams are the
+    # sole rate source; gateway supplies billable compute-seconds explicitly.
     orch_info_b64 = base64.b64encode(info.SerializeToString()).decode("ascii")
-    byoc_caps = byoc_capabilities_from_app(capability)
     payment_payload: dict[str, Any] = {
         "orchestrator": orch_info_b64,
-        "type": "byoc",
+        "inPixels": int(billing_seconds),
     }
     if byoc_caps is not None:
         payment_payload["capabilities"] = base64.b64encode(
@@ -238,48 +247,17 @@ def _create_byoc_payment(
             "payment/segCreds. This is a signer bug or misconfiguration."
         )
 
-    _LOG.info("BYOC payment tickets generated for %s", orch_origin)
+    _LOG.info(
+        "BYOC payment tickets generated for %s billing_seconds=%d",
+        orch_origin,
+        billing_seconds,
+    )
     return result
-
-
-def _sign_byoc_job(
-    signer_url: str,
-    signer_headers: Optional[dict[str, str]],
-    job_id: str,
-    capability: str,
-    request_json: str,
-    parameters_json: str,
-    timeout_seconds: int,
-) -> dict:
-    """Call signer /sign-byoc-job to get sender + signature for the BYOC header."""
-    from .orchestrator import _http_origin
-
-    url = f"{_http_origin(signer_url)}/sign-byoc-job"
-    payload = {
-        "id": job_id,
-        "capability": capability,
-        "request": request_json,
-        "parameters": parameters_json,
-        "timeout_seconds": timeout_seconds,
-    }
-    headers = {"Content-Type": "application/json"}
-    if signer_headers:
-        headers.update(signer_headers)
-
-    req = Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
-    try:
-        with urlopen(req, timeout=30.0) as resp:
-            return json.loads(resp.read())
-    except HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:200]
-        raise LivepeerGatewayError(f"sign-byoc-job failed: HTTP {e.code}: {body}") from e
 
 
 def _build_livepeer_header(
     req: ByocJobRequest,
     job_id: str,
-    sender: str = "",
-    sig: str = "",
 ) -> str:
     """Build the base64-encoded Livepeer job request header."""
     request_json = json.dumps(req.payload)
@@ -292,10 +270,6 @@ def _build_livepeer_header(
     }
     if parameters_json:
         job_request["parameters"] = parameters_json
-    if sender:
-        job_request["sender"] = sender
-    if sig:
-        job_request["sig"] = sig
     return base64.b64encode(json.dumps(job_request).encode()).decode()
 
 
@@ -349,30 +323,9 @@ def submit_byoc_job(
 
     _LOG.info("BYOC job %s: capability=%s, orchestrators=%s", job_id, req.capability, orch_list)
 
-    # Sign the job request if signer is available (on-chain)
-    sender = ""
-    sig = ""
-    if signer_url:
-        try:
-            request_json = json.dumps(req.payload)
-            parameters_json = json.dumps(req.parameters) if req.parameters else ""
-            sign_resp = _sign_byoc_job(
-                signer_url=signer_url,
-                signer_headers=signer_headers,
-                job_id=job_id,
-                capability=req.capability,
-                request_json=request_json,
-                parameters_json=parameters_json,
-                timeout_seconds=req.timeout_seconds,
-            )
-            sender = sign_resp.get("sender", "")
-            sig = sign_resp.get("signature", "")
-            _LOG.info("BYOC job %s: signed by sender=%s", job_id, sender[:12] + "..." if sender else "none")
-        except Exception as e:
-            _LOG.warning("BYOC job %s: signing failed: %s", job_id, e)
-
-    # Build headers
-    livepeer_hdr = _build_livepeer_header(req, job_id, sender=sender, sig=sig)
+    # Build headers. Auth/payment is via /generate-live-payment (Livepeer-Payment
+    # + Livepeer-Segment); /sign-byoc-job is deprecated and not used.
+    livepeer_hdr = _build_livepeer_header(req, job_id)
     body = json.dumps(req.payload).encode("utf-8")
 
     # Try each orchestrator
@@ -396,6 +349,7 @@ def submit_byoc_job(
                     capability=req.capability,
                     livepeer_hdr=livepeer_hdr,
                     signer_url=signer_url,
+                    billing_seconds=req.timeout_seconds,
                     signer_headers=signer_headers,
                     timeout=http_timeout,
                 )
@@ -502,7 +456,10 @@ class ByocTrainingRequest:
     """Training parameters (images_data_url, trigger_word, steps, etc.)."""
 
     timeout_seconds: int = 300
-    """Timeout for the initial submit request (not the training itself)."""
+    """Timeout for the initial submit HTTP request (not compute credit)."""
+
+    payment_seconds: int = 300
+    """Compute-seconds of payment credit to fund upfront (not the HTTP timeout)."""
 
     callback_url: Optional[str] = None
     """Optional webhook URL for completion notification."""
@@ -610,44 +567,15 @@ def submit_training_job(
         discovery_headers=discovery_headers,
     )
 
-    # Build the Livepeer header (reuse existing infrastructure)
+    # Build the Livepeer header (reuse existing infrastructure).
+    # Auth/payment is via /generate-live-payment only.
     byoc_req = ByocJobRequest(
         capability=req.capability,
         payload={"model_id": req.model_id, **req.params},
         timeout_seconds=req.timeout_seconds,
         job_id=job_id,
     )
-
-    # Sign the job request if signer is available — mirror submit_byoc_job.
-    # The orch's training handler runs setupOrchJob → verifyJobCreds (same
-    # code path as inference) and rejects with HTTP 400 "Could not verify
-    # job creds" if Livepeer-Job-Request / -Token are missing. The original
-    # unsigned path worked only against an older orch that lacked the
-    # /process/train/ route; the v2-with-training merge brings that route
-    # online and demands signed creds.
-    sender = ""
-    sig = ""
-    if signer_url:
-        try:
-            request_json = json.dumps(byoc_req.payload)
-            parameters_json = json.dumps(byoc_req.parameters) if byoc_req.parameters else ""
-            sign_resp = _sign_byoc_job(
-                signer_url=signer_url,
-                signer_headers=signer_headers,
-                job_id=job_id,
-                capability=req.capability,
-                request_json=request_json,
-                parameters_json=parameters_json,
-                timeout_seconds=req.timeout_seconds,
-            )
-            sender = sign_resp.get("sender", "")
-            sig = sign_resp.get("signature", "")
-            _LOG.info("Training job %s: signed by sender=%s", job_id,
-                      sender[:12] + "..." if sender else "none")
-        except Exception as e:
-            _LOG.warning("Training job %s: signing failed: %s", job_id, e)
-
-    livepeer_hdr = _build_livepeer_header(byoc_req, job_id, sender=sender, sig=sig)
+    livepeer_hdr = _build_livepeer_header(byoc_req, job_id)
 
     # Build training body
     body = json.dumps({
@@ -679,6 +607,7 @@ def submit_training_job(
                     capability=req.capability,
                     livepeer_hdr=livepeer_hdr,
                     signer_url=signer_url,
+                    billing_seconds=req.payment_seconds,
                     signer_headers=signer_headers,
                     timeout=http_timeout,
                 )
@@ -743,6 +672,7 @@ def refresh_training_payment(
     capability: str,
     *,
     signer_url: str,
+    billing_seconds: int,
     signer_headers: Optional[dict[str, str]] = None,
     timeout: float = 30.0,
     max_attempts: int = 3,
@@ -766,9 +696,10 @@ def refresh_training_payment(
     Args:
         job_id: training job_id assigned by orch on submit.
         orch_url: orchestrator URL accepting the job.
-        capability: capability/app name encoded into the BYOC capabilities
-            proto sent to the signer (not a separate string field).
+        capability: capability/app name encoded into BYOC capabilities for
+            both GetOrchestrator and /generate-live-payment.
         signer_url: remote signer with /generate-live-payment.
+        billing_seconds: compute-seconds of payment credit to top up.
         signer_headers: pass-through headers (notably Authorization
             Bearer of the user).
         timeout: per-request timeout in seconds.
@@ -797,6 +728,7 @@ def refresh_training_payment(
             capability=capability,
             livepeer_hdr="",  # not used by refresh path
             signer_url=signer_url,
+            billing_seconds=billing_seconds,
             signer_headers=signer_headers,
             timeout=timeout,
         )

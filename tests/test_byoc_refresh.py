@@ -10,6 +10,7 @@ Per design doc §11.1:
 """
 from __future__ import annotations
 
+import base64
 import json
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
@@ -18,7 +19,9 @@ from urllib.request import Request
 
 import pytest
 
+from livepeer_gateway import lp_rpc_pb2
 from livepeer_gateway.byoc import refresh_training_payment
+from livepeer_gateway.capabilities import CapabilityId
 from livepeer_gateway.errors import LivepeerGatewayError
 
 
@@ -47,7 +50,11 @@ def _stub_orch_info_zero_price():
 def _mock_http(*, signer_responses, orch_response_status=200,
                orch_response_body=b'{"credited_wei":"1000","new_balance_wei":"2500"}',
                orch_info=None):
-    captured: list[Request] = []
+    class _Capture(list):
+        orch_info_calls: list[dict]
+
+    captured = _Capture()
+    captured.orch_info_calls = []
 
     class _MockResponse:
         def __init__(self, body: bytes, status: int = 200):
@@ -70,9 +77,14 @@ def _mock_http(*, signer_responses, orch_response_status=200,
         return _MockResponse(orch_response_body, orch_response_status)
 
     info = orch_info or _stub_orch_info()
+
+    def _fake_get_orch_info(*args, **kwargs):
+        captured.orch_info_calls.append({"args": args, "kwargs": kwargs})
+        return info
+
     with patch("livepeer_gateway.byoc.urlopen", side_effect=_fake_urlopen), \
          patch("livepeer_gateway.orch_info.get_orch_info",
-               side_effect=lambda *a, **k: info):
+               side_effect=_fake_get_orch_info):
         yield captured
 
 
@@ -91,6 +103,7 @@ def test_refresh_happy_path_credits_orch():
             orch_url="https://orch.test:8935",
             capability="flux-lora-training",
             signer_url="https://signer.test",
+            billing_seconds=120,
             signer_headers={"Authorization": "Bearer sk_test"},
         )
 
@@ -124,6 +137,7 @@ def test_p3_refresh_uses_same_signer_headers_as_submit():
             orch_url="https://orch.test:8935",
             capability="flux-lora-training",
             signer_url="https://signer.test",
+            billing_seconds=120,
             signer_headers={"Authorization": bearer},
         )
 
@@ -134,6 +148,40 @@ def test_p3_refresh_uses_same_signer_headers_as_submit():
         f"signer didn't receive caller's bearer; got {forwarded.get('authorization')!r}"
     )
 
+
+def test_generate_live_payment_sends_capabilities_not_capability_string():
+    """Signer body uses capabilities proto b64; GetOrchestrator gets the same caps."""
+    with _mock_http(
+        signer_responses=[{"payment": "F", "segCreds": "S"}],
+    ) as reqs:
+        refresh_training_payment(
+            job_id="train-abc",
+            orch_url="https://orch.test:8935",
+            capability="flux-schnell",
+            signer_url="https://signer.test",
+            billing_seconds=120,
+            signer_headers={"Authorization": "Bearer sk_test"},
+        )
+
+    orch_calls = reqs.orch_info_calls
+    assert len(orch_calls) == 1
+    orch_caps = orch_calls[0]["kwargs"].get("capabilities")
+    assert orch_caps is not None
+    assert orch_caps.capacities[int(CapabilityId.BYOC)] == 1
+    assert "flux-schnell" in orch_caps.constraints.PerCapability[int(CapabilityId.BYOC)].models
+
+    signer_req = [r for r in reqs if "generate-live-payment" in r.full_url][0]
+    body = json.loads(signer_req.data.decode("utf-8"))
+    assert "capability" not in body
+    assert "capabilities" in body
+    assert "type" not in body
+    assert body["inPixels"] == 120
+
+    caps = lp_rpc_pb2.Capabilities()
+    caps.ParseFromString(base64.b64decode(body["capabilities"]))
+    assert caps.capacities[int(CapabilityId.BYOC)] == 1
+    assert "flux-schnell" in caps.constraints.PerCapability[int(CapabilityId.BYOC)].models
+    assert caps.SerializeToString() == orch_caps.SerializeToString()
 
 # ---------------------------------------------------------------------------
 # Zero-price case — refresh is no-op
@@ -151,6 +199,7 @@ def test_refresh_zero_price_is_noop():
             orch_url="https://orch.test:8935",
             capability="flux-lora-training",
             signer_url="https://signer.test",
+            billing_seconds=120,
             signer_headers={"Authorization": "Bearer sk_test"},
         )
 
@@ -205,6 +254,7 @@ def test_refresh_retries_on_503():
             orch_url="https://orch.test:8935",
             capability="flux-lora-training",
             signer_url="https://signer.test",
+            billing_seconds=120,
             signer_headers={"Authorization": "Bearer sk_test"},
             max_attempts=3,
         )
@@ -260,6 +310,7 @@ def test_refresh_fails_fast_on_permanent_4xx():
                 orch_url="https://orch.test:8935",
                 capability="flux-lora-training",
                 signer_url="https://signer.test",
+                billing_seconds=120,
                 signer_headers={"Authorization": "Bearer sk_test"},
                 max_attempts=3,
             )
@@ -298,6 +349,7 @@ def test_refresh_exhausts_retries():
                 orch_url="https://orch.test:8935",
                 capability="flux-lora-training",
                 signer_url="https://signer.test",
+                billing_seconds=120,
                 signer_headers={"Authorization": "Bearer sk_test"},
                 max_attempts=3,
             )
