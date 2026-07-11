@@ -25,9 +25,19 @@ def _parse_args() -> argparse.Namespace:
         help="Remote signer URL (no path). If omitted, runs in offchain mode.",
     )
     p.add_argument(
+        "--discovery",
+        default=None,
+        help="Discovery URL (used when --token is omitted).",
+    )
+    p.add_argument(
         "--token",
         default=None,
         help="Base64-encoded gateway token (signer, discovery, headers); overrides missing signer/orchestrator.",
+    )
+    p.add_argument(
+        "--api-key",
+        default=None,
+        help="Bearer credential when not using --token (Authorization header).",
     )
     p.add_argument(
         "--model",
@@ -52,6 +62,10 @@ async def main() -> None:
     args = _parse_args()
     frame_interval = 1.0 / max(1e-6, args.fps)
 
+    signer_headers = None
+    if args.api_key and not args.token:
+        signer_headers = {"Authorization": f"Bearer {args.api_key.strip()}"}
+
     job = None
     try:
         job = start_lv2v(
@@ -59,6 +73,8 @@ async def main() -> None:
             StartJobRequest(model_id=args.model),
             token=args.token,
             signer_url=args.signer,
+            signer_headers=signer_headers,
+            discovery_url=args.discovery,
         )
 
         print("=== LiveVideoToVideo ===")
