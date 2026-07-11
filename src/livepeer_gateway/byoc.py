@@ -174,10 +174,15 @@ def _create_byoc_payment(
     parsed = urlparse(orch_origin)
     grpc_url = f"https://{parsed.hostname}:8935"
 
+    # Capabilities must be sent on orch discovery so TicketParams use
+    # PriceInfoForCaps (per-cap wei/sec) when ByocPerCapPricing is enabled.
+    byoc_caps = byoc_capabilities_from_app(capability)
+
     info = get_orch_info(
         grpc_url,
         signer_url=signer_url,
         signer_headers=signer_headers,
+        capabilities=byoc_caps,
     )
 
     # Check if orch has a price set — if price is 0, skip payment
@@ -193,7 +198,6 @@ def _create_byoc_payment(
     # Step 2: Generate payment via signer — Capability_BYOC + model constraint
     # go in `capabilities` (proto b64), not a string `capability` field.
     orch_info_b64 = base64.b64encode(info.SerializeToString()).decode("ascii")
-    byoc_caps = byoc_capabilities_from_app(capability)
     payment_payload: dict[str, Any] = {
         "orchestrator": orch_info_b64,
         "type": "byoc",
