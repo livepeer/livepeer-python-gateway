@@ -70,7 +70,7 @@ def main() -> int:
         discovery_url = token.get("discovery") or discovery_url
         signer_headers = token.get("signer_headers")
         discovery_headers = token.get("discovery_headers")
-    elif args.api_key and signer_url:
+    elif args.api_key:
         signer_headers = {"Authorization": f"Bearer {args.api_key.strip()}"}
 
     if args.payload.strip():

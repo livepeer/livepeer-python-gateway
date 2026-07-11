@@ -1,4 +1,4 @@
-"""Live-runner reservation payments use lv2v type with BYOC caps for attribution."""
+"""Live-runner reservation payments use byoc type with BYOC caps for attribution."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def test_get_runner_payment_uses_byoc_type_and_caps() -> None:
             )
         )
 
-    assert captured["type"] == "lv2v"
+    assert captured["type"] == "byoc"
     caps = captured["capabilities"]
     assert isinstance(caps, lp_rpc_pb2.Capabilities)
     assert caps.capacities[int(CapabilityId.BYOC)] == 1
