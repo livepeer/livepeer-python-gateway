@@ -92,6 +92,12 @@ class LiveRunnerSession:
 
 
 @dataclass(frozen=True)
+class LiveRunnerProxy:
+    proxy_id: str
+    url: str
+
+
+@dataclass(frozen=True)
 class LiveRunnerCallResult:
     data: dict[str, Any]
     runner_url: str
@@ -281,6 +287,24 @@ class LiveRunnerRegistration:
             runner_id=self.runner_id,
             session_token=session_token,
             timeout=self._timeout,
+        )
+
+    async def create_proxy(
+        self,
+        session: str | LiveRunnerSessionRequest,
+        target_url: str,
+        *,
+        session_token: str = "",
+        timeout: Optional[float] = None,
+    ) -> LiveRunnerProxy:
+        """Create a public proxy URL for a live runner app target."""
+        return await create_proxy(
+            session,
+            target_url,
+            orchestrator_url=self.orchestrator_url,
+            runner_id=self.runner_id,
+            session_token=session_token,
+            timeout=self._timeout if timeout is None else timeout,
         )
 
     def _payload(self) -> dict[str, Any]:
@@ -554,6 +578,41 @@ async def remove_trickle_channels(
     return deleted
 
 
+async def create_proxy(
+    session: str | LiveRunnerSessionRequest,
+    target_url: str,
+    *,
+    orchestrator_url: str = "",
+    runner_id: str = "",
+    session_token: str = "",
+    timeout: float = 5.0,
+) -> LiveRunnerProxy:
+    """Create a public proxy URL for a target served by a live runner app session."""
+    runner, session_id, token, control_url = _resolve_session_credentials(
+        session,
+        runner_id=runner_id,
+        session_token=session_token,
+        request_name="proxy",
+    )
+    if not isinstance(target_url, str) or not target_url.strip():
+        raise LivepeerGatewayError("Live runner proxy request requires target_url")
+    data = await post_json(
+        _session_proxy_endpoint(orchestrator_url, runner, session_id, control_url),
+        {"target_url": target_url.strip()},
+        headers={"Livepeer-Session-Token": token},
+        timeout=timeout,
+    )
+    if not isinstance(data, dict):
+        raise LivepeerGatewayError(
+            f"Live runner proxy create expected JSON object, got {type(data).__name__}"
+        )
+    proxy_id = data.get("proxy_id")
+    proxy_url = data.get("url")
+    if not isinstance(proxy_id, str) or not proxy_id.strip() or not isinstance(proxy_url, str) or not proxy_url.strip():
+        raise LivepeerGatewayError("Live runner proxy create response missing proxy_id or url")
+    return LiveRunnerProxy(proxy_id=proxy_id.strip(), url=proxy_url.strip())
+
+
 async def call_runner(
     runner_url: str = "",
     *,
@@ -793,6 +852,28 @@ def _trickle_channels_endpoint(
     )
 
 
+def _session_proxy_endpoint(
+    orchestrator_url: str,
+    runner_id: str,
+    session_id: str,
+    control_url: str = "",
+) -> str:
+    if control_url:
+        return _join_endpoint(control_url, "proxy")
+    if not orchestrator_url:
+        raise LivepeerGatewayError("Live runner proxy request requires session_control")
+    if not runner_id:
+        raise LivepeerGatewayError("Live runner proxy request requires runner_id")
+    return _join_endpoint(
+        orchestrator_url,
+        (
+            f"/runner/{quote(runner_id, safe='')}"
+            f"/session/{quote(session_id, safe='')}"
+            "/proxy"
+        ),
+    )
+
+
 def _parse_go_duration_s(value: object, *, default: Optional[float]) -> Optional[float]:
     if not isinstance(value, str) or not value.strip():
         return default
@@ -829,6 +910,7 @@ def _resolve_session_credentials(
     *,
     runner_id: str = "",
     session_token: str = "",
+    request_name: str = "trickle channel",
 ) -> tuple[str, str, str, str]:
     runner = runner_id.strip()
     session_id = ""
@@ -856,9 +938,9 @@ def _resolve_session_credentials(
                     control_url = control_value.strip()
 
     if not session_id:
-        raise LivepeerGatewayError("Live runner trickle channel request requires session_id")
+        raise LivepeerGatewayError(f"Live runner {request_name} request requires session_id")
     if not token:
-        raise LivepeerGatewayError("Live runner trickle channel request requires session_token")
+        raise LivepeerGatewayError(f"Live runner {request_name} request requires session_token")
     return runner, session_id, token, control_url
 
 
