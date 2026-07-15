@@ -4,9 +4,11 @@ from fractions import Fraction
 
 import av
 
+from livepeer_gateway import configure_logging
 from livepeer_gateway.errors import LivepeerGatewayError
 from livepeer_gateway.lv2v import StartJobRequest, start_lv2v
 from livepeer_gateway.media_publish import MediaPublishConfig, VideoOutputConfig
+
 
 DEFAULT_MODEL_ID = "noop"  # fix
 
@@ -49,6 +51,7 @@ def _solid_rgb_frame(width: int, height: int, rgb: tuple[int, int, int]) -> av.V
 
 
 async def main() -> None:
+    configure_logging()
     args = _parse_args()
     frame_interval = 1.0 / max(1e-6, args.fps)
 
