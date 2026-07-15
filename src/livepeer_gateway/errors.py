@@ -31,5 +31,9 @@ class SkipPaymentCycle(LivepeerGatewayError):
     """Raised when the signer returns HTTP 482 to skip a payment cycle."""
 
 
+class InsufficientBalance(LivepeerGatewayError):
+    """Raised when the signer returns HTTP 483 (insufficient balance / allowance)."""
+
+
 class PaymentError(LivepeerGatewayError):
     """Raised when a PaymentSession operation fails."""

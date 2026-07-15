@@ -11,6 +11,7 @@ from .capabilities import CapabilityId, build_capabilities
 from .channel_writer import ChannelWriter
 from .control import Control, ControlConfig, ControlMode
 from .errors import (
+    InsufficientBalance,
     LivepeerGatewayError,
     NoOrchestratorAvailableError,
     OrchestratorRejection,
@@ -380,6 +381,9 @@ def start_lv2v(
             if mode == ControlMode.MESSAGE and job.control is not None:
                 job.control.start_keepalive()
             return job
+        except InsufficientBalance:
+            # Account-level signer denial — other orch candidates cannot succeed.
+            raise
         except LivepeerGatewayError as e:
             _LOG.debug(
                 "start_lv2v candidate failed, trying fallback if available: %s (%s)",

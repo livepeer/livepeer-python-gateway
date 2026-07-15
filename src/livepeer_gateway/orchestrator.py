@@ -13,6 +13,7 @@ from . import lp_rpc_pb2
 from .capabilities import capabilities_to_query
 
 from .errors import (
+    InsufficientBalance,
     LivepeerGatewayError,
     SignerRefreshRequired,
     SkipPaymentCycle,
@@ -115,6 +116,10 @@ def request_json(
         if e.code == 482:
             raise SkipPaymentCycle(
                 f"Signer returned HTTP 482 (skip payment cycle) (url={url}){body_part}"
+            ) from e
+        if e.code == 483:
+            raise InsufficientBalance(
+                f"Signer returned HTTP 483 (insufficient balance) (url={url}){body_part}"
             ) from e
         raise LivepeerGatewayError(
             f"HTTP JSON error: HTTP {e.code} from endpoint (url={url}){body_part}"

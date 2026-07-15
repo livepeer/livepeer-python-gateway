@@ -42,7 +42,12 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from .orchestrator import _http_origin, _parse_http_url, discover_orchestrators
-from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, OrchestratorRejection
+from .errors import (
+    InsufficientBalance,
+    LivepeerGatewayError,
+    NoOrchestratorAvailableError,
+    OrchestratorRejection,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -394,6 +399,8 @@ def submit_byoc_job(
                 )
                 headers.update(payment_headers)
                 _LOG.info("BYOC job %s: payment tickets created for %s", job_id, orch_origin)
+            except InsufficientBalance:
+                raise
             except Exception as e:
                 _LOG.warning("BYOC job %s: payment creation failed for %s: %s", job_id, orch_origin, e)
                 rejections.append(OrchestratorRejection(url=orch_origin, reason=f"payment failed: {e}"))
@@ -678,6 +685,8 @@ def submit_training_job(
                 headers.update(payment_headers)
                 _LOG.info("Training job %s: payment tickets created for %s",
                           job_id, orch_origin)
+            except InsufficientBalance:
+                raise
             except Exception as e:
                 _LOG.warning("Training job %s: payment creation failed for %s: %s",
                              job_id, orch_origin, e)

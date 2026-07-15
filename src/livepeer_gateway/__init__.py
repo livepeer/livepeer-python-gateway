@@ -15,7 +15,14 @@ from .byoc import (
     wait_for_training,
     list_capabilities,
 )
-from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, PaymentError
+from .errors import (
+    InsufficientBalance,
+    LivepeerGatewayError,
+    NoOrchestratorAvailableError,
+    OrchestratorRejection,
+    PaymentError,
+)
+from .logging_config import apply_package_log_level, configure_logging
 from .events import Events
 from .media_publish import (
     AudioOutputConfig,
@@ -33,7 +40,6 @@ from .media_decode import (
     VideoDecodedMediaFrame,
 )
 from .media_output import MediaOutput, MediaOutputStats
-from .errors import OrchestratorRejection
 from .lv2v import LiveVideoToVideo, StartJobRequest, start_lv2v
 from .orch_info import get_orch_info
 from .orchestrator import discover_orchestrators
@@ -62,9 +68,11 @@ __all__ = [
     "get_orch_info",
     "LiveVideoToVideo",
     "LivepeerGatewayError",
+    "InsufficientBalance",
     "NoOrchestratorAvailableError",
     "OrchestratorRejection",
     "PaymentError",
+    "configure_logging",
     "MediaPublish",
     "MediaPublishConfig",
     "MediaPublishTrack",
@@ -99,3 +107,6 @@ __all__ = [
     "TrickleSubscriberStats",
     "VideoDecodedMediaFrame",
 ]
+
+# Apply LOG_LEVEL to the package logger on import (no basicConfig).
+apply_package_log_level()
