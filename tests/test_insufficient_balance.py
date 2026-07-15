@@ -7,6 +7,7 @@ from urllib.error import HTTPError
 
 import pytest
 
+from livepeer_gateway.byoc import _create_byoc_payment
 from livepeer_gateway.errors import InsufficientBalance, NoOrchestratorAvailableError
 from livepeer_gateway.lv2v import StartJobRequest, start_lv2v
 from livepeer_gateway.orchestrator import request_json
@@ -26,6 +27,32 @@ def test_request_json_maps_483_to_insufficient_balance() -> None:
             request_json(
                 "https://signer.example/generate-live-payment",
                 payload={},
+            )
+
+
+def test_create_byoc_payment_preserves_483_as_insufficient_balance() -> None:
+    info = MagicMock()
+    info.HasField.return_value = True
+    info.ticket_params.face_value = b"\x01"
+    info.SerializeToString.return_value = b"orchestrator-info"
+    err = HTTPError(
+        "https://signer.example/generate-live-payment",
+        483,
+        "Insufficient Balance",
+        hdrs=None,  # type: ignore[arg-type]
+        fp=BytesIO(b"Starter allowance exhausted"),
+    )
+
+    with (
+        patch("livepeer_gateway.orch_info.get_orch_info", return_value=info),
+        patch("livepeer_gateway.byoc.urlopen", side_effect=err),
+    ):
+        with pytest.raises(InsufficientBalance, match="Starter allowance exhausted"):
+            _create_byoc_payment(
+                orch_origin="https://orch.example:8936",
+                capability="noop",
+                livepeer_hdr="header",
+                signer_url="https://signer.example",
             )
 
 

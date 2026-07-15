@@ -217,6 +217,10 @@ def _create_byoc_payment(
             payment_data = json.loads(resp.read())
     except HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")[:200]
+        if e.code == 483:
+            raise InsufficientBalance(
+                f"Signer returned HTTP 483 (insufficient balance): {body}"
+            ) from e
         raise LivepeerGatewayError(f"BYOC payment generation failed: HTTP {e.code}: {body}") from e
 
     result = {}
