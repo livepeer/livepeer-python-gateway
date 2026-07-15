@@ -17,7 +17,7 @@ from .byoc import (
 )
 from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, PaymentError
 from .events import Events
-from .logging_config import apply_package_log_level, configure_logging
+from .logging_config import configure_logging
 
 from .media_publish import (
     AudioOutputConfig,
@@ -103,5 +103,6 @@ __all__ = [
     "VideoDecodedMediaFrame",
 ]
 
-apply_package_log_level()
+# Honor LOG_LEVEL; add a root handler only if the app has not configured logging.
+configure_logging()
 
