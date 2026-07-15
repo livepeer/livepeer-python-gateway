@@ -15,7 +15,12 @@ from .byoc import (
     wait_for_training,
     list_capabilities,
 )
-from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, PaymentError
+from .errors import (
+    InsufficientBalance,
+    LivepeerGatewayError,
+    NoOrchestratorAvailableError,
+    PaymentError,
+)
 from .events import Events
 from .media_publish import (
     AudioOutputConfig,
@@ -62,6 +67,7 @@ __all__ = [
     "get_orch_info",
     "LiveVideoToVideo",
     "LivepeerGatewayError",
+    "InsufficientBalance",
     "NoOrchestratorAvailableError",
     "OrchestratorRejection",
     "PaymentError",
