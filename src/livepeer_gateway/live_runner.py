@@ -129,15 +129,15 @@ class LiveRunnerGPU:
 
 @dataclass(frozen=True)
 class LiveRunnerPriceInfo:
-    price_per_unit: int
-    pixels_per_unit: int
-    unit: str = "USD"
+    price: int | float | str
+    currency: str = "usd"
+    unit: str = "hour"
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "price_per_unit": self.price_per_unit,
-            "pixels_per_unit": self.pixels_per_unit,
-            "unit": self.unit,
+            "price": self.price,
+            "currency": str(self.currency or "usd").strip().lower(),
+            "unit": str(self.unit or "hour").strip().lower(),
         }
 
 
@@ -474,9 +474,9 @@ async def register_runner(
     secret: str,
     runner_url: str,
     app: str,
-    price_per_unit: int = 0,
-    pixels_per_unit: int = 1,
-    price_unit: str = "USD",
+    price: int | float | str = 0,
+    currency: str = "usd",
+    unit: str = "hour",
     runner_id: str = "",
     mode: str = "persistent",
     label: str = "",
@@ -499,7 +499,7 @@ async def register_runner(
         secret=secret,
         runner_url=runner_url,
         app=app,
-        price_info=LiveRunnerPriceInfo(price_per_unit, pixels_per_unit, price_unit),
+        price_info=LiveRunnerPriceInfo(price, currency, unit),
         runner_id=runner_id,
         mode=mode,
         label=label,
@@ -645,6 +645,7 @@ async def call_runner(
             try:
                 payment_session, payment = await _get_runner_payment(
                     challenge,
+                    runner=runner,
                     signer_url=signer_url or "",
                     signer_headers=signer_headers,
                 )
@@ -732,13 +733,14 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
 async def _get_runner_payment(
     challenge: _RunnerPaymentChallenge,
     *,
+    runner: Optional[LiveRunnerInstance],
     signer_url: str,
     signer_headers: Optional[dict[str, str]],
 ) -> tuple[LivePaymentSession, GetPaymentResponse]:
     session = LivePaymentSession(
         signer_url=signer_url,
         signer_headers=signer_headers,
-        type="lv2v",
+        type="lv2v" if runner is not None and runner.app == "live-video-to-video/scope" else "live",
         payment_params=challenge.payment_params,
         manifest_id=challenge.manifest_id,
         orchestrator_url=challenge.orchestrator_url,
