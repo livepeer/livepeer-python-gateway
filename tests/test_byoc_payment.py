@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 from urllib.request import Request
 
-from livepeer_gateway.byoc import _create_byoc_payment
+from livepeer_gateway.byoc import _create_byoc_payment, _payment_type_for_signer
 from livepeer_gateway.capabilities import CapabilityId, byoc_capabilities_from_app
 
 
@@ -114,3 +114,73 @@ def test_create_byoc_payment_includes_capabilities_on_signer_payload():
     assert payload["capabilities"] == base64.b64encode(
         caps.SerializeToString()
     ).decode("ascii")
+
+
+def test_payment_type_for_signer_legacy_daydream():
+    assert _payment_type_for_signer("https://signer.daydream.live") == "lv2v"
+    assert _payment_type_for_signer("https://signer.daydream.live/generate-live-payment") == "lv2v"
+
+
+def test_payment_type_for_signer_pymthouse_dmz():
+    assert (
+        _payment_type_for_signer(
+            "https://pymthouse-production.up.railway.app"
+        )
+        == "byoc"
+    )
+    assert _payment_type_for_signer("https://signer.test") == "byoc"
+
+
+def test_create_byoc_payment_legacy_daydream_signer_uses_lv2v():
+    capability = "flux-schnell"
+
+    with _mock_payment_http(get_orch_info_side_effect=lambda *a, **k: _stub_orch_info()) as (
+        reqs,
+        orch_calls,
+    ):
+        _create_byoc_payment(
+            orch_origin="https://byoc-staging-1.daydream.monster:8936",
+            capability=capability,
+            livepeer_hdr="ignored",
+            signer_url="https://signer.daydream.live",
+            signer_headers={"Authorization": "Bearer sk_test"},
+        )
+
+    assert len(orch_calls) == 1
+    assert orch_calls[0]["capabilities"] is None
+
+    signer_req = [r for r in reqs if "generate-live-payment" in r.full_url][0]
+    payload = json.loads(signer_req.data.decode("utf-8"))
+    assert payload["type"] == "lv2v"
+    assert payload["capability"] == capability
+    assert "capabilities" not in payload
+
+
+def test_create_byoc_payment_pymthouse_signer_uses_byoc():
+    capability = "flux-dev"
+
+    with _mock_payment_http(get_orch_info_side_effect=lambda *a, **k: _stub_orch_info()) as (
+        reqs,
+        orch_calls,
+    ):
+        _create_byoc_payment(
+            orch_origin="https://byoc-staging-1.daydream.monster:8936",
+            capability=capability,
+            livepeer_hdr="ignored",
+            signer_url="https://pymthouse-production.up.railway.app",
+            signer_headers={"Authorization": "Bearer app.pmth_test"},
+        )
+
+    assert len(orch_calls) == 1
+    passed_caps = orch_calls[0]["capabilities"]
+    assert passed_caps is not None
+    assert (
+        capability
+        in passed_caps.constraints.PerCapability[int(CapabilityId.BYOC)].models
+    )
+
+    signer_req = [r for r in reqs if "generate-live-payment" in r.full_url][0]
+    payload = json.loads(signer_req.data.decode("utf-8"))
+    assert payload["type"] == "byoc"
+    assert "capabilities" in payload
+    assert "capability" not in payload

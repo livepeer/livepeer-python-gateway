@@ -36,7 +36,7 @@ import logging
 import ssl
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence
+from typing import Any, Literal, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -145,6 +145,22 @@ class ByocJobResponse:
 # Header building
 # ---------------------------------------------------------------------------
 
+_LEGACY_DAYDREAM_SIGNER_HOST = "signer.daydream.live"
+
+
+def _payment_type_for_signer(signer_url: str) -> Literal["byoc", "lv2v"]:
+    """
+    Select payment payload shape for the target signer.
+
+    Legacy Daydream signer expects type:lv2v + string capability.
+    pymthouse DMZ (and other modern signers) expect type:byoc + capabilities proto.
+    """
+    hostname = (urlparse(signer_url).hostname or "").lower()
+    if hostname == _LEGACY_DAYDREAM_SIGNER_HOST:
+        return "lv2v"
+    return "byoc"
+
+
 def _create_byoc_payment(
     *,
     orch_origin: str,
@@ -174,10 +190,15 @@ def _create_byoc_payment(
     parsed = urlparse(orch_origin)
     grpc_url = f"https://{parsed.hostname}:8935"
 
-    # Capabilities must be sent on orch discovery so TicketParams use
-    # PriceInfoForCaps (per-cap wei/sec) when ByocPerCapPricing is enabled.
-    byoc_caps = byoc_capabilities_from_app(capability)
+    payment_type = _payment_type_for_signer(signer_url)
+    byoc_caps = (
+        byoc_capabilities_from_app(capability)
+        if payment_type == "byoc"
+        else None
+    )
 
+    # Capabilities on orch discovery are required for type:byoc so TicketParams
+    # use PriceInfoForCaps (per-cap wei/sec) when ByocPerCapPricing is enabled.
     info = get_orch_info(
         grpc_url,
         signer_url=signer_url,
@@ -195,17 +216,18 @@ def _create_byoc_payment(
         _LOG.info("BYOC orch has no ticket_params, skipping payment")
         return {}
 
-    # Step 2: Generate payment via signer — Capability_BYOC + model constraint
-    # go in `capabilities` (proto b64), not a string `capability` field.
+    # Step 2: Generate payment via signer — shape depends on signer host.
     orch_info_b64 = base64.b64encode(info.SerializeToString()).decode("ascii")
     payment_payload: dict[str, Any] = {
         "orchestrator": orch_info_b64,
-        "type": "byoc",
+        "type": payment_type,
     }
-    if byoc_caps is not None:
+    if payment_type == "byoc" and byoc_caps is not None:
         payment_payload["capabilities"] = base64.b64encode(
             byoc_caps.SerializeToString()
         ).decode("ascii")
+    elif payment_type == "lv2v":
+        payment_payload["capability"] = capability
 
     signer_origin = _http_origin(signer_url)
     payment_url = f"{signer_origin}/generate-live-payment"
