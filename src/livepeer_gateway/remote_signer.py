@@ -8,8 +8,9 @@ import re
 import ssl
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import aiohttp
@@ -18,6 +19,21 @@ from . import lp_rpc_pb2
 from .async_cache import async_lru_cache
 from .errors import LivepeerGatewayError, PaymentError, SignerRefreshRequired
 _LOG = logging.getLogger(__name__)
+
+_LEGACY_DAYDREAM_SIGNER_HOST = "signer.daydream.live"
+
+
+def _payment_type_for_signer(signer_url: str) -> Literal["byoc", "lv2v"]:
+    """Select the payment payload shape for the target signer.
+
+    Legacy Daydream signer (signer.daydream.live) accepts only type:"lv2v";
+    modern signers (pymthouse DMZ, …) accept type:"byoc". Shared by the BYOC and
+    Live Runner payment paths so both speak the dialect their signer understands.
+    """
+    hostname = (urlparse(signer_url).hostname or "").lower()
+    if hostname == _LEGACY_DAYDREAM_SIGNER_HOST:
+        return "lv2v"
+    return "byoc"
 
 @dataclass(frozen=True)
 class GetPaymentResponse:
