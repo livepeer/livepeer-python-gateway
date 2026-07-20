@@ -1,3 +1,5 @@
+"""Exception types raised by the Livepeer gateway SDK."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,7 +10,7 @@ class LivepeerGatewayError(RuntimeError):
 
 
 class LivepeerHTTPError(LivepeerGatewayError):
-    """Raised when an HTTP request returns a non-success response.
+    """A non-success HTTP response from an endpoint.
 
     Attributes:
         status_code: HTTP status code returned by the endpoint.
@@ -48,7 +50,7 @@ class RunnerRejection:
 
 
 class NoOrchestratorAvailableError(LivepeerGatewayError):
-    """Raised when orchestrator selection rejects every candidate.
+    """No orchestrator is available; every candidate was rejected during selection.
 
     Attributes:
         rejections: Each orchestrator that was tried and why it was rejected.
@@ -67,7 +69,7 @@ class NoOrchestratorAvailableError(LivepeerGatewayError):
 
 
 class NoRunnerAvailableError(LivepeerGatewayError):
-    """Raised when runner selection rejects every candidate.
+    """No runner is available; every candidate was rejected during selection.
 
     Attributes:
         rejections: Each runner that was tried and why it was rejected.
@@ -86,7 +88,7 @@ class NoRunnerAvailableError(LivepeerGatewayError):
 
 
 class SignerRefreshRequired(LivepeerGatewayError):
-    """Raised when the remote signer requests a credential refresh.
+    """The remote signer requires a credential refresh.
 
     Attributes:
         orchestrator_url: Orchestrator whose signer requested the refresh, if known.
@@ -103,8 +105,8 @@ class SignerRefreshRequired(LivepeerGatewayError):
 
 
 class SkipPaymentCycle(LivepeerGatewayError):
-    """Raised when the signer returns HTTP 482 to skip a payment cycle."""
+    """A signer HTTP 482 response requesting that a payment cycle be skipped."""
 
 
 class PaymentError(LivepeerGatewayError):
-    """Raised when a PaymentSession operation fails."""
+    """A failed PaymentSession operation."""

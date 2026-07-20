@@ -1,3 +1,5 @@
+"""Decode trickle MPEG-TS media into frames and demuxed packets."""
+
 from __future__ import annotations
 
 import queue
@@ -14,7 +16,7 @@ import av
 class DecodedMediaFrame:
     """A single decoded media frame with its source timing metadata.
 
-    Base type for :class:`VideoDecodedMediaFrame` and :class:`AudioDecodedMediaFrame`.
+    Base type for ``VideoDecodedMediaFrame`` and ``AudioDecodedMediaFrame``.
 
     Attributes:
         kind: Stream kind this frame came from, e.g. ``"video"`` or ``"audio"``.
@@ -43,7 +45,7 @@ class DecodedMediaFrame:
 class VideoDecodedMediaFrame(DecodedMediaFrame):
     """A decoded video frame.
 
-    Extends :class:`DecodedMediaFrame` with video-specific attributes.
+    Extends ``DecodedMediaFrame`` with video-specific attributes.
 
     Attributes:
         width: Frame width in pixels.
@@ -60,7 +62,7 @@ class VideoDecodedMediaFrame(DecodedMediaFrame):
 class AudioDecodedMediaFrame(DecodedMediaFrame):
     """A decoded audio frame.
 
-    Extends :class:`DecodedMediaFrame` with audio-specific attributes.
+    Extends ``DecodedMediaFrame`` with audio-specific attributes.
 
     Attributes:
         sample_rate: Samples per second, or ``None`` if unknown.
@@ -116,6 +118,12 @@ _END = object()
 
 @dataclass(frozen=True)
 class DecoderQueueStats:
+    """Best-effort snapshot of the decoder's cross-thread queue metrics.
+
+    Fields are lock-free single-writer totals read across threads; treat them as
+    telemetry, not exact queue state.
+    """
+
     # These queue metrics are intentionally best-effort snapshots. They are
     # derived from single-writer totals that are updated from different threads
     # without per-operation locks, and rely on CPython's implementation details
@@ -472,6 +480,8 @@ class _MpegTsOutputWorker:
 
 
 class MpegTsDecoder(_MpegTsOutputWorker):
+    """Background worker that decodes an MPEG-TS byte stream into media frames."""
+
     def __init__(self) -> None:
         super().__init__(thread_name="MpegTsDecoder")
 
@@ -512,6 +522,8 @@ class MpegTsDecoder(_MpegTsOutputWorker):
 
 
 class MpegTsPacketDemuxer(_MpegTsOutputWorker):
+    """Background worker that demuxes an MPEG-TS byte stream into packets."""
+
     def __init__(self) -> None:
         super().__init__(thread_name="MpegTsPacketDemuxer")
 
@@ -542,10 +554,12 @@ class MpegTsPacketDemuxer(_MpegTsOutputWorker):
 
 
 def is_decoder_end(item: object) -> bool:
+    """Return ``True`` if ``item`` is the decoder's end-of-stream sentinel."""
     return item is _END
 
 
 def decoder_error(item: object) -> Optional[BaseException]:
+    """Return the exception carried by a decoder error ``item``, or ``None``."""
     if isinstance(item, _DecoderError):
         return item.error
     return None

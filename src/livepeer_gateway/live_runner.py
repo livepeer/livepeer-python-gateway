@@ -1,3 +1,5 @@
+"""Live runner discovery, registration, sessions, trickle channels, and calls."""
+
 from __future__ import annotations
 
 import asyncio
@@ -54,24 +56,26 @@ class LiveRunnerTrickleChannel(TypedDict):
         name: The channel name requested by the caller.
         channel_name: The orchestrator-assigned channel identifier.
         url: Public/external trickle URL.
-        internal_url: Private-network runner-to-orchestrator URL, when configured.
+        internal_url: Private-network runner-to-orchestrator URL. When the runner
+            and orchestrator share a network (e.g. Docker), this bypasses public
+            TLS/routing; present only when the orchestrator is configured to
+            return one.
         mime_type: MIME type of the media carried on the channel.
     """
 
     name: str
     channel_name: str
-    # Public/external trickle URL.
     url: str
-    # Optional private-network URL for runner-to-orchestrator traffic. When the
-    # runner and orchestrator share a network, such as Docker, this can bypass
-    # public TLS/routing, but it is only present when the orchestrator is
-    # configured to return one.
     internal_url: NotRequired[str]
     mime_type: str
 
 
 class LiveRunnerSessionHeaders(Protocol):
-    def get(self, key: str, default: str = "") -> str: ...
+    """Mapping-like session headers exposing a ``get(key, default)`` accessor."""
+
+    def get(self, key: str, default: str = "") -> str:
+        """Return the value for ``key``, or ``default`` if absent."""
+        ...
 
 
 class LiveRunnerSessionRequest(Protocol):
@@ -243,7 +247,7 @@ class LiveRunnerRegistration:
     """A live runner's registration with an orchestrator.
 
     Keeps the runner registered by sending periodic heartbeats and tracks the
-    sessions the orchestrator has reserved on it. Prefer :func:`register_runner`
+    sessions the orchestrator has reserved on it. Prefer ``register_runner``
     to construct and start one, and use it as an async context manager to
     unregister on exit. Also exposes session-scoped helpers
     (``create_trickle_channels``, ``remove_trickle_channels``, ``create_proxy``)
@@ -282,9 +286,9 @@ class LiveRunnerRegistration:
     ) -> None:
         """Construct a registration without starting it.
 
-        Prefer :func:`register_runner`, which assembles ``price_info``,
+        Prefer ``register_runner``, which assembles ``price_info``,
         optionally auto-detects the GPU, and starts heartbeating. When
-        constructing directly, call :meth:`start` (or use the instance as an
+        constructing directly, call ``start`` (or use the instance as an
         async context manager) before the runner is registered.
 
         Args:

@@ -1,3 +1,5 @@
+"""Publish media as segmented MPEG-TS over trickle."""
+
 from __future__ import annotations
 
 import asyncio
@@ -55,8 +57,7 @@ def _normalize_fps(fps: Optional[float]) -> int:
 
 @dataclass(frozen=True)
 class VideoOutputConfig:
-    """
-    Output settings for one video track.
+    """Output settings for one video track.
 
     Stream creation is intentionally config-first where possible, but video
     stream initialization still waits for the first frame because width/height
@@ -80,14 +81,13 @@ class VideoOutputConfig:
 
 @dataclass(frozen=True)
 class AudioOutputConfig:
-    """
-    Output settings for one audio track.
+    """Output settings for one audio track.
 
     Audio stream creation is first-frame driven, like video.
 
-    `sample_rate` and `layout` are optional:
+    ``sample_rate`` and ``layout`` are optional:
     - when set, they are enforced as output targets
-    - when unset (`None`), values are derived from the first audio frame
+    - when unset (``None``), values are derived from the first audio frame
     - if unset and first-frame metadata is missing, internal defaults apply
     """
 

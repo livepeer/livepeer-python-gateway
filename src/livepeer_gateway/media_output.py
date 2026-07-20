@@ -1,5 +1,4 @@
-"""
-Helpers for consuming trickle media outputs as segments, bytes, or frames.
+"""Helpers for consuming trickle media outputs as segments, bytes, or frames.
 """
 
 from __future__ import annotations
@@ -41,9 +40,7 @@ MediaBytesCallback = Callable[[bytes], None | Awaitable[None]]
 
 
 class LagPolicy(Enum):
-    """
-    Policy for handling consumers that fall behind the segment window.
-    """
+    """Policy for handling consumers that fall behind the segment window."""
     FAIL = "fail"
     LATEST = "latest"
     EARLIEST = "earliest"
@@ -232,8 +229,7 @@ class MediaOutput:
             self.start_callbacks()
 
     def start_callbacks(self) -> list[asyncio.Task[None]]:
-        """
-        Start configured frame/packet callback consumers.
+        """Start configured frame/packet callback consumers.
 
         This is idempotent. If called without a running event loop, no tasks are
         started and callers may retry later from async code.
@@ -288,8 +284,7 @@ class MediaOutput:
         return tuple(tasks)
 
     async def wait_callbacks(self, timeout: Optional[float] = None) -> tuple[object, ...]:
-        """
-        Wait for configured callback consumers to finish.
+        """Wait for configured callback consumers to finish.
 
         Raises the first callback error, matching close().
         """
@@ -341,8 +336,7 @@ class MediaOutput:
     def segments(
         self,
     ) -> AsyncIterator[SegmentReader]:
-        """
-        Read the trickle media channel and yield SegmentReader objects.
+        """Read the trickle media channel and yield SegmentReader objects.
 
         Segments are shared across iterators.
         """
@@ -360,9 +354,7 @@ class MediaOutput:
     def bytes(
         self,
     ) -> AsyncIterator[bytes]:
-        """
-        Read the trickle media channel and yield a continuous byte stream.
-        """
+        """Read the trickle media channel and yield a continuous byte stream."""
 
         async def _iter() -> AsyncIterator[bytes]:
             async for chunk in self._iter_bytes():
@@ -373,9 +365,7 @@ class MediaOutput:
     def packets(
         self,
     ) -> AsyncIterator[DemuxedMediaPacket]:
-        """
-        Read the trickle media channel, demux MPEG-TS, and yield packets.
-        """
+        """Read the trickle media channel, demux MPEG-TS, and yield packets."""
 
         async def _iter() -> AsyncIterator[DemuxedMediaPacket]:
             demuxer = MpegTsPacketDemuxer()
@@ -427,9 +417,7 @@ class MediaOutput:
     def frames(
         self,
     ) -> AsyncIterator[AudioDecodedMediaFrame | VideoDecodedMediaFrame]:
-        """
-        Read the trickle media channel, decode MPEG-TS, and yield raw frames.
-        """
+        """Read the trickle media channel, decode MPEG-TS, and yield raw frames."""
 
         async def _iter() -> AsyncIterator[AudioDecodedMediaFrame | VideoDecodedMediaFrame]:
             decoder = MpegTsDecoder()
@@ -513,9 +501,7 @@ class MediaOutput:
         self,
         seq: int,
     ) -> Optional[SegmentReader]:
-        """
-        Return the segment at seq, lazily advancing the subscriber if needed.
-        """
+        """Return the segment at seq, lazily advancing the subscriber if needed."""
         # Safe lock-free read: asyncio only context-switches on awaits, and this
         # block has no awaits. That means _segments/_base_seq cannot change
         # until we return or enter the locked slow path below.
