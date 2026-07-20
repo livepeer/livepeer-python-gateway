@@ -8,7 +8,13 @@ class LivepeerGatewayError(RuntimeError):
 
 
 class LivepeerHTTPError(LivepeerGatewayError):
-    """Raised when an HTTP endpoint returns a non-success status."""
+    """Raised when an HTTP request returns a non-success response.
+
+    Attributes:
+        status_code: HTTP status code returned by the endpoint.
+        url: Endpoint that produced the error.
+        body: Raw response body, when available.
+    """
 
     def __init__(self, status_code: int, url: str, body: str = "", message: str | None = None) -> None:
         self.status_code = int(status_code)
@@ -19,28 +25,53 @@ class LivepeerHTTPError(LivepeerGatewayError):
 
 @dataclass
 class OrchestratorRejection:
-    """Records a single orchestrator that was tried and rejected."""
+    """A single orchestrator that was tried during selection and rejected.
+
+    Attributes:
+        url: Endpoint URL of the orchestrator that was attempted.
+        reason: Human-readable explanation of why it was rejected.
+    """
     url: str
     reason: str
 
 
 @dataclass
 class RunnerRejection:
-    """Records a single runner that was tried and rejected."""
+    """A single runner that was tried during selection and rejected.
+
+    Attributes:
+        url: Endpoint URL of the runner that was attempted.
+        reason: Human-readable explanation of why it was rejected.
+    """
     url: str
     reason: str
 
 
 class NoOrchestratorAvailableError(LivepeerGatewayError):
-    """Raised when no orchestrator could be selected."""
+    """Raised when orchestrator selection rejects every candidate.
+
+    Attributes:
+        rejections: Each orchestrator that was tried and why it was rejected.
+    """
 
     def __init__(self, message: str, rejections: list[OrchestratorRejection] | None = None) -> None:
         super().__init__(message)
         self.rejections: list[OrchestratorRejection] = rejections or []
 
+    def __str__(self) -> str:
+        message = super().__str__()
+        if not self.rejections:
+            return message
+        reasons = "; ".join(f"{r.url}: {r.reason}" for r in self.rejections)
+        return f"{message}: {reasons}"
+
 
 class NoRunnerAvailableError(LivepeerGatewayError):
-    """Raised when no runner could be selected."""
+    """Raised when runner selection rejects every candidate.
+
+    Attributes:
+        rejections: Each runner that was tried and why it was rejected.
+    """
 
     def __init__(self, message: str, rejections: list[RunnerRejection] | None = None) -> None:
         super().__init__(message)
@@ -55,7 +86,11 @@ class NoRunnerAvailableError(LivepeerGatewayError):
 
 
 class SignerRefreshRequired(LivepeerGatewayError):
-    """Raised when the remote signer returns HTTP 480 and a refresh is required."""
+    """Raised when the remote signer requests a credential refresh.
+
+    Attributes:
+        orchestrator_url: Orchestrator whose signer requested the refresh, if known.
+    """
 
     def __init__(
         self,

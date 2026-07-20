@@ -233,6 +233,35 @@ async def runner_selector(
     gpu: Optional[FilterValue] = None,
     timeout: float = 5.0,
 ) -> RunnerSelectionCursor:
+    """Discover live runners and return a cursor that attempts them one at a time.
+
+    Awaiting the returned cursor's ``.next()`` calls the next runner (see
+    ``call_runner``) with ``body``/``method`` and returns its ``LiveRunnerCallResult``.
+    Runners are tried sequentially, not in parallel, because selecting one may reserve
+    capacity or perform the actual operation.
+
+    Args:
+        body: Request payload forwarded to each runner attempt. Defaults to an empty
+            body.
+        method: HTTP method used for each runner attempt.
+        orchestrators: Explicit orchestrator addresses, as a sequence or a
+            comma-delimited string. If provided, runners are discovered from these
+            instead of via ``discovery_url``/``signer_url``.
+        signer_url: Signer service used to authenticate discovery and to answer payment
+            challenges on subsequent runner calls.
+        signer_headers: Extra HTTP headers sent to the signer service.
+        discovery_url: Discovery endpoint queried when ``orchestrators`` is omitted.
+        discovery_headers: Extra HTTP headers sent to the discovery endpoint.
+        app: Restrict candidates to runners serving this app (string or sequence).
+        gpu: Restrict candidates to runners on this GPU (string or sequence).
+        timeout: Per-request timeout, in seconds, for each runner attempt.
+
+    Returns:
+        A cursor whose ``.next()`` yields the next successful runner's result.
+
+    Raises:
+        NoRunnerAvailableError: If discovery returns no candidate runners.
+    """
     if orchestrators is not None:
         entries = await discover_orchestrator_runners(
             orchestrators,
@@ -276,6 +305,31 @@ async def reserve_session(
     gpu: Optional[FilterValue] = None,
     timeout: float = 5.0,
 ) -> LiveRunnerSession:
+    """Select a runner and reserve a session on it in one step.
+
+    Convenience wrapper over ``runner_selector`` that calls the first working
+    runner and returns its session details.
+
+    Args:
+        signer_url: Signer service used to authenticate discovery and to answer
+            payment challenges on the runner call.
+        signer_headers: Extra HTTP headers sent to the signer service.
+        discovery_url: Discovery endpoint queried when discovering runners.
+        discovery_headers: Extra HTTP headers sent to the discovery endpoint.
+        orchestrators: Explicit orchestrator addresses, as a sequence or a
+            comma-delimited string. If provided, runners are discovered from
+            these instead of via ``discovery_url``/``signer_url``.
+        app: Restrict candidates to runners serving this app (string or sequence).
+        gpu: Restrict candidates to runners on this GPU (string or sequence).
+        timeout: Per-request timeout, in seconds, for the runner call.
+
+    Returns:
+        A ``LiveRunnerSession`` carrying the reserved ``session_id`` and ``app_url``.
+
+    Raises:
+        LivepeerGatewayError: If the runner response omits ``session_id`` or ``app_url``.
+        NoRunnerAvailableError: If no runner succeeds.
+    """
     cursor = await runner_selector(
         orchestrators=orchestrators,
         signer_url=signer_url,

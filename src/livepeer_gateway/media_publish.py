@@ -105,12 +105,22 @@ class AudioOutputConfig:
 
 @dataclass(frozen=True)
 class MediaPublishConfig:
-    """
-    Top-level media publish configuration.
+    """Top-level configuration for a ``MediaPublish`` stream.
 
-    `tracks` defines the full set of output tracks for the muxed stream. Each
+    ``tracks`` defines the full set of output tracks for the muxed stream. Each
     entry becomes its own runtime track handle, queue, and encoder state inside
     one shared output container.
+
+    Attributes:
+        mime_type: MIME type advertised for the published trickle stream.
+        tracks: Output track configs. Each becomes an independent runtime track.
+        track_wait_timeout_s: Max seconds to wait for a track's first frame once
+            the first frame has arrived on any track. Tracks still missing a
+            first frame at the deadline are dropped.
+        min_segment_wallclock_s: Best-effort lower bound on the wall-clock
+            lifetime of each trickle segment.
+        segment_post_idle_timeout_s: Seconds of PyAV idleness before the current
+            trickle transport segment is rotated.
     """
 
     mime_type: str = "video/mp2t"
@@ -164,6 +174,23 @@ class TrackQueueStats:
 
 @dataclass(frozen=True)
 class MediaPublishStats:
+    """Snapshot of ``MediaPublish`` throughput and segment statistics.
+
+    Attributes:
+        elapsed_s: Seconds since the publisher started.
+        segments_started: Trickle segments opened.
+        segments_completed: Trickle segments closed and marked complete.
+        segments_failed: Trickle segments that failed or were dropped mid-stream.
+        bytes_streamed_to_trickle: Payload bytes written to trickle segments.
+        bytes_drained: Payload bytes discarded while draining a failed or rotated
+            segment.
+        segment_writer_put_timeouts: Segment-writer enqueue timeouts observed.
+        terminal_failures: Unrecoverable publisher failures.
+        encoder_errors: Errors raised by the encoder thread.
+        publisher: Statistics from the underlying trickle publisher.
+        track_queue_stats: Per-track queue statistics.
+    """
+
     elapsed_s: float
     segments_started: int
     segments_completed: int
@@ -202,11 +229,17 @@ def _new_track_stats() -> dict[str, int]:
 
 
 class MediaPublishTrack:
-    """
-    Runtime handle for one configured output track.
+    """Runtime handle for one configured output track.
 
-    Owns its queue and encoder state. Call `write_frame()` to enqueue frames
-    for encoding. Use `resize()` to adjust queue capacity at runtime.
+    Owns its queue and encoder state. Obtain instances from
+    ``MediaPublish.get_tracks()`` rather than constructing directly. Call
+    ``write_frame()`` to enqueue frames for encoding and ``resize()`` to adjust
+    queue capacity at runtime.
+
+    Attributes:
+        kind: Track media kind, ``"video"`` or ``"audio"``.
+        config: Output config this track was created from.
+        index: Zero-based position among tracks of the same kind.
     """
 
     def __init__(
@@ -244,6 +277,7 @@ class MediaPublishTrack:
         self._audio_resampler: Any = None
 
     async def write_frame(self, frame: av.VideoFrame | av.AudioFrame) -> None:
+        """Enqueue a frame on this track for encoding."""
         await self._owner._write_frame_to_track(self, frame)
 
     def resize(self, queue_size: int) -> None:
@@ -255,13 +289,12 @@ class MediaPublishTrack:
 
 
 class MediaPublish:
-    """
-    Publish muxed media as segmented MPEG-TS over trickle.
+    """Publish muxed media as segmented MPEG-TS over trickle.
 
-    One `MediaPublish` owns a single output container and one runtime track
+    One ``MediaPublish`` owns a single output container and one runtime track
     state per configured output track. Both audio and video tracks are
     first-frame driven. Once the first frame is observed for any track, a
-    startup timeout begins; tracks that do not deliver their first frame before
+    startup timeout begins. Tracks that do not deliver their first frame before
     the deadline are dropped before container initialization.
     """
 
@@ -271,6 +304,17 @@ class MediaPublish:
         *,
         config: MediaPublishConfig = MediaPublishConfig(),
     ) -> None:
+        """Configure a publisher for a trickle channel.
+
+        Args:
+            publish_url: Trickle channel URL the muxed stream is published to.
+            config: Output configuration, including the set of tracks to mux.
+
+        Raises:
+            ValueError: If ``config`` has no tracks, or any of its timeouts
+                (``track_wait_timeout_s``, ``min_segment_wallclock_s``,
+                ``segment_post_idle_timeout_s``) is out of range.
+        """
         self.publish_url = publish_url
         self._channel_name = publish_url.rstrip("/").rsplit("/", 1)[-1]
         if not config.tracks:
@@ -374,9 +418,21 @@ class MediaPublish:
 
     @property
     def tracks(self) -> tuple[MediaPublishTrack, ...]:
+        """Immutable snapshot of all runtime tracks."""
         return tuple(self._tracks)
 
     def get_tracks(self, kind: Optional[str] = None) -> list[MediaPublishTrack]:
+        """Return runtime tracks, optionally filtered by kind.
+
+        Args:
+            kind: ``"video"`` or ``"audio"`` to filter. ``None`` returns all tracks.
+
+        Returns:
+            The matching runtime tracks.
+
+        Raises:
+            ValueError: If ``kind`` is not ``None``, ``"video"``, or ``"audio"``.
+        """
         if kind is None:
             return list(self._tracks)
         normalized = kind.strip().lower()
@@ -400,6 +456,15 @@ class MediaPublish:
         track._queue.resize(queue_size)
 
     async def write_frame(self, frame: av.VideoFrame | av.AudioFrame) -> None:
+        """Enqueue a frame, routing it to the single track of its media kind.
+
+        Use ``get_tracks()`` and the per-track ``write_frame()`` instead when
+        more than one track of the frame's kind is configured.
+
+        Raises:
+            TypeError: If the frame type is unsupported, no track of its kind is
+                enabled, or multiple tracks of its kind make routing ambiguous.
+        """
         track = self._resolve_track_for_frame(frame)
         await self._write_frame_to_track(track, frame)
 
@@ -463,6 +528,11 @@ class MediaPublish:
             _LOG.warning("MediaPublish close suppressed %s failure", step_name, exc_info=True)
 
     async def close(self) -> None:
+        """Stop encoding and release the encoder thread, segments, and publisher.
+
+        Best-effort and idempotent: individual shutdown steps are suppressed and
+        logged so one failure does not block the rest of cleanup.
+        """
         if self._closed:
             return
         self._closed = True
@@ -1051,6 +1121,7 @@ class MediaPublish:
             pass
 
     def get_stats(self) -> MediaPublishStats:
+        """Return a snapshot of publish throughput and per-track statistics."""
         publisher_stats = self._publisher.get_stats()
         per_track = tuple(
             TrackQueueStats(

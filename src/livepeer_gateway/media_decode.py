@@ -12,6 +12,22 @@ import av
 
 @dataclass(frozen=True)
 class DecodedMediaFrame:
+    """A single decoded media frame with its source timing metadata.
+
+    Base type for :class:`VideoDecodedMediaFrame` and :class:`AudioDecodedMediaFrame`.
+
+    Attributes:
+        kind: Stream kind this frame came from, e.g. ``"video"`` or ``"audio"``.
+        stream_index: Index of the source stream within the container.
+        frame: The underlying decoded PyAV frame.
+        pts: Presentation timestamp in ``time_base`` units, or ``None`` if unset.
+        time_base: Stream time base (seconds per ``pts`` unit), or ``None``.
+        pts_time: Presentation timestamp in seconds (``pts * time_base``). Media time
+            relative to the stream start, not wall-clock time.
+        demuxed_at: Wall-clock time (``time.time()``) when the packet was demuxed.
+        decoded_at: Wall-clock time (``time.time()``) when the frame was decoded.
+    """
+
     kind: str
     stream_index: int
     frame: Union[av.VideoFrame, av.AudioFrame]
@@ -25,6 +41,16 @@ class DecodedMediaFrame:
 
 @dataclass(frozen=True)
 class VideoDecodedMediaFrame(DecodedMediaFrame):
+    """A decoded video frame.
+
+    Extends :class:`DecodedMediaFrame` with video-specific attributes.
+
+    Attributes:
+        width: Frame width in pixels.
+        height: Frame height in pixels.
+        pix_fmt: Pixel format name (e.g. ``"yuv420p"``), or ``None`` if unknown.
+    """
+
     width: int
     height: int
     pix_fmt: Optional[str]
@@ -32,6 +58,17 @@ class VideoDecodedMediaFrame(DecodedMediaFrame):
 
 @dataclass(frozen=True)
 class AudioDecodedMediaFrame(DecodedMediaFrame):
+    """A decoded audio frame.
+
+    Extends :class:`DecodedMediaFrame` with audio-specific attributes.
+
+    Attributes:
+        sample_rate: Samples per second, or ``None`` if unknown.
+        layout: Channel layout name (e.g. ``"stereo"``), or ``None`` if unknown.
+        format: Sample format name (e.g. ``"fltp"``), or ``None`` if unknown.
+        samples: Number of samples per channel in this frame, or ``None``.
+    """
+
     sample_rate: Optional[int]
     layout: Optional[str]
     format: Optional[str]
@@ -40,6 +77,26 @@ class AudioDecodedMediaFrame(DecodedMediaFrame):
 
 @dataclass(frozen=True)
 class DemuxedMediaPacket:
+    """A single demuxed media packet with its source timing metadata.
+
+    Yielded by ``MediaOutput.packets()`` (and passed to ``on_packet``) before
+    decoding.
+
+    Attributes:
+        kind: Stream kind this packet came from, e.g. ``"video"`` or ``"audio"``.
+        stream_index: Index of the source stream within the container.
+        packet: The underlying demuxed PyAV packet.
+        pts: Presentation timestamp in ``time_base`` units, or ``None`` if unset.
+        dts: Decode timestamp in ``time_base`` units, or ``None`` if unset.
+        time_base: Stream time base (seconds per timestamp unit), or ``None``.
+        pts_time: Presentation timestamp in seconds (``pts * time_base``), or ``None``.
+            Media time relative to the stream start, not wall-clock time.
+        dts_time: Decode timestamp in seconds (``dts * time_base``), or ``None``.
+        is_keyframe: Whether the packet is a keyframe.
+        size: Packet size in bytes.
+        demuxed_at: Wall-clock time (``time.time()``) when the packet was demuxed.
+    """
+
     kind: str
     stream_index: int
     packet: av.Packet

@@ -36,11 +36,28 @@ _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u0
 
 
 class LiveRunnerTrickleChannelRequest(TypedDict):
+    """A trickle channel to create.
+
+    Attributes:
+        name: Caller-chosen channel name, unique within the session.
+        mime_type: MIME type of the media carried on the channel.
+    """
+
     name: str
     mime_type: str
 
 
 class LiveRunnerTrickleChannel(TypedDict):
+    """A trickle channel created on a live runner session.
+
+    Attributes:
+        name: The channel name requested by the caller.
+        channel_name: The orchestrator-assigned channel identifier.
+        url: Public/external trickle URL.
+        internal_url: Private-network runner-to-orchestrator URL, when configured.
+        mime_type: MIME type of the media carried on the channel.
+    """
+
     name: str
     channel_name: str
     # Public/external trickle URL.
@@ -58,11 +75,31 @@ class LiveRunnerSessionHeaders(Protocol):
 
 
 class LiveRunnerSessionRequest(Protocol):
+    """An incoming request carrying the orchestrator's live-runner session headers.
+
+    Any object exposing a ``headers`` mapping (e.g. a web framework request)
+    satisfies this protocol.
+
+    Attributes:
+        headers: Session headers set by the orchestrator proxy, such as
+            ``Livepeer-Session-Id``, ``Livepeer-Session-Token``,
+            ``Livepeer-Runner-Route``, and ``Livepeer-Session-Control``.
+    """
+
     headers: LiveRunnerSessionHeaders
 
 
 @dataclass(frozen=True)
 class LiveRunnerSessionEvent:
+    """A session reservation lifecycle event delivered over the O2R channel.
+
+    Attributes:
+        session_id: The session the event concerns.
+        event: Whether the session was ``"reserved"`` or ``"released"``.
+        timestamp: Orchestrator-supplied event timestamp, if any.
+        raw: The raw event message as received.
+    """
+
     session_id: str
     event: Literal["reserved", "released"]
     timestamp: Optional[str]
@@ -74,7 +111,16 @@ LiveRunnerSessionCallback = Callable[[LiveRunnerSessionEvent], None | Awaitable[
 
 @dataclass(frozen=True)
 class LiveRunnerInstance:
-    """A normalized live runner discovered from an orchestrator entry."""
+    """A normalized live runner discovered from an orchestrator entry.
+
+    Attributes:
+        url: Runner endpoint used to call the app.
+        app: App the runner serves.
+        runner_id: Orchestrator-assigned runner identifier.
+        mode: Runner mode, e.g. ``"persistent"`` or ``"single-shot"``.
+        orchestrator_url: URL of the orchestrator advertising the runner.
+        raw: The raw runner entry as received from discovery.
+    """
 
     url: str
     app: str
@@ -86,6 +132,17 @@ class LiveRunnerInstance:
 
 @dataclass(frozen=True)
 class LiveRunnerSession:
+    """A reserved session on a live runner.
+
+    Attributes:
+        session_id: Identifier of the reserved session.
+        app_url: URL where the app serves this session. Clients send their session
+            requests here (e.g. ``{app_url}/echo``).
+        runner_url: Base URL of the runner hosting the session, used to manage the
+            session lifecycle such as stopping it.
+        runner: The runner instance backing the session, when known.
+    """
+
     session_id: str
     app_url: str
     runner_url: str
@@ -94,12 +151,33 @@ class LiveRunnerSession:
 
 @dataclass(frozen=True)
 class LiveRunnerProxy:
+    """A public proxy exposing a runner-served URL to the public internet.
+
+    The orchestrator maps a public URL onto a target URL the runner serves, forwarding
+    inbound traffic to it.
+
+    Attributes:
+        proxy_id: Identifier of the created proxy.
+        url: Public URL that forwards to the runner-served target.
+    """
+
     proxy_id: str
     url: str
 
 
 @dataclass(frozen=True)
 class LiveRunnerCallResult:
+    """The result of a call to a live runner.
+
+    Attributes:
+        data: The runner's JSON response body.
+        runner_url: URL of the runner that produced the response.
+        runner: The runner instance that was called, when known.
+        session_id: Session identifier associated with the call, if any.
+        payment_session: Payment session used to settle a paid call. ``None`` for
+            unpaid calls. Excluded from ``repr`` and equality.
+    """
+
     data: dict[str, Any]
     runner_url: str
     runner: Optional[LiveRunnerInstance] = None
@@ -113,11 +191,20 @@ class LiveRunnerCallResult:
 
 @dataclass(frozen=True)
 class LiveRunnerGPU:
+    """GPU details advertised when registering a runner.
+
+    Attributes:
+        id: GPU identifier (e.g. device index or UUID).
+        name: Human-readable GPU model name.
+        vram_mb: Video memory in megabytes.
+    """
+
     id: str = ""
     name: str = ""
     vram_mb: int = 0
 
     def to_json(self) -> dict[str, Any]:
+        """Return the JSON payload, omitting empty/zero fields."""
         data: dict[str, Any] = {}
         if self.id:
             data["id"] = self.id
@@ -130,11 +217,21 @@ class LiveRunnerGPU:
 
 @dataclass(frozen=True)
 class LiveRunnerPriceInfo:
+    """Pricing advertised for a runner's work.
+
+    Attributes:
+        price: Amount charged per ``unit``, in ``currency`` (a number or numeric
+            string).
+        currency: Currency of ``price`` (e.g. ``"usd"``).
+        unit: Billing unit that ``price`` applies to (e.g. ``"hour"``).
+    """
+
     price: int | float | str
     currency: str = "usd"
     unit: str = "hour"
 
     def to_json(self) -> dict[str, Any]:
+        """Return the pricing as a JSON payload."""
         return {
             "price": self.price,
             "currency": str(self.currency or "usd").strip().lower(),
@@ -143,6 +240,25 @@ class LiveRunnerPriceInfo:
 
 
 class LiveRunnerRegistration:
+    """A live runner's registration with an orchestrator.
+
+    Keeps the runner registered by sending periodic heartbeats and tracks the
+    sessions the orchestrator has reserved on it. Prefer :func:`register_runner`
+    to construct and start one, and use it as an async context manager to
+    unregister on exit. Also exposes session-scoped helpers
+    (``create_trickle_channels``, ``remove_trickle_channels``, ``create_proxy``)
+    pre-bound to this registration's orchestrator and runner id.
+
+    Attributes:
+        orchestrator_url: Orchestrator the runner is registered with. May be updated to
+            the orchestrator returned by the initial heartbeat.
+        runner_id: Orchestrator-assigned runner id, populated after the first heartbeat.
+        heartbeat_interval_s: How often the runner sends heartbeats, in seconds.
+        heartbeat_ttl_s: How long the orchestrator keeps the runner registered without
+            a heartbeat, in seconds, if advertised.
+        o2r_channel: Orchestrator-to-runner control channel, when established.
+    """
+
     def __init__(
         self,
         *,
@@ -164,6 +280,37 @@ class LiveRunnerRegistration:
         on_session_reserve: Optional[LiveRunnerSessionCallback] = None,
         on_session_release: Optional[LiveRunnerSessionCallback] = None,
     ) -> None:
+        """Construct a registration without starting it.
+
+        Prefer :func:`register_runner`, which assembles ``price_info``,
+        optionally auto-detects the GPU, and starts heartbeating. When
+        constructing directly, call :meth:`start` (or use the instance as an
+        async context manager) before the runner is registered.
+
+        Args:
+            orchestrator_url: Orchestrator to register with.
+            secret: Bootstrap secret authorizing the initial registration.
+            runner_url: URL at which this runner serves the app.
+            app: App this runner serves.
+            price_info: Pricing advertised for the runner's work.
+            runner_id: Preferred runner id. The orchestrator may assign one otherwise.
+            mode: Runner mode, ``"persistent"`` or ``"single-shot"``.
+            label: Optional human-readable label for the runner.
+            version: Optional runner/app version string.
+            status: Initial advertised status, e.g. ``"ready"``.
+            capacity: Number of concurrent sessions the runner can serve.
+            gpu: GPU details to advertise, if any.
+            timeout: Per-request timeout, in seconds.
+            heartbeat_interval_s: Override the heartbeat interval. Defaults to the
+                orchestrator-advertised value.
+            unregister_on_close: Unregister the runner when the registration closes.
+            on_session_reserve: Callback invoked when a session is reserved.
+            on_session_release: Callback invoked when a session is released.
+
+        Raises:
+            LivepeerGatewayError: If ``orchestrator_url`` is invalid.
+            ValueError: If ``mode`` is not ``"persistent"`` or ``"single-shot"``.
+        """
         self.orchestrator_url = _normalize_http_base(orchestrator_url)
         self.runner_id = runner_id
         self.heartbeat_interval_s = heartbeat_interval_s or _DEFAULT_HEARTBEAT_INTERVAL_S
@@ -193,16 +340,30 @@ class LiveRunnerRegistration:
         self._o2r_task: Optional[asyncio.Task[None]] = None
 
     async def start(self) -> "LiveRunnerRegistration":
+        """Send the initial heartbeat and start the background heartbeat loop.
+
+        Returns:
+            This registration, for chaining.
+
+        Raises:
+            LivepeerGatewayError: If the initial registration heartbeat fails.
+        """
         await self._send_heartbeat()
         self._task = asyncio.create_task(self._heartbeat_loop())
         return self
 
     @property
     def active_session_ids(self) -> tuple[str, ...]:
+        """Immutable snapshot of currently reserved session ids, in reservation order."""
         # Return an immutable snapshot; internal storage stays list-backed to preserve reservation order.
         return tuple(self._active_session_ids)
 
     async def close(self) -> None:
+        """Stop heartbeating and, unless disabled, unregister the runner.
+
+        Idempotent and safe to call from ``__aexit__``. Shutdown errors are logged
+        rather than raised.
+        """
         self._closed = True
         o2r_reader = self._o2r_reader
         self._o2r_reader = None
@@ -258,6 +419,22 @@ class LiveRunnerRegistration:
         This is intended for apps running behind the orchestrator's live-runner
         proxy, not end-user clients. Apps should normally pass the incoming
         request so the orchestrator-provided session headers are used.
+
+        Args:
+            session: The session to target: a ``session_id`` string, or a
+                ``LiveRunnerSessionRequest`` from which the session id and token are 
+                read.
+            channels: Channels to create, each a dict with ``name`` and ``mime_type``.
+            session_token: Session auth token. Overrides the value carried by 
+                ``session``. Required when ``session`` is a plain id string.
+
+        Returns:
+            The created channels as returned by the runner.
+
+        Raises:
+            LivepeerGatewayError: If credentials are missing or the response omits the
+                created channels.
+            TypeError: If a channel entry is malformed.
         """
         return await create_trickle_channels(
             session,
@@ -280,6 +457,21 @@ class LiveRunnerRegistration:
         This is intended for apps running behind the orchestrator's live-runner
         proxy, not end-user clients. Apps should normally pass the incoming
         request so the orchestrator-provided session headers are used.
+
+        Args:
+            session: The session to target: a ``session_id`` string, or a
+                ``LiveRunnerSessionRequest`` from which the session id and token are 
+                read.
+            channels: Names of the channels to remove.
+            session_token: Session auth token. Overrides the value carried by
+                ``session``. Required when ``session`` is a plain id string.
+
+        Returns:
+            Names of the channels that were removed.
+
+        Raises:
+            LivepeerGatewayError: If credentials are missing, the response is not a 
+                JSON object, or it omits the deleted channel list.
         """
         return await remove_trickle_channels(
             session,
@@ -298,7 +490,30 @@ class LiveRunnerRegistration:
         session_token: str = "",
         timeout: Optional[float] = None,
     ) -> LiveRunnerProxy:
-        """Create a public proxy URL for a live runner app target."""
+        """Create a public proxy URL for a live runner app target.
+
+        This is intended for apps running behind the orchestrator's live-runner
+        proxy, not end-user clients. Apps should normally pass the incoming
+        request so the orchestrator-provided session headers are used.
+
+        Args:
+            session: The session to target: a ``session_id`` string, or a
+                ``LiveRunnerSessionRequest`` from which the session id and token are
+                read.
+            target_url: The runner-served URL to expose through the proxy.
+            session_token: Session auth token. Overrides the value carried by
+                ``session``. Required when ``session`` is a plain id string.
+            timeout: Per-request timeout, in seconds. Defaults to the registration's
+                timeout.
+
+        Returns:
+            The created proxy, carrying its ``proxy_id`` and public ``url``.
+
+        Raises:
+            LivepeerGatewayError: If credentials or ``target_url`` are missing,
+                the response is not a JSON object, or it omits ``proxy_id`` or
+                ``url``.
+        """
         return await create_proxy(
             session,
             target_url,
@@ -491,9 +706,44 @@ async def register_runner(
     unregister_on_close: bool = True,
     on_session_reserve: Optional[LiveRunnerSessionCallback] = None,
     on_session_release: Optional[LiveRunnerSessionCallback] = None,
-) -> LiveRunnerRegistration:
+) -> "LiveRunnerRegistration":
+    """Register a live runner with an orchestrator and start heartbeating.
+
+    Args:
+        orchestrator_url: Orchestrator to register with.
+        secret: Bootstrap secret authorizing the initial registration.
+        runner_url: URL at which this runner serves the app.
+        app: App this runner serves.
+        price: Amount charged per ``unit``, in ``currency`` (a number or numeric
+            string).
+        currency: Currency of ``price`` (e.g. ``"usd"``).
+        unit: Billing unit that ``price`` applies to (e.g. ``"hour"``).
+        runner_id: Preferred runner id. The orchestrator may assign one otherwise.
+        mode: Runner mode, ``"persistent"`` or ``"single-shot"``.
+        label: Optional human-readable label for the runner.
+        version: Optional runner/app version string.
+        status: Initial advertised status, e.g. ``"ready"``.
+        capacity: Number of concurrent sessions the runner can serve.
+        gpu: GPU details to advertise. Auto-detected when omitted and
+            ``auto_detect_gpu`` is set.
+        auto_detect_gpu: Detect local GPU details when ``gpu`` is not provided.
+        timeout: Per-request timeout, in seconds.
+        heartbeat_interval_s: Override the heartbeat interval. Defaults to the
+            orchestrator-advertised value.
+        unregister_on_close: Unregister the runner when the registration closes.
+        on_session_reserve: Callback invoked when a session is reserved.
+        on_session_release: Callback invoked when a session is released.
+
+    Returns:
+        A started ``LiveRunnerRegistration`` whose heartbeat loop is running.
+
+    Raises:
+        LivepeerGatewayError: If ``orchestrator_url`` is invalid or the initial
+            registration heartbeat fails.
+        ValueError: If ``mode`` is not ``"persistent"`` or ``"single-shot"``.
+    """
     if gpu is None and auto_detect_gpu:
-        gpu = detect_process_gpu()
+        gpu = _detect_process_gpu()
 
     registration = LiveRunnerRegistration(
         orchestrator_url=orchestrator_url,
@@ -526,7 +776,30 @@ async def create_trickle_channels(
     session_token: str = "",
     timeout: float = 5.0,
 ) -> list[LiveRunnerTrickleChannel]:
-    """Create trickle channels for a live runner app session."""
+    """Create trickle channels for a live runner app session.
+
+    Args:
+        session: The session to target: a ``session_id`` string, or a
+            ``LiveRunnerSessionRequest`` from which the session id, token, runner route,
+            and control URL are read.
+        channels: Channels to create, each a dict with ``name`` and ``mime_type``.
+        orchestrator_url: Orchestrator base URL, e.g. ``https://orch.example`` (the
+            request path is appended, so pass no path). Falls back to the session's
+            control URL when empty.
+        runner_id: Runner route for the request. Overrides the value carried by
+            ``session``. Required when ``session`` is a plain id string.
+        session_token: Session auth token. Overrides the value carried by
+            ``session``. Required when ``session`` is a plain id string.
+        timeout: Per-request timeout, in seconds.
+
+    Returns:
+        The created channels as returned by the runner.
+
+    Raises:
+        LivepeerGatewayError: If credentials are missing or the response omits the
+            created channels.
+        TypeError: If a channel entry is malformed.
+    """
     runner, session_id, token, control_url = _resolve_session_credentials(
         session,
         runner_id=runner_id,
@@ -556,7 +829,29 @@ async def remove_trickle_channels(
     session_token: str = "",
     timeout: float = 5.0,
 ) -> list[str]:
-    """Remove trickle channels for a live runner app session."""
+    """Remove trickle channels for a live runner app session.
+
+    Args:
+        session: The session to target: a ``session_id`` string, or a
+            ``LiveRunnerSessionRequest`` from which the session id, token, runner route,
+            and control URL are read.
+        channels: Names of the channels to remove.
+        orchestrator_url: Orchestrator base URL, e.g. ``https://orch.example`` (the
+            request path is appended, so pass no path). Falls back to the session's
+            control URL when empty.
+        runner_id: Runner route for the request. Overrides the value carried by
+            ``session``. Required when ``session`` is a plain id string.
+        session_token: Session auth token. Overrides the value carried by ``session``.
+            Required when ``session`` is a plain id string.
+        timeout: Per-request timeout, in seconds.
+
+    Returns:
+        Names of the channels that were removed.
+
+    Raises:
+        LivepeerGatewayError: If credentials are missing, the response is not a JSON
+            object, or it omits the deleted channel list.
+    """
     runner, session_id, token, control_url = _resolve_session_credentials(
         session,
         runner_id=runner_id,
@@ -588,7 +883,29 @@ async def create_proxy(
     session_token: str = "",
     timeout: float = 5.0,
 ) -> LiveRunnerProxy:
-    """Create a public proxy URL for a target served by a live runner app session."""
+    """Create a public proxy URL for a target served by a live runner app session.
+
+    Args:
+        session: The session to target: a ``session_id`` string, or a
+            ``LiveRunnerSessionRequest`` from which the session id, token, runner route,
+            and control URL are read.
+        target_url: The runner-served URL to expose through the proxy.
+        orchestrator_url: Orchestrator base URL, e.g. ``https://orch.example`` (the
+            request path is appended, so pass no path). Falls back to the session's
+            control URL when empty.
+        runner_id: Runner route for the request. Overrides the value carried by
+            ``session``. Required when ``session`` is a plain id string.
+        session_token: Session auth token. Overrides the value carried by
+            ``session``. Required when ``session`` is a plain id string.
+        timeout: Per-request timeout, in seconds.
+
+    Returns:
+        The created proxy, carrying its ``proxy_id`` and public ``url``.
+
+    Raises:
+        LivepeerGatewayError: If credentials or ``target_url`` are missing, the response
+            is not a JSON object, or it omits ``proxy_id`` or ``url``.
+    """
     runner, session_id, token, control_url = _resolve_session_credentials(
         session,
         runner_id=runner_id,
@@ -625,6 +942,32 @@ async def call_runner(
     timeout: float = 5.0,
     max_payment_challenge_retries: int = 3,
 ) -> LiveRunnerCallResult:
+    """Send a request to a live runner, handling payment challenges transparently.
+
+    If ``signer_url`` is set, a 402 payment challenge is answered and the request
+    retried. Paid calls without a signer fail.
+
+    Args:
+        runner_url: Runner endpoint to call. Optional if ``runner`` is given.
+        runner: Discovered runner instance to call. Its URL is used when ``runner_url``
+            is empty.
+        payload: JSON request body sent to the runner. Defaults to an empty body.
+        method: HTTP method for the request.
+        signer_url: Signer service used to answer 402 payment challenges. Required for
+            paid runners.
+        signer_headers: Extra HTTP headers sent to the signer service.
+        timeout: Per-request timeout, in seconds.
+        max_payment_challenge_retries: Maximum number of payment challenges to answer
+            before giving up.
+
+    Returns:
+        A ``LiveRunnerCallResult`` wrapping the runner's JSON response.
+
+    Raises:
+        LivepeerGatewayError: If neither target is given, a paid call is made without
+            ``signer_url``, the response is not a JSON object, or the payment-challenge
+            retries are exhausted.
+    """
     runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
     if not runner_url:
         raise LivepeerGatewayError("Live runner call requires runner_url")
@@ -787,6 +1130,18 @@ async def stop_runner_session(
     *,
     timeout: float = 5.0,
 ) -> None:
+    """Stop a live runner session, releasing its reservation.
+
+    Args:
+        session: The session to stop: a ``LiveRunnerSession`` (stopped via its runner
+            URL) or a ``LiveRunnerSessionRequest`` carrying the orchestrator's
+            session-control headers.
+        timeout: Per-request timeout, in seconds.
+
+    Raises:
+        LivepeerGatewayError: If the required runner URL, session id, or session control
+            URL is missing, or the stop request fails.
+    """
     request_headers: dict[str, str] = {}
     if isinstance(session, LiveRunnerSession):
         runner_url = session.runner_url.strip()
@@ -813,7 +1168,7 @@ async def stop_runner_session(
     )
 
 
-def detect_process_gpu() -> Optional[LiveRunnerGPU]:
+def _detect_process_gpu() -> Optional[LiveRunnerGPU]:
     for detector in (_detect_gpu_pynvml, _detect_gpu_torch, _detect_gpu_nvidia_smi):
         try:
             gpu = detector()
