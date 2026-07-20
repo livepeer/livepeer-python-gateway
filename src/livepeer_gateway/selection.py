@@ -1,3 +1,5 @@
+"""Orchestrator and live-runner selection cursors and entry points."""
+
 from __future__ import annotations
 
 import logging
@@ -27,8 +29,7 @@ _BATCH_SIZE = 5
 
 
 class SelectionCursor:
-    """
-    Stateful selector that advances through orchestrators in batches.
+    """Stateful selector that advances through orchestrators in batches.
 
     For each batch, all ``get_orch_info`` calls run in parallel and successful
     responses are cached in arrival order. Consumers pop cached successes one at
@@ -54,6 +55,14 @@ class SelectionCursor:
         self.rejections: list[OrchestratorRejection] = []
 
     def next(self) -> Tuple[str, lp_rpc_pb2.OrchestratorInfo]:
+        """Return the next orchestrator that responded, probing batches as needed.
+
+        Returns:
+            The ``(url, OrchestratorInfo)`` pair of the next successful orchestrator.
+
+        Raises:
+            NoOrchestratorAvailableError: If every orchestrator was rejected.
+        """
         while True:
             if self._pending_successes:
                 selected = self._pending_successes.pop(0)
@@ -127,6 +136,28 @@ def orchestrator_selector(
     capabilities: Optional[lp_rpc_pb2.Capabilities] = None,
     use_tofu: bool = True,
 ) -> SelectionCursor:
+    """Discover orchestrators and return a cursor that tries them in batches.
+
+    Calling the returned cursor's ``.next()`` returns the next orchestrator that
+    responds to ``get_orch_info``; candidates are probed in parallel batches.
+
+    Args:
+        orchestrators: Explicit orchestrator addresses, as a sequence or a
+            comma-delimited string. If provided, these are used instead of
+            discovering via ``discovery_url``/``signer_url``.
+        signer_url: Signer service used to authenticate discovery.
+        signer_headers: Extra HTTP headers sent to the signer service.
+        discovery_url: Discovery endpoint queried when ``orchestrators`` is omitted.
+        discovery_headers: Extra HTTP headers sent to the discovery endpoint.
+        capabilities: Capabilities used to filter and query orchestrators.
+        use_tofu: Trust the orchestrator's TLS certificate on first use.
+
+    Returns:
+        A cursor whose ``.next()`` yields the next responsive orchestrator.
+
+    Raises:
+        NoOrchestratorAvailableError: If discovery returns no orchestrators.
+    """
     orch_list = discover_orchestrators(
         orchestrators,
         signer_url=signer_url,
@@ -150,8 +181,7 @@ def orchestrator_selector(
 
 
 class RunnerSelectionCursor:
-    """
-    Stateful selector that advances through live runners sequentially.
+    """Stateful selector that advances through live runners sequentially.
 
     Runner attempts are intentionally not parallelized: selecting a persistent
     runner reserves capacity, and selecting a single-shot runner may perform
@@ -179,9 +209,18 @@ class RunnerSelectionCursor:
 
     @property
     def candidates(self) -> tuple[LiveRunnerInstance, ...]:
+        """The runners this cursor will attempt, in order."""
         return tuple(self._candidates)
 
     async def next(self) -> LiveRunnerCallResult:
+        """Call the next runner and return its result, skipping ones that fail.
+
+        Returns:
+            The ``LiveRunnerCallResult`` from the first runner that succeeds.
+
+        Raises:
+            NoRunnerAvailableError: If every remaining runner is rejected.
+        """
         while self._next_index < len(self._candidates):
             runner = self._candidates[self._next_index]
             self._next_index += 1
@@ -233,6 +272,35 @@ async def runner_selector(
     gpu: Optional[FilterValue] = None,
     timeout: float = 5.0,
 ) -> RunnerSelectionCursor:
+    """Discover live runners and return a cursor that attempts them one at a time.
+
+    Awaiting the returned cursor's ``.next()`` calls the next runner (see
+    ``call_runner``) with ``body``/``method`` and returns its ``LiveRunnerCallResult``.
+    Runners are tried sequentially, not in parallel, because selecting one may reserve
+    capacity or perform the actual operation.
+
+    Args:
+        body: Request payload forwarded to each runner attempt. Defaults to an empty
+            body.
+        method: HTTP method used for each runner attempt.
+        orchestrators: Explicit orchestrator addresses, as a sequence or a
+            comma-delimited string. If provided, runners are discovered from these
+            instead of via ``discovery_url``/``signer_url``.
+        signer_url: Signer service used to authenticate discovery and to answer payment
+            challenges on subsequent runner calls.
+        signer_headers: Extra HTTP headers sent to the signer service.
+        discovery_url: Discovery endpoint queried when ``orchestrators`` is omitted.
+        discovery_headers: Extra HTTP headers sent to the discovery endpoint.
+        app: Restrict candidates to runners serving this app (string or sequence).
+        gpu: Restrict candidates to runners on this GPU (string or sequence).
+        timeout: Per-request timeout, in seconds, for each runner attempt.
+
+    Returns:
+        A cursor whose ``.next()`` yields the next successful runner's result.
+
+    Raises:
+        NoRunnerAvailableError: If discovery returns no candidate runners.
+    """
     if orchestrators is not None:
         entries = await discover_orchestrator_runners(
             orchestrators,
@@ -276,6 +344,31 @@ async def reserve_session(
     gpu: Optional[FilterValue] = None,
     timeout: float = 5.0,
 ) -> LiveRunnerSession:
+    """Select a runner and reserve a session on it in one step.
+
+    Convenience wrapper over ``runner_selector`` that calls the first working
+    runner and returns its session details.
+
+    Args:
+        signer_url: Signer service used to authenticate discovery and to answer
+            payment challenges on the runner call.
+        signer_headers: Extra HTTP headers sent to the signer service.
+        discovery_url: Discovery endpoint queried when discovering runners.
+        discovery_headers: Extra HTTP headers sent to the discovery endpoint.
+        orchestrators: Explicit orchestrator addresses, as a sequence or a
+            comma-delimited string. If provided, runners are discovered from
+            these instead of via ``discovery_url``/``signer_url``.
+        app: Restrict candidates to runners serving this app (string or sequence).
+        gpu: Restrict candidates to runners on this GPU (string or sequence).
+        timeout: Per-request timeout, in seconds, for the runner call.
+
+    Returns:
+        A ``LiveRunnerSession`` carrying the reserved ``session_id`` and ``app_url``.
+
+    Raises:
+        LivepeerGatewayError: If the runner response omits ``session_id`` or ``app_url``.
+        NoRunnerAvailableError: If no runner succeeds.
+    """
     cursor = await runner_selector(
         orchestrators=orchestrators,
         signer_url=signer_url,

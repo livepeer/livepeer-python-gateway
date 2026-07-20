@@ -1,5 +1,4 @@
-"""
-Helpers for consuming trickle media outputs as segments, bytes, or frames.
+"""Helpers for consuming trickle media outputs as segments, bytes, or frames.
 """
 
 from __future__ import annotations
@@ -41,15 +40,39 @@ MediaBytesCallback = Callable[[bytes], None | Awaitable[None]]
 
 
 class LagPolicy(Enum):
-    """
-    Policy for handling consumers that fall behind the segment window.
-    """
+    """Policy for handling consumers that fall behind the segment window."""
     FAIL = "fail"
     LATEST = "latest"
     EARLIEST = "earliest"
 
 @dataclass(frozen=True)
 class MediaOutputStats:
+    """Snapshot of a MediaOutput's consumption, demux, and decode statistics.
+
+    Attributes:
+        elapsed_s: Seconds since the output started consuming.
+        segments_consumed: Number of segments read to completion.
+        bytes_read: Total bytes read across all segments.
+        chunks_read: Number of byte chunks yielded.
+        content_type_errors: Segments rejected for an unaccepted Content-Type.
+        segment_read_errors: Read errors reported by the underlying segments.
+        segment_max_bytes_exceeded: Segments that exceeded the max-bytes bound.
+        consumer_lag_skip_latest: Times a lagging consumer skipped to the latest
+            segment.
+        consumer_lag_retry_earliest: Times a lagging consumer retried from the earliest
+            segment.
+        consumer_lag_fail: Times a lagging consumer failed under LagPolicy.FAIL.
+        video_packets_demuxed: Video packets emitted by the demuxer.
+        audio_packets_demuxed: Audio packets emitted by the demuxer.
+        other_packets_demuxed: Non-audio/video packets emitted by the demuxer.
+        video_frames_decoded: Video frames emitted by the decoder.
+        audio_frames_decoded: Audio frames emitted by the decoder.
+        packet_errors: Errors raised while demuxing.
+        decode_errors: Errors raised while decoding.
+        decoder: Decode-pipeline queue metrics, or None when unavailable.
+        subscriber: Underlying trickle subscriber stats, or None when not subscribed.
+    """
+
     elapsed_s: float
     segments_consumed: int
     bytes_read: int
@@ -100,8 +123,7 @@ class MediaOutputStats:
 
 
 class MediaOutput:
-    """
-    Access a trickle media output
+    """Access a trickle media output.
 
     Exposes:
       - per-segment iteration (SegmentReader objects)
@@ -109,28 +131,9 @@ class MediaOutput:
       - demuxed MPEG-TS packets
       - individual audio and video frames
 
-    Segments are sourced from a single shared subscriber so that multiple
-    iterators can consume the same output concurrently without duplicate
-    network requests.
-
-    Attributes:
-        subscribe_url: Trickle subscribe URL for this output.
-        start_seq: Initial server sequence when subscribing.
-        max_retries: Max retries for segment fetches.
-        max_segment_bytes: Safety bound for a single segment size.
-        connection_close: Whether to close connections after each segment.
-        chunk_size: Byte chunk size yielded by bytes()/packets()/frames().
-        max_segments: Max number of segments retained in memory.
-        on_lag: Behavior when a consumer falls behind the segment window.
-            - LagPolicy.FAIL: raise LivepeerGatewayError.
-            - LagPolicy.LATEST: skip to the newest available segment.
-            - LagPolicy.EARLIEST: retry from the oldest available segment.
-        _sub: Shared trickle subscriber.
-        _segments: In-memory window of SegmentReader objects.
-        _lock: Coroutine-level lock for segment fetching/eviction.
-        _eos: End-of-stream indicator.
-        _next_local_seq: Local sequence counter for fetched segments.
-        _base_seq: Local sequence of _segments[0].
+    Segments are sourced from a single shared subscriber so that multiple iterators can
+    consume the same output concurrently without duplicate network requests. Constructor
+    parameters are documented on ``__init__``.
     """
 
     def __init__(
@@ -149,6 +152,33 @@ class MediaOutput:
         on_frame: Optional[MediaFrameCallback] = None,
         on_packet: Optional[MediaPacketCallback] = None,
     ) -> None:
+        """Configure a trickle media output.
+
+        Args:
+            subscribe_url: Trickle subscribe URL for this output.
+            start_seq: Initial server sequence to subscribe from.
+            max_retries: Maximum retries per segment fetch.
+            max_segment_bytes: Safety bound on a single segment's size, unbounded when
+                None.
+            connection_close: Close the connection after each segment.
+            chunk_size: Byte chunk size yielded by ``bytes()``/``packets()``/
+                ``frames()``.
+            max_segments: Maximum segments retained in memory. Must be >= 1.
+            on_lag: Behavior when a consumer falls behind the retained segment window
+                (LagPolicy.FAIL raises, LATEST skips to newest, EARLIEST retries from
+                oldest).
+            accepted_content_types: Content types accepted for incoming segments. A
+                segment with any other type raises.
+            on_bytes: Optional callback invoked with each byte chunk, started
+                automatically when an event loop is running.
+            on_frame: Optional callback invoked with each decoded audio/video frame,
+                started automatically when an event loop is running.
+            on_packet: Optional callback invoked with each demuxed packet, started
+                automatically when an event loop is running.
+
+        Raises:
+            ValueError: If ``max_segments`` < 1 or ``accepted_content_types`` is empty.
+        """
         if max_segments < 1:
             raise ValueError("max_segments must be >= 1")
         self.subscribe_url = subscribe_url
@@ -199,8 +229,7 @@ class MediaOutput:
             self.start_callbacks()
 
     def start_callbacks(self) -> list[asyncio.Task[None]]:
-        """
-        Start configured frame/packet callback consumers.
+        """Start configured frame/packet callback consumers.
 
         This is idempotent. If called without a running event loop, no tasks are
         started and callers may retry later from async code.
@@ -244,6 +273,7 @@ class MediaOutput:
         return started
 
     def callback_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        """Return the running callback consumer tasks as a tuple."""
         tasks = []
         if self._bytes_callback_task is not None:
             tasks.append(self._bytes_callback_task)
@@ -254,8 +284,7 @@ class MediaOutput:
         return tuple(tasks)
 
     async def wait_callbacks(self, timeout: Optional[float] = None) -> tuple[object, ...]:
-        """
-        Wait for configured callback consumers to finish.
+        """Wait for configured callback consumers to finish.
 
         Raises the first callback error, matching close().
         """
@@ -307,8 +336,7 @@ class MediaOutput:
     def segments(
         self,
     ) -> AsyncIterator[SegmentReader]:
-        """
-        Read the trickle media channel and yield SegmentReader objects.
+        """Read the trickle media channel and yield SegmentReader objects.
 
         Segments are shared across iterators.
         """
@@ -326,9 +354,7 @@ class MediaOutput:
     def bytes(
         self,
     ) -> AsyncIterator[bytes]:
-        """
-        Read the trickle media channel and yield a continuous byte stream.
-        """
+        """Read the trickle media channel and yield a continuous byte stream."""
 
         async def _iter() -> AsyncIterator[bytes]:
             async for chunk in self._iter_bytes():
@@ -339,9 +365,7 @@ class MediaOutput:
     def packets(
         self,
     ) -> AsyncIterator[DemuxedMediaPacket]:
-        """
-        Read the trickle media channel, demux MPEG-TS, and yield packets.
-        """
+        """Read the trickle media channel, demux MPEG-TS, and yield packets."""
 
         async def _iter() -> AsyncIterator[DemuxedMediaPacket]:
             demuxer = MpegTsPacketDemuxer()
@@ -393,9 +417,7 @@ class MediaOutput:
     def frames(
         self,
     ) -> AsyncIterator[AudioDecodedMediaFrame | VideoDecodedMediaFrame]:
-        """
-        Read the trickle media channel, decode MPEG-TS, and yield raw frames.
-        """
+        """Read the trickle media channel, decode MPEG-TS, and yield raw frames."""
 
         async def _iter() -> AsyncIterator[AudioDecodedMediaFrame | VideoDecodedMediaFrame]:
             decoder = MpegTsDecoder()
@@ -479,9 +501,7 @@ class MediaOutput:
         self,
         seq: int,
     ) -> Optional[SegmentReader]:
-        """
-        Return the segment at seq, lazily advancing the subscriber if needed.
-        """
+        """Return the segment at seq, lazily advancing the subscriber if needed."""
         # Safe lock-free read: asyncio only context-switches on awaits, and this
         # block has no awaits. That means _segments/_base_seq cannot change
         # until we return or enter the locked slow path below.
@@ -547,6 +567,15 @@ class MediaOutput:
             return None
 
     async def close(self, *, wait_callbacks: bool = True, timeout: Optional[float] = 10.0) -> None:
+        """Close the output, its subscriber, and any callback consumers.
+
+        Args:
+            wait_callbacks: Wait for callback consumers to drain before cancelling them.
+            timeout: Seconds to wait for callbacks. None waits indefinitely.
+
+        Raises:
+            The first error raised by a callback consumer, if any.
+        """
         callback_tasks = self.callback_tasks()
         if callback_tasks:
             if wait_callbacks and (timeout is None or timeout > 0):
@@ -574,6 +603,7 @@ class MediaOutput:
         await self.close()
 
     def get_stats(self) -> MediaOutputStats:
+        """Return a snapshot of consumption, demux, and decode statistics."""
         decoder_stats = (
             self._processor.get_stats() if self._processor is not None else self._last_decoder_stats
         )
