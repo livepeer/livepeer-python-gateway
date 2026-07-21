@@ -295,12 +295,12 @@ class LiveRunnerRegistration:
     async def create_proxy(
         self,
         session: str | LiveRunnerSessionRequest,
-        target_url: str,
+        target_url: str | None = None,
         *,
         session_token: str = "",
         timeout: Optional[float] = None,
     ) -> LiveRunnerProxy:
-        """Create a public proxy URL for a live runner app target."""
+        """Create a public proxy URL for a live runner app session or target."""
         return await create_proxy(
             session,
             target_url,
@@ -587,25 +587,29 @@ async def remove_trickle_channels(
 
 async def create_proxy(
     session: str | LiveRunnerSessionRequest,
-    target_url: str,
+    target_url: str | None = None,
     *,
     orchestrator_url: str = "",
     runner_id: str = "",
     session_token: str = "",
     timeout: float = 5.0,
 ) -> LiveRunnerProxy:
-    """Create a public proxy URL for a target served by a live runner app session."""
+    """Create a public proxy URL for a live runner app session or target."""
     runner, session_id, token, control_url = _resolve_session_credentials(
         session,
         runner_id=runner_id,
         session_token=session_token,
         request_name="proxy",
     )
-    if not isinstance(target_url, str) or not target_url.strip():
-        raise LivepeerGatewayError("Live runner proxy request requires target_url")
+    payload: dict[str, str] = {}
+    if target_url is not None:
+        if not isinstance(target_url, str):
+            raise LivepeerGatewayError("Live runner proxy request target_url must be a string")
+        if target_url.strip():
+            payload["target_url"] = target_url.strip()
     data = await post_json(
         _session_proxy_endpoint(orchestrator_url, runner, session_id, control_url),
-        {"target_url": target_url.strip()},
+        payload,
         headers={"Livepeer-Session-Token": token},
         timeout=timeout,
     )
