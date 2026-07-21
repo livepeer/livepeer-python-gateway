@@ -155,6 +155,7 @@ class LiveRunnerRegistration:
         mode: str = "persistent",
         label: str = "",
         version: str = "",
+        metadata: str = "",
         status: str = "ready",
         capacity: int = 1,
         gpu: Optional[LiveRunnerGPU] = None,
@@ -177,6 +178,7 @@ class LiveRunnerRegistration:
         self._price_info = price_info
         self._label = label
         self._version = version
+        self._metadata = metadata
         self._status = status
         self._capacity = capacity
         self._gpu = gpu
@@ -323,6 +325,8 @@ class LiveRunnerRegistration:
             payload["label"] = self._label
         if self._version:
             payload["version"] = self._version
+        if self._metadata:
+            payload["metadata"] = self._metadata
         if self._status:
             payload["status"] = self._status
         if self._gpu is not None:
@@ -482,6 +486,7 @@ async def register_runner(
     mode: str = "persistent",
     label: str = "",
     version: str = "",
+    metadata: str = "",
     status: str = "ready",
     capacity: int = 1,
     gpu: Optional[LiveRunnerGPU] = None,
@@ -505,6 +510,7 @@ async def register_runner(
         mode=mode,
         label=label,
         version=version,
+        metadata=metadata,
         status=status,
         capacity=capacity,
         gpu=gpu,

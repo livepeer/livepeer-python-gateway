@@ -7,6 +7,7 @@
       "health_url": "/healthz",
       "routing": "label",
       "capacity": 10,
+      "metadata":"{'title':'The Open Window', 'author': 'Saki'}",
       "mode": "single-shot"
     }
   ]
