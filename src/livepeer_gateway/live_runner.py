@@ -153,6 +153,7 @@ class LiveRunnerRegistration:
         price_info: LiveRunnerPriceInfo,
         runner_id: str = "",
         mode: str = "persistent",
+        proxy: bool = False,
         label: str = "",
         version: str = "",
         metadata: str = "",
@@ -175,6 +176,7 @@ class LiveRunnerRegistration:
         self._runner_url = runner_url
         self._app = app
         self._mode = _normalize_runner_mode(mode)
+        self._proxy = proxy
         self._price_info = price_info
         self._label = label
         self._version = version
@@ -321,6 +323,8 @@ class LiveRunnerRegistration:
         }
         if self.runner_id:
             payload["runner_id"] = self.runner_id
+        if self._proxy:
+            payload["proxy"] = True
         if self._label:
             payload["label"] = self._label
         if self._version:
@@ -484,6 +488,7 @@ async def register_runner(
     unit: str = "hour",
     runner_id: str = "",
     mode: str = "persistent",
+    proxy: bool = False,
     label: str = "",
     version: str = "",
     metadata: str = "",
@@ -508,6 +513,7 @@ async def register_runner(
         price_info=LiveRunnerPriceInfo(price, currency, unit),
         runner_id=runner_id,
         mode=mode,
+        proxy=proxy,
         label=label,
         version=version,
         metadata=metadata,
