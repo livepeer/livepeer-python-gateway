@@ -21,7 +21,6 @@ from .remote_signer import (
     GetPaymentResponse,
     LivePaymentSession,
     _freeze_headers,
-    _payment_type_for_signer,
     get_signer_info,
 )
 
@@ -754,19 +753,10 @@ async def _get_runner_payment(
     signer_url: str,
     signer_headers: Optional[dict[str, str]],
 ) -> tuple[LivePaymentSession, GetPaymentResponse]:
-    # Scope/LV2V is a live-video job → always "lv2v". Every other runner (single-shot
-    # fal/tool caps) pays via the per-signer dual-path: legacy Daydream → "lv2v",
-    # modern signers → "byoc". The old hardcoded "live" was rejected by the Daydream
-    # signer ("invalid job type"), breaking LR payment on the default signer.
-    payment_type = (
-        "lv2v"
-        if runner is not None and runner.app == "live-video-to-video/scope"
-        else _payment_type_for_signer(signer_url)
-    )
     session = LivePaymentSession(
         signer_url=signer_url,
         signer_headers=signer_headers,
-        type=payment_type,
+        type="lv2v" if runner is not None and runner.app == "live-video-to-video/scope" else "live",
         payment_params=challenge.payment_params,
         manifest_id=challenge.manifest_id,
         orchestrator_url=challenge.orchestrator_url,
