@@ -18,7 +18,13 @@ from .errors import (
     OrchestratorRejection,
     RunnerRejection,
 )
-from .live_runner import LiveRunnerCallResult, LiveRunnerInstance, LiveRunnerSession, call_runner
+from .live_runner import (
+    LiveRunnerCallResult,
+    LiveRunnerInstance,
+    LiveRunnerSession,
+    _live_runner_price_info_from_json,
+    call_runner,
+)
 from .orch_info import get_orch_info
 
 _LOG = logging.getLogger(__name__)
@@ -324,6 +330,7 @@ def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list
                     mode=_string_value(runner.get("mode")),
                     orchestrator_url=orchestrator_url,
                     raw=dict(runner),
+                    price_info=_live_runner_price_info_from_json(runner.get("price_info")),
                 )
             )
     return candidates

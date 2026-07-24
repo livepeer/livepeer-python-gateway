@@ -29,6 +29,13 @@ _LOG = logging.getLogger(__name__)
 _DEFAULT_HEARTBEAT_INTERVAL_S = 5.0
 _LIVE_RUNNER_PAYER_ADDRESS_HEADER = "Livepeer-Payer-Address"
 _LIVE_RUNNER_MODES = frozenset({"persistent", "single-shot"})
+_RUNNER_PAYMENT_TYPES_BY_UNIT = {
+    "hour": "live",
+    "seconds": "live",
+    "720p": "lv2v",
+    "720p-pixel-seconds": "lv2v",
+    "fixed": "fixed",
+}
 
 # golang format duration, eg "10s"
 _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u00b5s|ms|s|m|h)\s*$")
@@ -81,6 +88,7 @@ class LiveRunnerInstance:
     mode: str
     orchestrator_url: str
     raw: dict[str, Any]
+    price_info: Optional[LiveRunnerPriceInfo] = None
 
 
 @dataclass(frozen=True)
@@ -637,6 +645,7 @@ async def call_runner(
     method: str = "POST",
     signer_url: Optional[str] = None,
     signer_headers: Optional[dict[str, str]] = None,
+    payment_unit: Optional[str] = None,
     timeout: float = 5.0,
     max_payment_challenge_retries: int = 3,
 ) -> LiveRunnerCallResult:
@@ -652,6 +661,7 @@ async def call_runner(
     attempts = (max(0, int(max_payment_challenge_retries)) + 1) * 2
     for attempt in range(attempts):
         payment_session: Optional[LivePaymentSession] = None
+        payment_type = ""
         session_id = ""
         request_headers: dict[str, str] = {}
         if signer_url:
@@ -659,9 +669,10 @@ async def call_runner(
         # Pending challenge means payment is needed.
         if challenge is not None:
             try:
+                payment_type = _runner_payment_type(runner, payment_unit)
                 payment_session, payment = await _get_runner_payment(
                     challenge,
-                    runner=runner,
+                    payment_type=payment_type,
                     signer_url=signer_url or "",
                     signer_headers=signer_headers,
                 )
@@ -701,7 +712,7 @@ async def call_runner(
                     session_id
                     or (data["session_id"].strip() if isinstance(data.get("session_id"), str) else "")
                 ),
-                payment_session=payment_session,
+                payment_session=None if payment_type == "fixed" else payment_session,
             )
         except LivepeerHTTPError as e:
             if e.status_code != 402:
@@ -749,14 +760,14 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
 async def _get_runner_payment(
     challenge: _RunnerPaymentChallenge,
     *,
-    runner: Optional[LiveRunnerInstance],
+    payment_type: str,
     signer_url: str,
     signer_headers: Optional[dict[str, str]],
 ) -> tuple[LivePaymentSession, GetPaymentResponse]:
     session = LivePaymentSession(
         signer_url=signer_url,
         signer_headers=signer_headers,
-        type="lv2v" if runner is not None and runner.app == "live-video-to-video/scope" else "live",
+        type=payment_type,
         payment_params=challenge.payment_params,
         manifest_id=challenge.manifest_id,
         orchestrator_url=challenge.orchestrator_url,
@@ -767,6 +778,54 @@ async def _get_runner_payment(
     if not payment.seg_creds:
         raise LivepeerGatewayError("Live runner payment response missing segCreds")
     return session, payment
+
+
+def _runner_payment_type(
+    runner: Optional[LiveRunnerInstance],
+    payment_unit: Optional[str] = None,
+) -> str:
+    # Discovery supplies price_info.unit; direct calls may supply payment_unit instead.
+    # If both are present, they must agree.
+    explicit_unit = str(payment_unit or "").strip().lower()
+    discovered_unit = (
+        str(runner.price_info.unit or "").strip().lower()
+        if runner is not None and runner.price_info is not None
+        else ""
+    )
+    if explicit_unit and discovered_unit and explicit_unit != discovered_unit:
+        raise LivepeerGatewayError(
+            "payment_unit conflicts with runner price metadata"
+        )
+    unit = discovered_unit or explicit_unit
+    if unit:
+        payment_type = _RUNNER_PAYMENT_TYPES_BY_UNIT.get(unit)
+        if payment_type is None:
+            supported = ", ".join(sorted(_RUNNER_PAYMENT_TYPES_BY_UNIT))
+            raise LivepeerGatewayError(
+                f"Unsupported live runner payment unit {unit!r}; expected one of {supported}"
+            )
+        return payment_type
+
+    # Compatibility for callers constructing instances without discovery
+    # price metadata. Discovery price_info.unit is authoritative when present.
+    if runner is not None and runner.app == "live-video-to-video/scope":
+        return "lv2v"
+    return "live"
+
+
+def _live_runner_price_info_from_json(value: object) -> Optional[LiveRunnerPriceInfo]:
+    if not isinstance(value, dict):
+        return None
+    price = value.get("price")
+    if isinstance(price, bool) or not isinstance(price, (int, float, str)):
+        return None
+    currency = value.get("currency")
+    unit = value.get("unit")
+    return LiveRunnerPriceInfo(
+        price=price,
+        currency=currency.strip().lower() if isinstance(currency, str) else "",
+        unit=unit.strip().lower() if isinstance(unit, str) else "",
+    )
 
 
 def _live_runner_session_from_json(
