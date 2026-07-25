@@ -265,6 +265,12 @@ async def runner_selector(
     )
 
 
+# Fraction of the orchestrator's debit interval to pay at, so credits lead the
+# server-side ticker with margin. 5s server tick -> 3s client cadence.
+_PAYMENT_INTERVAL_MARGIN = 0.6
+_DEFAULT_PAYMENT_INTERVAL_S = 3.0
+
+
 async def reserve_session(
     *,
     signer_url: Optional[str] = None,
@@ -274,8 +280,23 @@ async def reserve_session(
     app: Optional[FilterValue] = None,
     gpu: Optional[FilterValue] = None,
     timeout: float = 5.0,
-    payment_interval: float = 3.0,
+    payment_interval: Optional[float] = None,
+    auto_pay: bool = True,
 ) -> LiveRunnerSession:
+    """Reserve a persistent live-runner session on the best available runner.
+
+    On-chain sessions are self-funding: the returned session already runs its
+    payment loop (``auto_pay=True``), so any transport against ``app_url``
+    (websocket, trickle, SSE, plain HTTP) stays paid for without further calls.
+    Stop it with ``aclose()`` or by using the session as an async context
+    manager; the loop also stops on its own when the orchestrator reports the
+    session released. Pass ``auto_pay=False`` to own the lifecycle manually via
+    ``start_payments()`` / ``stop_payments()``.
+
+    ``payment_interval`` overrides the payment cadence in seconds. By default it
+    is derived from the orchestrator's advertised ``payment_interval_ms`` (with
+    margin), falling back to 3s when the orchestrator does not report one.
+    """
     cursor = await runner_selector(
         signer_url=signer_url,
         signer_headers=signer_headers,
@@ -288,18 +309,29 @@ async def reserve_session(
     result = await cursor.next()
     session_id = result.data.get("session_id")
     app_url = result.data.get("app_url")
+    control_url = result.data.get("control_url")
     if not isinstance(session_id, str) or not session_id.strip():
         raise LivepeerGatewayError("runner session response missing session_id")
     if not isinstance(app_url, str) or not app_url.strip():
         raise LivepeerGatewayError("runner session response missing app_url")
-    return LiveRunnerSession(
+    interval = payment_interval
+    if interval is None:
+        if result.server_payment_interval is not None:
+            interval = result.server_payment_interval * _PAYMENT_INTERVAL_MARGIN
+        else:
+            interval = _DEFAULT_PAYMENT_INTERVAL_S
+    session = LiveRunnerSession(
         session_id=session_id.strip(),
         app_url=app_url.strip(),
         runner_url=result.runner_url,
         runner=result.runner,
-        payment_interval=payment_interval,
+        control_url=control_url.strip() if isinstance(control_url, str) else "",
+        payment_interval=interval,
         payment_session=result.payment_session,
     )
+    if auto_pay:
+        session.start_payments()
+    return session
 
 
 def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list[LiveRunnerInstance]:

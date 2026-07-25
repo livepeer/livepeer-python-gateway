@@ -12,11 +12,9 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal, NotRequired, Optional, Protocol, TypedDict, cast
 from urllib.parse import quote, urlparse, urlunparse
 
-import aiohttp
-
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired, SkipPaymentCycle
-from .http import post_json, request_json
+from .http import post_empty, post_json, request_json
 from .remote_signer import (
     GetPaymentResponse,
     LivePaymentSession,
@@ -89,9 +87,14 @@ class LiveRunnerSession:
     app_url: str
     runner_url: str
     runner: Optional[LiveRunnerInstance] = None
-    # Present when the session was reserved on-chain (signer_url given). Drive it
-    # with start_payments() / the async context manager to keep a long-lived
-    # session funded; run_session_payments() is the underlying loop.
+    # Session control base URL from the reserve response. Payments go to
+    # {control_url}/payment, which is scoped to this session and 404s once the
+    # orchestrator releases it. Empty for orchestrators that predate it.
+    control_url: str = ""
+    # Present when the session was reserved on-chain (signer_url given).
+    # reserve_session() starts the payment loop automatically (auto_pay=True);
+    # drive it manually with start_payments() / stop_payments() otherwise.
+    # run_session_payments() is the underlying loop.
     payment_session: Optional[LivePaymentSession] = field(
         default=None,
         repr=False,
@@ -107,6 +110,29 @@ class LiveRunnerSession:
         repr=False,
         compare=False,
     )
+    # Set once the orchestrator reports the session gone (payment 404).
+    _released: asyncio.Event = field(
+        default_factory=asyncio.Event,
+        repr=False,
+        compare=False,
+    )
+
+    @property
+    def released(self) -> bool:
+        """True once the orchestrator has released this session."""
+        return self._released.is_set()
+
+    async def wait_released(self) -> None:
+        """Block until the orchestrator releases this session.
+
+        Only fires when the payment loop observes the release (payment 404);
+        offchain sessions and sessions without a running payment loop never set
+        it.
+        """
+        await self._released.wait()
+
+    def _mark_released(self) -> None:
+        self._released.set()
 
     def start_payments(self) -> Optional[asyncio.Task]:
         """Start the background payment loop that keeps this session funded.
@@ -132,18 +158,32 @@ class LiveRunnerSession:
         object.__setattr__(self, "_payment_task", task)
         return task
 
+    async def stop_payments(self) -> None:
+        """Cancel the payment loop without stopping the session.
+
+        Symmetrical complement to start_payments(); the session stays reserved
+        (and the orchestrator keeps debiting it), so use this only to hand off
+        or drain funding. No-op when no loop is running.
+        """
+        task = getattr(self, "_payment_task", None)
+        object.__setattr__(self, "_payment_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
     async def aclose(self) -> None:
         """Cancel the payment loop (if running) and stop the runner session.
 
         Best-effort: both steps run even if one fails, and the first
-        non-cancellation error is re-raised after cleanup.
+        non-cancellation error is re-raised after cleanup. The stop call is
+        skipped when the orchestrator already released the session.
         """
-        awaitables: list[Awaitable[Any]] = []
-        task = getattr(self, "_payment_task", None)
-        if task is not None and not task.done():
-            task.cancel()
-            awaitables.append(task)
-        awaitables.append(stop_runner_session(self))
+        awaitables: list[Awaitable[Any]] = [self.stop_payments()]
+        if not self.released:
+            awaitables.append(stop_runner_session(self))
         results = await asyncio.gather(*awaitables, return_exceptions=True)
         for result in results:
             if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
@@ -168,6 +208,9 @@ class LiveRunnerCallResult:
         repr=False,
         compare=False,
     )
+    # Orchestrator debit cadence in seconds, from the payment challenge's
+    # payment_interval_ms. None when the orchestrator does not report it.
+    server_payment_interval: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -291,10 +334,10 @@ class LiveRunnerRegistration:
                 _LOG.warning("Skipping live runner unregister without heartbeat secret")
                 return
             try:
-                await _post_empty(
+                await post_empty(
                     _join_endpoint(self.orchestrator_url, f"/runners/{quote(self.runner_id, safe='')}/unregister"),
-                    {"Authorization": secret},
-                    self._timeout,
+                    headers={"Authorization": secret},
+                    timeout=self._timeout,
                 )
             except Exception:
                 _LOG.debug("Live runner unregister failed", exc_info=True)
@@ -692,6 +735,9 @@ async def call_runner(
                     or (data["session_id"].strip() if isinstance(data.get("session_id"), str) else "")
                 ),
                 payment_session=payment_session,
+                server_payment_interval=(
+                    challenge.payment_interval_s if challenge is not None else None
+                ),
             )
         except LivepeerHTTPError as e:
             if e.status_code != 402:
@@ -709,6 +755,9 @@ class _RunnerPaymentChallenge:
     payment_params: str
     orchestrator_url: str
     manifest_id: str
+    # Orchestrator debit cadence in seconds (payment_interval_ms); None when
+    # the orchestrator does not report it.
+    payment_interval_s: Optional[float] = None
 
 
 def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentChallenge:
@@ -729,10 +778,16 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
     if not isinstance(manifest_id, str) or not manifest_id:
         raise LivepeerGatewayError("Live runner payment challenge missing manifest_id")
 
+    interval_ms = data.get("payment_interval_ms")
+    payment_interval_s: Optional[float] = None
+    if isinstance(interval_ms, (int, float)) and not isinstance(interval_ms, bool) and interval_ms > 0:
+        payment_interval_s = float(interval_ms) / 1000.0
+
     return _RunnerPaymentChallenge(
         payment_params=payment_params,
         orchestrator_url=orchestrator_url,
         manifest_id=manifest_id,
+        payment_interval_s=payment_interval_s,
     )
 
 
@@ -770,11 +825,13 @@ def _live_runner_session_from_json(
         raise LivepeerGatewayError("Live runner session reserve response missing session_id")
     if not isinstance(app_url, str) or not app_url.strip():
         raise LivepeerGatewayError("Live runner session reserve response missing app_url")
+    control_url = data.get("control_url")
     return LiveRunnerSession(
         session_id=session_id.strip(),
         app_url=app_url.strip(),
         runner_url=runner_url,
         runner=runner,
+        control_url=control_url.strip() if isinstance(control_url, str) else "",
     )
 
 async def stop_runner_session(
@@ -801,10 +858,10 @@ async def stop_runner_session(
         url = _join_endpoint(control_url, "stop")
         if isinstance(token, str) and token.strip():
             request_headers = {"Livepeer-Session-Token": token}
-    await _post_empty(
+    await post_empty(
         url,
-        request_headers,
-        timeout,
+        headers=request_headers,
+        timeout=timeout,
     )
 
 
@@ -945,25 +1002,6 @@ def _is_trickle_channel_response(value: object) -> bool:
         isinstance(value.get(key), str)
         for key in ("name", "channel_name", "url", "mime_type")
     ) and ("internal_url" not in value or isinstance(value.get("internal_url"), str))
-
-
-async def _post_empty(url: str, headers: dict[str, str], timeout: float) -> None:
-    try:
-        client_timeout = aiohttp.ClientTimeout(total=timeout)
-        connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(timeout=client_timeout, connector=connector) as session:
-            async with session.post(url, data=b"", headers=headers) as resp:
-                body = await resp.text()
-                if resp.status >= 400:
-                    raise LivepeerGatewayError(
-                        f"HTTP empty POST error: HTTP {resp.status}; body={body!r}"
-                    )
-    except LivepeerGatewayError:
-        raise
-    except getattr(aiohttp, "ClientConnectorError", ()) as e:
-        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
 
 
 def _detect_gpu_pynvml() -> Optional[LiveRunnerGPU]:
@@ -1140,6 +1178,15 @@ async def run_session_payments(
     failure. Other per-cycle failures are logged and retried rather than killing
     the loop.
 
+    When the session carries a ``control_url``, payments go to the session-scoped
+    ``{control_url}/payment`` endpoint, which knows whether the session still
+    exists. A 404 there means the orchestrator released the session: the loop
+    stops and marks the session released (``session.released`` /
+    ``session.wait_released()``). A 409 means the session is fixed-price and
+    needs no follow-up payments. Without a ``control_url`` (older orchestrators)
+    the generic ``/payment`` endpoint is used, which credits blindly and cannot
+    detect a released session.
+
     No-op for offchain sessions (no ``payment_session``). ``interval`` must stay
     at or below the orchestrator's ``livePaymentInterval`` (5s default) so the
     balance stays ahead; tune it to the deployment.
@@ -1147,12 +1194,36 @@ async def run_session_payments(
     payment_session = session.payment_session
     if payment_session is None:
         return
+    payment_url = _join_endpoint(session.control_url, "payment") if session.control_url else None
     while True:
         try:
-            await payment_session.send_payment()
+            await payment_session.send_payment(payment_url=payment_url)
         except SkipPaymentCycle as exc:
             # Orchestrator says the balance is current; this is a healthy gate, not an error.
             _LOG.debug("Live runner session payment skipped (balance current): %s", exc)
+        except LivepeerHTTPError as exc:
+            if exc.status_code == 404:
+                _LOG.warning(
+                    "Live runner session %s released by orchestrator; stopping payments",
+                    session.session_id,
+                )
+                session._mark_released()
+                return
+            if exc.status_code == 409:
+                _LOG.info(
+                    "Live runner session %s is fixed-price; no follow-up payments needed",
+                    session.session_id,
+                )
+                return
+            if exc.status_code == 403:
+                _LOG.error(
+                    "Live runner session %s payment rejected (mismatched session/payment); "
+                    "stopping payments: %s",
+                    session.session_id,
+                    exc,
+                )
+                return
+            _LOG.warning("Live runner session payment failed: %s", exc)
         except Exception as exc:  # noqa: BLE001 - keep the loop alive across transient failures
             _LOG.warning("Live runner session payment failed: %s", exc)
         await asyncio.sleep(interval)

@@ -331,6 +331,50 @@ async def get_json(
     return await request_json(url, headers=headers, timeout=timeout)
 
 
+async def post_empty(
+    url: str,
+    *,
+    headers: Optional[dict[str, str]] = None,
+    timeout: float = 5.0,
+) -> None:
+    """
+    POST an empty body to `url` and discard the response.
+
+    Certificate verification is disabled, matching every other HTTP helper in
+    the SDK. Error responses raise the same typed errors as request_json
+    (SignerRefreshRequired for 480, SkipPaymentCycle for 482, LivepeerHTTPError
+    otherwise) so callers can branch on status codes.
+    """
+    try:
+        client_timeout = aiohttp.ClientTimeout(total=timeout)
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(timeout=client_timeout, connector=connector) as session:
+            async with session.post(url, data=b"", headers=headers) as resp:
+                if resp.status >= 400:
+                    raw = await resp.text()
+                    _raise_http_json_error(resp.status, url, raw, dict(resp.headers.items()))
+                await resp.read()
+    except (SignerRefreshRequired, SkipPaymentCycle, LivepeerGatewayError):
+        raise
+    except ConnectionRefusedError as e:
+        raise LivepeerGatewayError(
+            f"HTTP empty POST error: connection refused (is the server running? is the host/port correct?) (url={url})"
+        ) from e
+    except getattr(aiohttp, "ClientConnectorError", ()) as e:
+        os_error = getattr(e, "os_error", None)
+        if isinstance(os_error, ConnectionRefusedError):
+            raise LivepeerGatewayError(
+                f"HTTP empty POST error: connection refused (is the server running? is the host/port correct?) (url={url})"
+            ) from e
+        raise LivepeerGatewayError(
+            f"HTTP empty POST error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
+        ) from e
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        raise LivepeerGatewayError(
+            f"HTTP empty POST error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
+        ) from e
+
+
 def _parse_http_url(url: str, *, context: str = "URL") -> ParseResult:
     """
     Normalize a URL for HTTP(S) endpoints.
