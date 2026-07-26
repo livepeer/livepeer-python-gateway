@@ -27,6 +27,13 @@ _LOG = logging.getLogger(__name__)
 _DEFAULT_HEARTBEAT_INTERVAL_S = 5.0
 _LIVE_RUNNER_PAYER_ADDRESS_HEADER = "Livepeer-Payer-Address"
 _LIVE_RUNNER_MODES = frozenset({"persistent", "single-shot"})
+_RUNNER_PAYMENT_TYPES_BY_UNIT = {
+    "hour": "live",
+    "seconds": "live",
+    "720p": "lv2v",
+    "720p-pixel-seconds": "lv2v",
+    "fixed": "fixed",
+}
 
 # golang format duration, eg "10s"
 _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u00b5s|ms|s|m|h)\s*$")
@@ -79,6 +86,7 @@ class LiveRunnerInstance:
     mode: str
     orchestrator_url: str
     raw: dict[str, Any]
+    price_info: Optional[LiveRunnerPriceInfo] = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +206,12 @@ class LiveRunnerSession:
 
 
 @dataclass(frozen=True)
+class LiveRunnerProxy:
+    proxy_id: str
+    url: str
+
+
+@dataclass(frozen=True)
 class LiveRunnerCallResult:
     data: dict[str, Any]
     runner_url: str
@@ -232,15 +246,15 @@ class LiveRunnerGPU:
 
 @dataclass(frozen=True)
 class LiveRunnerPriceInfo:
-    price_per_unit: int
-    pixels_per_unit: int
-    unit: str = "USD"
+    price: int | float | str
+    currency: str = "usd"
+    unit: str = "hour"
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "price_per_unit": self.price_per_unit,
-            "pixels_per_unit": self.pixels_per_unit,
-            "unit": self.unit,
+            "price": self.price,
+            "currency": str(self.currency or "usd").strip().lower(),
+            "unit": str(self.unit or "hour").strip().lower(),
         }
 
 
@@ -255,8 +269,10 @@ class LiveRunnerRegistration:
         price_info: LiveRunnerPriceInfo,
         runner_id: str = "",
         mode: str = "persistent",
+        proxy: bool = False,
         label: str = "",
         version: str = "",
+        metadata: str = "",
         status: str = "ready",
         capacity: int = 1,
         gpu: Optional[LiveRunnerGPU] = None,
@@ -276,9 +292,11 @@ class LiveRunnerRegistration:
         self._runner_url = runner_url
         self._app = app
         self._mode = _normalize_runner_mode(mode)
+        self._proxy = proxy
         self._price_info = price_info
         self._label = label
         self._version = version
+        self._metadata = metadata
         self._status = status
         self._capacity = capacity
         self._gpu = gpu
@@ -392,6 +410,24 @@ class LiveRunnerRegistration:
             timeout=self._timeout,
         )
 
+    async def create_proxy(
+        self,
+        session: str | LiveRunnerSessionRequest,
+        target_url: str | None = None,
+        *,
+        session_token: str = "",
+        timeout: Optional[float] = None,
+    ) -> LiveRunnerProxy:
+        """Create a public proxy URL for a live runner app session or target."""
+        return await create_proxy(
+            session,
+            target_url,
+            orchestrator_url=self.orchestrator_url,
+            runner_id=self.runner_id,
+            session_token=session_token,
+            timeout=self._timeout if timeout is None else timeout,
+        )
+
     def _payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "runner_url": self._runner_url,
@@ -403,10 +439,14 @@ class LiveRunnerRegistration:
         }
         if self.runner_id:
             payload["runner_id"] = self.runner_id
+        if self._proxy:
+            payload["proxy"] = True
         if self._label:
             payload["label"] = self._label
         if self._version:
             payload["version"] = self._version
+        if self._metadata:
+            payload["metadata"] = self._metadata
         if self._status:
             payload["status"] = self._status
         if self._gpu is not None:
@@ -559,13 +599,15 @@ async def register_runner(
     secret: str,
     runner_url: str,
     app: str,
-    price_per_unit: int = 0,
-    pixels_per_unit: int = 1,
-    price_unit: str = "USD",
+    price: int | float | str = 0,
+    currency: str = "usd",
+    unit: str = "hour",
     runner_id: str = "",
     mode: str = "persistent",
+    proxy: bool = False,
     label: str = "",
     version: str = "",
+    metadata: str = "",
     status: str = "ready",
     capacity: int = 1,
     gpu: Optional[LiveRunnerGPU] = None,
@@ -584,11 +626,13 @@ async def register_runner(
         secret=secret,
         runner_url=runner_url,
         app=app,
-        price_info=LiveRunnerPriceInfo(price_per_unit, pixels_per_unit, price_unit),
+        price_info=LiveRunnerPriceInfo(price, currency, unit),
         runner_id=runner_id,
         mode=mode,
+        proxy=proxy,
         label=label,
         version=version,
+        metadata=metadata,
         status=status,
         capacity=capacity,
         gpu=gpu,
@@ -663,6 +707,45 @@ async def remove_trickle_channels(
     return deleted
 
 
+async def create_proxy(
+    session: str | LiveRunnerSessionRequest,
+    target_url: str | None = None,
+    *,
+    orchestrator_url: str = "",
+    runner_id: str = "",
+    session_token: str = "",
+    timeout: float = 5.0,
+) -> LiveRunnerProxy:
+    """Create a public proxy URL for a live runner app session or target."""
+    runner, session_id, token, control_url = _resolve_session_credentials(
+        session,
+        runner_id=runner_id,
+        session_token=session_token,
+        request_name="proxy",
+    )
+    payload: dict[str, str] = {}
+    if target_url is not None:
+        if not isinstance(target_url, str):
+            raise LivepeerGatewayError("Live runner proxy request target_url must be a string")
+        if target_url.strip():
+            payload["target_url"] = target_url.strip()
+    data = await post_json(
+        _session_proxy_endpoint(orchestrator_url, runner, session_id, control_url),
+        payload,
+        headers={"Livepeer-Session-Token": token},
+        timeout=timeout,
+    )
+    if not isinstance(data, dict):
+        raise LivepeerGatewayError(
+            f"Live runner proxy create expected JSON object, got {type(data).__name__}"
+        )
+    proxy_id = data.get("proxy_id")
+    proxy_url = data.get("url")
+    if not isinstance(proxy_id, str) or not proxy_id.strip() or not isinstance(proxy_url, str) or not proxy_url.strip():
+        raise LivepeerGatewayError("Live runner proxy create response missing proxy_id or url")
+    return LiveRunnerProxy(proxy_id=proxy_id.strip(), url=proxy_url.strip())
+
+
 async def call_runner(
     runner_url: str = "",
     *,
@@ -671,6 +754,7 @@ async def call_runner(
     method: str = "POST",
     signer_url: Optional[str] = None,
     signer_headers: Optional[dict[str, str]] = None,
+    payment_unit: Optional[str] = None,
     timeout: float = 5.0,
     max_payment_challenge_retries: int = 3,
 ) -> LiveRunnerCallResult:
@@ -686,6 +770,7 @@ async def call_runner(
     attempts = (max(0, int(max_payment_challenge_retries)) + 1) * 2
     for attempt in range(attempts):
         payment_session: Optional[LivePaymentSession] = None
+        payment_type = ""
         session_id = ""
         request_headers: dict[str, str] = {}
         if signer_url:
@@ -693,8 +778,10 @@ async def call_runner(
         # Pending challenge means payment is needed.
         if challenge is not None:
             try:
+                payment_type = _runner_payment_type(runner, payment_unit)
                 payment_session, payment = await _get_runner_payment(
                     challenge,
+                    payment_type=payment_type,
                     signer_url=signer_url or "",
                     signer_headers=signer_headers,
                 )
@@ -734,7 +821,7 @@ async def call_runner(
                     session_id
                     or (data["session_id"].strip() if isinstance(data.get("session_id"), str) else "")
                 ),
-                payment_session=payment_session,
+                payment_session=None if payment_type == "fixed" else payment_session,
                 server_payment_interval=(
                     challenge.payment_interval_s if challenge is not None else None
                 ),
@@ -794,13 +881,14 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
 async def _get_runner_payment(
     challenge: _RunnerPaymentChallenge,
     *,
+    payment_type: str,
     signer_url: str,
     signer_headers: Optional[dict[str, str]],
 ) -> tuple[LivePaymentSession, GetPaymentResponse]:
     session = LivePaymentSession(
         signer_url=signer_url,
         signer_headers=signer_headers,
-        type="lv2v",
+        type=payment_type,
         payment_params=challenge.payment_params,
         manifest_id=challenge.manifest_id,
         orchestrator_url=challenge.orchestrator_url,
@@ -811,6 +899,54 @@ async def _get_runner_payment(
     if not payment.seg_creds:
         raise LivepeerGatewayError("Live runner payment response missing segCreds")
     return session, payment
+
+
+def _runner_payment_type(
+    runner: Optional[LiveRunnerInstance],
+    payment_unit: Optional[str] = None,
+) -> str:
+    # Discovery supplies price_info.unit; direct calls may supply payment_unit instead.
+    # If both are present, they must agree.
+    explicit_unit = str(payment_unit or "").strip().lower()
+    discovered_unit = (
+        str(runner.price_info.unit or "").strip().lower()
+        if runner is not None and runner.price_info is not None
+        else ""
+    )
+    if explicit_unit and discovered_unit and explicit_unit != discovered_unit:
+        raise LivepeerGatewayError(
+            "payment_unit conflicts with runner price metadata"
+        )
+    unit = discovered_unit or explicit_unit
+    if unit:
+        payment_type = _RUNNER_PAYMENT_TYPES_BY_UNIT.get(unit)
+        if payment_type is None:
+            supported = ", ".join(sorted(_RUNNER_PAYMENT_TYPES_BY_UNIT))
+            raise LivepeerGatewayError(
+                f"Unsupported live runner payment unit {unit!r}; expected one of {supported}"
+            )
+        return payment_type
+
+    # Compatibility for callers constructing instances without discovery
+    # price metadata. Discovery price_info.unit is authoritative when present.
+    if runner is not None and runner.app == "live-video-to-video/scope":
+        return "lv2v"
+    return "live"
+
+
+def _live_runner_price_info_from_json(value: object) -> Optional[LiveRunnerPriceInfo]:
+    if not isinstance(value, dict):
+        return None
+    price = value.get("price")
+    if isinstance(price, bool) or not isinstance(price, (int, float, str)):
+        return None
+    currency = value.get("currency")
+    unit = value.get("unit")
+    return LiveRunnerPriceInfo(
+        price=price,
+        currency=currency.strip().lower() if isinstance(currency, str) else "",
+        unit=unit.strip().lower() if isinstance(unit, str) else "",
+    )
 
 
 def _live_runner_session_from_json(
@@ -916,6 +1052,28 @@ def _trickle_channels_endpoint(
     )
 
 
+def _session_proxy_endpoint(
+    orchestrator_url: str,
+    runner_id: str,
+    session_id: str,
+    control_url: str = "",
+) -> str:
+    if control_url:
+        return _join_endpoint(control_url, "proxy")
+    if not orchestrator_url:
+        raise LivepeerGatewayError("Live runner proxy request requires session_control")
+    if not runner_id:
+        raise LivepeerGatewayError("Live runner proxy request requires runner_id")
+    return _join_endpoint(
+        orchestrator_url,
+        (
+            f"/runner/{quote(runner_id, safe='')}"
+            f"/session/{quote(session_id, safe='')}"
+            "/proxy"
+        ),
+    )
+
+
 def _parse_go_duration_s(value: object, *, default: Optional[float]) -> Optional[float]:
     if not isinstance(value, str) or not value.strip():
         return default
@@ -952,6 +1110,7 @@ def _resolve_session_credentials(
     *,
     runner_id: str = "",
     session_token: str = "",
+    request_name: str = "trickle channel",
 ) -> tuple[str, str, str, str]:
     runner = runner_id.strip()
     session_id = ""
@@ -979,9 +1138,9 @@ def _resolve_session_credentials(
                     control_url = control_value.strip()
 
     if not session_id:
-        raise LivepeerGatewayError("Live runner trickle channel request requires session_id")
+        raise LivepeerGatewayError(f"Live runner {request_name} request requires session_id")
     if not token:
-        raise LivepeerGatewayError("Live runner trickle channel request requires session_token")
+        raise LivepeerGatewayError(f"Live runner {request_name} request requires session_token")
     return runner, session_id, token, control_url
 
 

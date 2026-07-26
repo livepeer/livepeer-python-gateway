@@ -18,7 +18,13 @@ from .errors import (
     OrchestratorRejection,
     RunnerRejection,
 )
-from .live_runner import LiveRunnerCallResult, LiveRunnerInstance, LiveRunnerSession, call_runner
+from .live_runner import (
+    LiveRunnerCallResult,
+    LiveRunnerInstance,
+    LiveRunnerSession,
+    _live_runner_price_info_from_json,
+    call_runner,
+)
 from .orch_info import get_orch_info
 
 _LOG = logging.getLogger(__name__)
@@ -277,6 +283,7 @@ async def reserve_session(
     signer_headers: Optional[dict[str, str]] = None,
     discovery_url: Optional[str] = None,
     discovery_headers: Optional[dict[str, str]] = None,
+    orchestrators: Optional[Sequence[str] | str] = None,
     app: Optional[FilterValue] = None,
     gpu: Optional[FilterValue] = None,
     timeout: float = 5.0,
@@ -298,6 +305,7 @@ async def reserve_session(
     margin), falling back to 3s when the orchestrator does not report one.
     """
     cursor = await runner_selector(
+        orchestrators=orchestrators,
         signer_url=signer_url,
         signer_headers=signer_headers,
         discovery_url=discovery_url,
@@ -357,6 +365,7 @@ def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list
                     mode=_string_value(runner.get("mode")),
                     orchestrator_url=orchestrator_url,
                     raw=dict(runner),
+                    price_info=_live_runner_price_info_from_json(runner.get("price_info")),
                 )
             )
     return candidates
