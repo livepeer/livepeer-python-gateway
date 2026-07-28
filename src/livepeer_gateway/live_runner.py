@@ -1074,27 +1074,6 @@ def _live_runner_price_info_from_json(value: object) -> Optional[LiveRunnerPrice
     )
 
 
-def _live_runner_session_from_json(
-    data: dict[str, Any],
-    *,
-    runner_url: str,
-    runner: Optional[LiveRunnerInstance],
-) -> LiveRunnerSession:
-    session_id = data.get("session_id")
-    app_url = data.get("app_url")
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise LivepeerGatewayError("Live runner session reserve response missing session_id")
-    if not isinstance(app_url, str) or not app_url.strip():
-        raise LivepeerGatewayError("Live runner session reserve response missing app_url")
-    control_url = data.get("control_url")
-    return LiveRunnerSession(
-        session_id=session_id.strip(),
-        app_url=app_url.strip(),
-        runner_url=runner_url,
-        runner=runner,
-        control_url=control_url.strip() if isinstance(control_url, str) else "",
-    )
-
 async def stop_runner_session(
     session: LiveRunnerSession | LiveRunnerSessionRequest,
     *,

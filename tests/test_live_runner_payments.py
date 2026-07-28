@@ -8,12 +8,15 @@ Covers the session-owned payment loop added on top of run_session_payments:
 - stop_payments cancels only the loop; aclose / async-context-manager also stop
   the session (skipping the stop call when the orchestrator already released it)
 - payment challenge parsing picks up payment_interval_ms
+- call_runner(stream=True) mirrors the JSON path's payment semantics (challenge
+  session_id, server_payment_interval, fixed-price payment_session drop)
 - reserve_session auto-starts payments and derives the cadence from the challenge
 """
 from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,8 +25,10 @@ from livepeer_gateway import live_runner, selection
 from livepeer_gateway.errors import LivepeerHTTPError, SkipPaymentCycle
 from livepeer_gateway.live_runner import (
     LiveRunnerCallResult,
+    LiveRunnerCallStream,
     LiveRunnerSession,
     _parse_runner_payment_challenge,
+    call_runner,
     run_session_payments,
 )
 from livepeer_gateway.selection import reserve_session
@@ -193,6 +198,23 @@ def test_run_session_payments_stops_on_409_fixed_price() -> None:
     asyncio.run(go())
 
 
+def test_run_session_payments_stops_on_403_mismatch() -> None:
+    async def go() -> None:
+        ps = _FakePaymentSession()
+
+        async def mismatched(orchestrator_url: str | None = None, *, payment_url: str | None = None) -> None:
+            raise _http_error(403)
+
+        ps.send_payment = mismatched  # type: ignore[assignment]
+        sess = _session(ps, control_url="https://orch/apps/r1/session/sess-1")
+        # A session/payment mismatch is fatal for the loop but says nothing about
+        # the session itself, so it must return on its own without marking released.
+        await asyncio.wait_for(run_session_payments(sess, interval=0.01), timeout=1.0)
+        assert not sess.released
+
+    asyncio.run(go())
+
+
 def test_run_session_payments_retries_other_http_errors() -> None:
     async def go() -> None:
         ps = _FakePaymentSession()
@@ -335,6 +357,67 @@ def test_parse_challenge_without_payment_interval_ms() -> None:
         )
     )
     assert challenge.payment_interval_s is None
+
+
+_STREAM_CHALLENGE = {
+    "payment_params": "params",
+    "orchestrator": "https://orch",
+    "manifest_id": "sess-1",
+    "payment_interval_ms": 5000,
+}
+
+
+async def _call_stream(payment_unit: str) -> tuple[LiveRunnerCallStream, AsyncMock, _FakePaymentSession]:
+    """Drive call_runner(stream=True) through a 402 challenge and a paid retry."""
+    ps = _FakePaymentSession()
+    payment = SimpleNamespace(payment="payment-b64", seg_creds="seg-b64")
+    open_stream = AsyncMock(
+        side_effect=[
+            _challenge_error(_STREAM_CHALLENGE),
+            (AsyncMock(), SimpleNamespace(status=200, headers={"Content-Type": "text/event-stream"})),
+        ]
+    )
+    with (
+        patch.object(
+            live_runner,
+            "get_signer_info",
+            new=AsyncMock(return_value=SimpleNamespace(address="0xPayer")),
+        ),
+        patch.object(live_runner, "_get_runner_payment", new=AsyncMock(return_value=(ps, payment))),
+        patch.object(live_runner, "open_stream", new=open_stream),
+    ):
+        stream = await call_runner(
+            "https://orch/apps/r1/app",
+            stream=True,
+            signer_url="https://signer",
+            payment_unit=payment_unit,
+        )
+    return stream, open_stream, ps
+
+
+def test_call_runner_stream_carries_payment_semantics() -> None:
+    async def go() -> None:
+        stream, open_stream, ps = await _call_stream("seconds")
+        # The paid retry carries the payment material on the streaming request.
+        headers = open_stream.call_args.kwargs["headers"]
+        assert headers["Livepeer-Payment"] == "payment-b64"
+        assert headers["Livepeer-Segment"] == "seg-b64"
+        # Stream results mirror the JSON path: challenge manifest id and cadence.
+        assert stream.session_id == "sess-1"
+        assert stream.server_payment_interval == 5.0
+        assert stream.payment_session is ps
+
+    asyncio.run(go())
+
+
+def test_call_runner_stream_fixed_price_drops_payment_session() -> None:
+    async def go() -> None:
+        stream, _, _ = await _call_stream("fixed")
+        # Fixed-price pays once inline; no session to hand to a payment loop.
+        assert stream.session_id == "sess-1"
+        assert stream.payment_session is None
+
+    asyncio.run(go())
 
 
 class _FakeCursor:

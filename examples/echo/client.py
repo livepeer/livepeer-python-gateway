@@ -5,13 +5,12 @@ import argparse
 import asyncio
 import sys
 import time
-from contextlib import nullcontext, suppress
+from contextlib import nullcontext
 from pathlib import Path
 
 import av
 
 from livepeer_gateway.errors import LivepeerGatewayError
-from livepeer_gateway.live_runner import stop_runner_session
 from livepeer_gateway.media_output import MediaOutput
 from livepeer_gateway.media_publish import MediaPublish
 from livepeer_gateway.http import post_json
@@ -32,6 +31,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the proxied echo Live Runner demo.")
     parser.add_argument("input")
     parser.add_argument("--discovery", default=DEFAULT_DISCOVERY)
+    parser.add_argument("--signer-url", default="", help="Remote signer URL; enables on-chain payment (self-funding session).")
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument("--radius", type=int, default=75)
     parser.add_argument("--max-frames", type=int, default=0, help="Stop after this many input video frames (0 = full file).")
@@ -120,42 +120,42 @@ async def main() -> None:
     if not input_path.exists():
         raise SystemExit(f"input file does not exist: {input_path}")
 
-    session = None
-
     try:
-        session = await reserve_session(discovery_url=args.discovery, app=ECHO_APP_ID)
-        _log("runner_url:", session.runner.url if session.runner is not None else session.runner_url)
-        _log("session_id:", session.session_id)
-        _log("app_url:", session.app_url)
+        # The session funds itself while open (auto_pay) and stops the runner
+        # session on exit; offchain (no --signer-url) the payment loop is a no-op.
+        async with await reserve_session(
+            discovery_url=args.discovery,
+            app=ECHO_APP_ID,
+            signer_url=args.signer_url or None,
+        ) as session:
+            _log("runner_url:", session.runner.url if session.runner is not None else session.runner_url)
+            _log("session_id:", session.session_id)
+            _log("app_url:", session.app_url)
 
-        echo = await post_json(f"{session.app_url.rstrip('/')}/echo", {"radius": args.radius})
-        in_url = _channel_url(echo, "in")
-        out_url = _channel_url(echo, "out")
-        _log("in:", in_url)
-        _log("out:", out_url)
+            echo = await post_json(f"{session.app_url.rstrip('/')}/echo", {"radius": args.radius})
+            in_url = _channel_url(echo, "in")
+            out_url = _channel_url(echo, "out")
+            _log("in:", in_url)
+            _log("out:", out_url)
 
-        with nullcontext(sys.stdout.buffer) if output_stdout else output_path.open("wb") as fh:
-            def _write_chunk(chunk: bytes) -> None:
-                fh.write(chunk)
-                if output_stdout:
-                    fh.flush()
+            with nullcontext(sys.stdout.buffer) if output_stdout else output_path.open("wb") as fh:
+                def _write_chunk(chunk: bytes) -> None:
+                    fh.write(chunk)
+                    if output_stdout:
+                        fh.flush()
 
-            async with MediaOutput(out_url, on_bytes=_write_chunk):
-                await _publish_video(
-                    input_path,
-                    in_url,
-                    max_frames=max(0, args.max_frames),
-                    app_url=session.app_url,
-                    blur=args.blur,
-                )
-                _log("publish complete; waiting for output to drain...")
-            fh.flush()
+                async with MediaOutput(out_url, on_bytes=_write_chunk):
+                    await _publish_video(
+                        input_path,
+                        in_url,
+                        max_frames=max(0, args.max_frames),
+                        app_url=session.app_url,
+                        blur=args.blur,
+                    )
+                    _log("publish complete; waiting for output to drain...")
+                fh.flush()
     except LivepeerGatewayError as exc:
         raise SystemExit(f"ERROR: {exc}") from exc
-    finally:
-        if session is not None:
-            with suppress(Exception):
-                await stop_runner_session(session)
 
 
 if __name__ == "__main__":
