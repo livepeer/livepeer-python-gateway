@@ -9,12 +9,27 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal, NotRequired, Optional, Protocol, TypedDict, cast
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Literal,
+    Mapping,
+    NotRequired,
+    Optional,
+    Protocol,
+    TypedDict,
+    cast,
+    overload,
+)
 from urllib.parse import quote, urlparse, urlunparse
+
+import aiohttp
 
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired, SkipPaymentCycle
-from .http import post_empty, post_json, request_json
+from .http import open_stream, post_empty, post_json, request_json
 from .remote_signer import (
     GetPaymentResponse,
     LivePaymentSession,
@@ -227,6 +242,53 @@ class LiveRunnerCallResult:
     server_payment_interval: Optional[float] = None
 
 
+@dataclass
+class LiveRunnerCallStream:
+    """A streaming live-runner response (SSE / chunked).
+
+    Returned by ``call_runner(..., stream=True)``. It owns the underlying HTTP session
+    and response, so use it as an async context manager (or call ``aclose()``) to
+    release the connection.
+    """
+
+    status: int
+    headers: Mapping[str, str]
+    runner_url: str
+    runner: Optional[LiveRunnerInstance]
+    payment_session: Optional[LivePaymentSession]
+    # Session backing this single-shot request, from the payment challenge's
+    # manifest_id. Empty offchain: a stream body cannot supply the JSON-path
+    # session_id fallback.
+    session_id: str = ""
+    # Orchestrator debit cadence in seconds, from the payment challenge's
+    # payment_interval_ms. None when the orchestrator does not report it.
+    server_payment_interval: Optional[float] = None
+    _session: aiohttp.ClientSession = field(repr=False, compare=False, kw_only=True)
+    _response: aiohttp.ClientResponse = field(repr=False, compare=False, kw_only=True)
+
+    @property
+    def content_type(self) -> str:
+        return self._response.content_type
+
+    async def aiter_bytes(self) -> AsyncIterator[bytes]:
+        async for chunk in self._response.content.iter_any():
+            yield chunk
+
+    async def aiter_lines(self) -> AsyncIterator[str]:
+        async for line in self._response.content:
+            yield line.decode(errors="replace").rstrip("\n")
+
+    async def aclose(self) -> None:
+        self._response.release()
+        await self._session.close()
+
+    async def __aenter__(self) -> LiveRunnerCallStream:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
+
+
 @dataclass(frozen=True)
 class LiveRunnerGPU:
     id: str = ""
@@ -312,7 +374,7 @@ class LiveRunnerRegistration:
         self._task: Optional[asyncio.Task[None]] = None
         self._o2r_task: Optional[asyncio.Task[None]] = None
 
-    async def start(self) -> "LiveRunnerRegistration":
+    async def start(self) -> LiveRunnerRegistration:
         await self._send_heartbeat()
         self._task = asyncio.create_task(self._heartbeat_loop())
         return self
@@ -360,7 +422,7 @@ class LiveRunnerRegistration:
             except Exception:
                 _LOG.debug("Live runner unregister failed", exc_info=True)
 
-    async def __aenter__(self) -> "LiveRunnerRegistration":
+    async def __aenter__(self) -> LiveRunnerRegistration:
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -746,6 +808,38 @@ async def create_proxy(
     return LiveRunnerProxy(proxy_id=proxy_id.strip(), url=proxy_url.strip())
 
 
+@overload
+async def call_runner(
+    runner_url: str = ...,
+    *,
+    runner: Optional[LiveRunnerInstance] = ...,
+    payload: Optional[dict[str, Any]] = ...,
+    method: str = ...,
+    signer_url: Optional[str] = ...,
+    signer_headers: Optional[dict[str, str]] = ...,
+    payment_unit: Optional[str] = ...,
+    timeout: float = ...,
+    max_payment_challenge_retries: int = ...,
+    stream: Literal[False] = False,
+) -> LiveRunnerCallResult: ...
+
+
+@overload
+async def call_runner(
+    runner_url: str = ...,
+    *,
+    runner: Optional[LiveRunnerInstance] = ...,
+    payload: Optional[dict[str, Any]] = ...,
+    method: str = ...,
+    signer_url: Optional[str] = ...,
+    signer_headers: Optional[dict[str, str]] = ...,
+    payment_unit: Optional[str] = ...,
+    timeout: float = ...,
+    max_payment_challenge_retries: int = ...,
+    stream: Literal[True],
+) -> LiveRunnerCallStream: ...
+
+
 async def call_runner(
     runner_url: str = "",
     *,
@@ -757,7 +851,14 @@ async def call_runner(
     payment_unit: Optional[str] = None,
     timeout: float = 5.0,
     max_payment_challenge_retries: int = 3,
-) -> LiveRunnerCallResult:
+    stream: bool = False,
+) -> LiveRunnerCallResult | LiveRunnerCallStream:
+    """Call a runner once and return its result (or a live stream if ``stream=True``).
+
+    With ``signer_url`` set, payment is automatic and **per call**: a 402 challenge is
+    paid via the signer and retried (up to ``max_payment_challenge_retries``), one job,
+    one upfront payment. Raises ``LivepeerHTTPError`` on non-402 errors.
+    """
     runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
     if not runner_url:
         raise LivepeerGatewayError("Live runner call requires runner_url")
@@ -803,6 +904,30 @@ async def call_runner(
             request_kwargs: dict[str, Any] = {"timeout": timeout}
             if request_headers:
                 request_kwargs["headers"] = request_headers
+
+            if stream:
+                # Hand back the live response unbuffered. open_stream raises on a 402
+                # before any body, so the payment retry below still catches it.
+                session, resp = await open_stream(
+                    runner_url,
+                    method=method,
+                    payload=request_payload,
+                    headers=request_headers or None,
+                )
+                return LiveRunnerCallStream(
+                    status=resp.status,
+                    headers=resp.headers,
+                    runner_url=runner_url,
+                    runner=runner,
+                    session_id=session_id,
+                    payment_session=None if payment_type == "fixed" else payment_session,
+                    server_payment_interval=(
+                        challenge.payment_interval_s if challenge is not None else None
+                    ),
+                    _session=session,
+                    _response=resp,
+                )
+
             data = await request_json(
                 runner_url,
                 method=method,
