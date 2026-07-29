@@ -37,3 +37,12 @@ Verify the runner registration with go-livepeer:
 ```
 curl http://localhost:8935/discovery | jq
 ```
+
+Or stream through the SDK client, which self-funds metered calls when a
+remote signer is given (pays the 402 challenge, then keeps paying on a
+cadence for as long as the stream runs):
+
+```sh
+uv run client.py http://localhost:8935/apps/story-runner/app/sse
+uv run client.py https://orch:8935/apps/story-runner/app/sse --signer-url http://localhost:7936
+```
