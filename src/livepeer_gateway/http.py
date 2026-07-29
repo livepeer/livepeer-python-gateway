@@ -239,20 +239,23 @@ def get_json_sync(
     return request_json_sync(url, headers=headers, timeout=timeout)
 
 
-async def request_json(
+async def request_data(
     url: str,
     *,
     method: str | None = None,
     payload: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 5.0,
-) -> Any:
+) -> tuple[bytes, str]:
     """
-    Make an async JSON HTTP request and parse the JSON response.
+    Make an async JSON-payload HTTP request and return the raw response body.
+
+    Returns ``(body, content_type)`` without assuming the response is JSON;
+    request semantics and error mapping match request_json.
 
     If method is None, defaults to POST when payload is provided, otherwise GET.
 
-    Raises LivepeerGatewayError on HTTP/network/JSON parsing errors.
+    Raises LivepeerGatewayError on HTTP/network errors.
     """
     resolved_method, req_headers, body = _json_request_parts(
         url,
@@ -266,14 +269,14 @@ async def request_json(
         connector = aiohttp.TCPConnector(ssl=False)
         async with aiohttp.ClientSession(timeout=client_timeout, connector=connector) as session:
             async with session.request(resolved_method, url, data=body, headers=req_headers) as resp:
-                raw = await resp.text()
+                raw = await resp.read()
+                content_type = resp.content_type or ""
                 if resp.status >= 400:
-                    _raise_http_json_error(resp.status, url, raw, dict(resp.headers.items()))
-        data: Any = json.loads(raw)
+                    _raise_http_json_error(
+                        resp.status, url, raw.decode(errors="replace"), dict(resp.headers.items())
+                    )
     except (SignerRefreshRequired, SkipPaymentCycle, LivepeerGatewayError):
         raise
-    except json.JSONDecodeError as e:
-        raise LivepeerGatewayError(f"HTTP JSON error: endpoint did not return valid JSON: {e} (url={url})") from e
     except ConnectionRefusedError as e:
         raise LivepeerGatewayError(
             f"HTTP JSON error: connection refused (is the server running? is the host/port correct?) (url={url})"
@@ -296,7 +299,37 @@ async def request_json(
             f"HTTP JSON error: unexpected error: {e.__class__.__name__}: {e} (url={url})"
         ) from e
 
-    return data
+    return raw, content_type
+
+
+async def request_json(
+    url: str,
+    *,
+    method: Optional[str] = None,
+    payload: Optional[dict[str, Any]] = None,
+    headers: Optional[dict[str, str]] = None,
+    timeout: float = 5.0,
+) -> Any:
+    """
+    Make an async JSON HTTP request and parse the JSON response.
+
+    If method is None, defaults to POST when payload is provided, otherwise GET.
+
+    Raises LivepeerGatewayError on HTTP/network/JSON parsing errors.
+    """
+    raw, _content_type = await request_data(
+        url,
+        method=method,
+        payload=payload,
+        headers=headers,
+        timeout=timeout,
+    )
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise LivepeerGatewayError(
+            f"HTTP JSON error: endpoint did not return valid JSON: {e} (url={url})"
+        ) from e
 
 
 async def open_stream(

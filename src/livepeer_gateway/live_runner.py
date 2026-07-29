@@ -25,7 +25,7 @@ import aiohttp
 
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
-from .http import open_stream, post_json, request_json
+from .http import open_stream, post_json, request_data, request_json
 from .remote_signer import (
     GetPaymentResponse,
     LivePaymentSession,
@@ -126,6 +126,10 @@ class LiveRunnerCallResult:
         repr=False,
         compare=False,
     )
+    # Non-JSON responses (an image, say) arrive unparsed: `raw` holds the body
+    # bytes and `content_type` its media type, while `data` stays empty.
+    raw: Optional[bytes] = field(default=None, repr=False)
+    content_type: str = ""
 
 
 @dataclass
@@ -739,6 +743,10 @@ async def call_runner(
     With ``signer_url`` set, payment is automatic and **per call**: a 402 challenge is
     paid via the signer and retried (up to ``max_payment_challenge_retries``), one job,
     one upfront payment. Raises ``LivepeerHTTPError`` on non-402 errors.
+
+    JSON responses (by content type) are parsed into ``result.data``; anything else
+    (an image, say) is returned unparsed in ``result.raw`` with ``result.content_type``
+    set.
     """
     runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
     if not runner_url:
@@ -799,12 +807,29 @@ async def call_runner(
                     resp.status, resp.headers, runner_url, runner, payment_session, session, resp,
                 )
 
-            data = await request_json(
+            raw, content_type = await request_data(
                 runner_url,
                 method=method,
                 payload=request_payload,
                 **request_kwargs,
             )
+            if "json" not in content_type.lower():
+                # Non-JSON body (an image, say): hand back the bytes unparsed.
+                return LiveRunnerCallResult(
+                    {},
+                    runner_url=runner_url,
+                    runner=runner,
+                    session_id=session_id,
+                    payment_session=None if payment_type == "fixed" else payment_session,
+                    raw=raw,
+                    content_type=content_type,
+                )
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise LivepeerGatewayError(
+                    f"HTTP JSON error: endpoint did not return valid JSON: {e} (url={runner_url})"
+                ) from e
             if not isinstance(data, dict):
                 raise LivepeerGatewayError(
                     f"Live runner call expected JSON object, got {type(data).__name__}"
@@ -818,6 +843,7 @@ async def call_runner(
                     or (data["session_id"].strip() if isinstance(data.get("session_id"), str) else "")
                 ),
                 payment_session=None if payment_type == "fixed" else payment_session,
+                content_type=content_type,
             )
         except LivepeerHTTPError as e:
             if e.status_code != 402:
