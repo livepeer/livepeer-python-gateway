@@ -171,8 +171,15 @@ class LiveRunnerCallStream:
     # Orchestrator debit cadence in seconds, from the payment challenge's
     # payment_interval_ms. None when the orchestrator does not report it.
     server_payment_interval: Optional[float] = None
+    # True once the orchestrator reported the backing session gone (payment
+    # loop hit a 404). The stream itself ends when the orchestrator cancels
+    # the proxied request.
+    released: bool = False
     _session: aiohttp.ClientSession = field(repr=False, compare=False, kw_only=True)
     _response: aiohttp.ClientResponse = field(repr=False, compare=False, kw_only=True)
+    _payment_task: Optional[asyncio.Task[None]] = field(
+        default=None, repr=False, compare=False, kw_only=True
+    )
 
     @property
     def content_type(self) -> str:
@@ -186,7 +193,18 @@ class LiveRunnerCallStream:
         async for line in self._response.content:
             yield line.decode(errors="replace").rstrip("\n")
 
+    def _mark_released(self) -> None:
+        self.released = True
+
     async def aclose(self) -> None:
+        # Stop funding before tearing down the transport so no payment is
+        # minted for a stream we are abandoning.
+        task = self._payment_task
+        self._payment_task = None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         self._response.release()
         await self._session.close()
 
@@ -822,7 +840,7 @@ async def call_runner(
                     payload=request_payload,
                     headers=request_headers or None,
                 )
-                return LiveRunnerCallStream(
+                call_stream = LiveRunnerCallStream(
                     status=resp.status,
                     headers=resp.headers,
                     runner_url=runner_url,
@@ -835,6 +853,19 @@ async def call_runner(
                     _session=session,
                     _response=resp,
                 )
+                # Metered pricing: the stream outlives this call, so it owns
+                # the payment loop; aclose() stops both.
+                if payment_session is not None and payment_type in _METERED_PAYMENT_TYPES:
+                    call_stream._payment_task = asyncio.create_task(
+                        _run_call_payments(
+                            payment_session,
+                            interval_s=_payment_cadence_s(
+                                challenge.payment_interval_s if challenge is not None else None
+                            ),
+                            on_released=call_stream._mark_released,
+                        )
+                    )
+                return call_stream
 
             # Metered pricing: the orchestrator debits the prepaid balance
             # while the request runs, so keep funding it for as long as we
