@@ -862,6 +862,7 @@ async def call_runner(
                             interval_s=_payment_cadence_s(
                                 challenge.payment_interval_s if challenge is not None else None
                             ),
+                            payment_url=_single_shot_payment_url(runner_url, session_id),
                             on_released=call_stream._mark_released,
                         )
                     )
@@ -878,6 +879,7 @@ async def call_runner(
                         interval_s=_payment_cadence_s(
                             challenge.payment_interval_s if challenge is not None else None
                         ),
+                        payment_url=_single_shot_payment_url(runner_url, session_id),
                     )
                 )
             try:
@@ -959,6 +961,29 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
         manifest_id=manifest_id,
         payment_interval_s=payment_interval_s,
     )
+
+
+def _single_shot_payment_url(runner_url: str, session_id: str) -> str:
+    """Derive the session-scoped payment endpoint for a single-shot call.
+
+    Single-shot runner URLs are orchestrator proxy routes of the form
+    ``…/apps/{runner_id}/app[/…]``; the matching payment endpoint is
+    ``…/apps/{runner_id}/session/{session_id}/payment``, which 404s once the
+    session is released and 409s for fixed pricing. Returns "" when the URL
+    does not match that shape, in which case payments fall back to the
+    orchestrator's generic ``/payment`` endpoint.
+    """
+    if not session_id:
+        return ""
+    try:
+        parsed = urlparse(_normalize_http_base(runner_url))
+    except LivepeerGatewayError:
+        return ""
+    match = re.match(r"^(?P<base>.*/apps/[^/]+)/app(?:/.*)?$", parsed.path)
+    if match is None:
+        return ""
+    path = f"{match.group('base')}/session/{quote(session_id, safe='')}/payment"
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
 
 
 def _payment_cadence_s(server_interval_s: Optional[float]) -> float:
