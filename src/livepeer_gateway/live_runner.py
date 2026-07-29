@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -28,7 +29,12 @@ from urllib.parse import quote, urlparse, urlunparse
 import aiohttp
 
 from .channel_reader import ChannelReader
-from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
+from .errors import (
+    LivepeerGatewayError,
+    LivepeerHTTPError,
+    SignerRefreshRequired,
+    SkipPaymentCycle,
+)
 from .http import open_stream, post_empty, post_json, request_json
 from .remote_signer import (
     GetPaymentResponse,
@@ -49,6 +55,16 @@ _RUNNER_PAYMENT_TYPES_BY_UNIT = {
     "720p-pixel-seconds": "lv2v",
     "fixed": "fixed",
 }
+# Metered payment types need ongoing funding while a call is in flight; the
+# orchestrator debits the prepaid balance on -livePaymentInterval (5s default)
+# and cancels the request on the first under-funded tick.
+_METERED_PAYMENT_TYPES = frozenset({"live", "lv2v"})
+# Fallback client payment cadence when the challenge does not advertise
+# payment_interval_ms (go-livepeer master does not, yet).
+_DEFAULT_PAYMENT_INTERVAL_S = 3.0
+# Pay at a fraction of the server debit tick so a payment always lands
+# before the next debit.
+_PAYMENT_CADENCE_FRACTION = 0.6
 
 # golang format duration, eg "10s"
 _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u00b5s|ms|s|m|h)\s*$")
@@ -820,12 +836,31 @@ async def call_runner(
                     _response=resp,
                 )
 
-            data = await request_json(
-                runner_url,
-                method=method,
-                payload=request_payload,
-                **request_kwargs,
-            )
+            # Metered pricing: the orchestrator debits the prepaid balance
+            # while the request runs, so keep funding it for as long as we
+            # are waiting on the response.
+            pay_task: Optional[asyncio.Task[None]] = None
+            if payment_session is not None and payment_type in _METERED_PAYMENT_TYPES:
+                pay_task = asyncio.create_task(
+                    _run_call_payments(
+                        payment_session,
+                        interval_s=_payment_cadence_s(
+                            challenge.payment_interval_s if challenge is not None else None
+                        ),
+                    )
+                )
+            try:
+                data = await request_json(
+                    runner_url,
+                    method=method,
+                    payload=request_payload,
+                    **request_kwargs,
+                )
+            finally:
+                if pay_task is not None:
+                    pay_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await pay_task
             if not isinstance(data, dict):
                 raise LivepeerGatewayError(
                     f"Live runner call expected JSON object, got {type(data).__name__}"
@@ -893,6 +928,55 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
         manifest_id=manifest_id,
         payment_interval_s=payment_interval_s,
     )
+
+
+def _payment_cadence_s(server_interval_s: Optional[float]) -> float:
+    if server_interval_s is not None and server_interval_s > 0:
+        return server_interval_s * _PAYMENT_CADENCE_FRACTION
+    return _DEFAULT_PAYMENT_INTERVAL_S
+
+
+async def _run_call_payments(
+    payment_session: LivePaymentSession,
+    *,
+    interval_s: float,
+    payment_url: str = "",
+    on_released: Optional[Callable[[], None]] = None,
+) -> None:
+    """Fund an in-flight metered single-shot call until cancelled.
+
+    The 402 challenge payment already carried the signer's preroll, so the
+    first follow-up payment waits one interval. Runs until cancelled by the
+    caller or until the orchestrator reports a terminal state: 404 (session
+    released), 409 (fixed-price, nothing to fund), or 403 (session/payment
+    mismatch). Transient errors are retried on the next tick — the
+    orchestrator cancels the call itself if funding actually stops.
+    """
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await payment_session.send_payment(payment_url=payment_url or None)
+        except asyncio.CancelledError:
+            raise
+        except SkipPaymentCycle:
+            _LOG.debug("Live runner call payment: signer skipped this cycle")
+        except LivepeerHTTPError as e:
+            if e.status_code == 404:
+                _LOG.info("Live runner call payment: session released; stopping payments")
+                if on_released is not None:
+                    on_released()
+                return
+            if e.status_code == 409:
+                _LOG.debug("Live runner call payment: fixed-price session; stopping payments")
+                return
+            if e.status_code == 403:
+                _LOG.error(
+                    "Live runner call payment: session/payment mismatch; stopping payments: %s", e
+                )
+                return
+            _LOG.warning("Live runner call payment failed; retrying next cycle: %s", e)
+        except Exception as e:
+            _LOG.warning("Live runner call payment failed; retrying next cycle: %s", e)
 
 
 async def _get_runner_payment(
