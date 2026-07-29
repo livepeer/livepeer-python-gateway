@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
@@ -11,8 +10,6 @@ from functools import lru_cache
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-
-import aiohttp
 
 from . import lp_rpc_pb2
 from .async_cache import async_lru_cache
@@ -240,44 +237,41 @@ class LivePaymentSession:
                 await self._refresh_payment_params(orchestrator_url)
                 attempts += 1
 
-    async def send_payment(self, orchestrator_url: Optional[str] = None) -> None:
+    async def send_payment(
+        self,
+        orchestrator_url: Optional[str] = None,
+        *,
+        payment_url: Optional[str] = None,
+    ) -> None:
+        """Generate a payment and POST it to the orchestrator.
+
+        ``payment_url`` targets a specific payment endpoint, such as the
+        session-scoped ``…/session/{session_id}/payment`` which 404s once the
+        session is released. Without it the payment goes to the orchestrator's
+        generic ``/payment`` endpoint, which credits the payer balance blindly.
+
+        Raises LivepeerHTTPError on error responses so callers can branch on
+        the status code, and SkipPaymentCycle when the signer gates the cycle.
+        """
         if not self._signer_url:
             return
 
-        target = orchestrator_url or self._orchestrator_url
-        if not target:
-            raise PaymentError("orchestrator_url is required before sending payment")
+        from .http import _http_origin, post_empty
 
-        from .http import _extract_error_message_from_body, _http_origin
+        if payment_url:
+            url = payment_url
+        else:
+            target = orchestrator_url or self._orchestrator_url
+            if not target:
+                raise PaymentError("orchestrator_url is required before sending payment")
+            url = f"{_http_origin(target)}/payment"
 
         payment = await self.get_payment()
-        url = f"{_http_origin(target)}/payment"
         headers = {
             "Livepeer-Payment": payment.payment,
-            "Livepeer-Segment": payment.seg_creds,
+            "Livepeer-Segment": payment.seg_creds or "",
         }
-        try:
-            timeout = aiohttp.ClientTimeout(total=5.0)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, data=b"", headers=headers) as resp:
-                    if resp.status >= 400:
-                        body = await resp.text()
-                        message = _extract_error_message_from_body(body)
-                        body_part = f"; body={message!r}" if message else ""
-                        raise PaymentError(
-                            f"HTTP payment error: HTTP {resp.status} from endpoint (url={url}){body_part}"
-                        )
-                    await resp.read()
-        except PaymentError:
-            raise
-        except getattr(aiohttp, "ClientConnectorError", ()) as e:
-            raise PaymentError(
-                f"HTTP payment error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
-            ) from e
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            raise PaymentError(
-                f"HTTP payment error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
-            ) from e
+        await post_empty(url, headers=headers, timeout=5.0)
 
     async def _payment_request(self) -> GetPaymentResponse:
         from .http import _http_origin, post_json

@@ -29,7 +29,7 @@ import aiohttp
 
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
-from .http import open_stream, post_json, request_json
+from .http import open_stream, post_empty, post_json, request_json
 from .remote_signer import (
     GetPaymentResponse,
     LivePaymentSession,
@@ -129,6 +129,9 @@ class LiveRunnerCallResult:
         repr=False,
         compare=False,
     )
+    # Orchestrator debit cadence in seconds, from the payment challenge's
+    # payment_interval_ms. None when the orchestrator does not report it.
+    server_payment_interval: Optional[float] = None
 
 
 @dataclass
@@ -145,8 +148,15 @@ class LiveRunnerCallStream:
     runner_url: str
     runner: Optional[LiveRunnerInstance]
     payment_session: Optional[LivePaymentSession]
-    _session: aiohttp.ClientSession = field(repr=False, compare=False)
-    _response: aiohttp.ClientResponse = field(repr=False, compare=False)
+    # Session backing this single-shot request, from the payment challenge's
+    # manifest_id. Empty offchain: a stream body cannot supply the JSON-path
+    # session_id fallback.
+    session_id: str = ""
+    # Orchestrator debit cadence in seconds, from the payment challenge's
+    # payment_interval_ms. None when the orchestrator does not report it.
+    server_payment_interval: Optional[float] = None
+    _session: aiohttp.ClientSession = field(repr=False, compare=False, kw_only=True)
+    _response: aiohttp.ClientResponse = field(repr=False, compare=False, kw_only=True)
 
     @property
     def content_type(self) -> str:
@@ -296,10 +306,10 @@ class LiveRunnerRegistration:
                 _LOG.warning("Skipping live runner unregister without heartbeat secret")
                 return
             try:
-                await _post_empty(
+                await post_empty(
                     _join_endpoint(self.orchestrator_url, f"/runners/{quote(self.runner_id, safe='')}/unregister"),
-                    {"Authorization": secret},
-                    self._timeout,
+                    headers={"Authorization": secret},
+                    timeout=self._timeout,
                 )
             except Exception:
                 _LOG.debug("Live runner unregister failed", exc_info=True)
@@ -797,7 +807,17 @@ async def call_runner(
                     headers=request_headers or None,
                 )
                 return LiveRunnerCallStream(
-                    resp.status, resp.headers, runner_url, runner, payment_session, session, resp,
+                    status=resp.status,
+                    headers=resp.headers,
+                    runner_url=runner_url,
+                    runner=runner,
+                    payment_session=None if payment_type == "fixed" else payment_session,
+                    session_id=session_id,
+                    server_payment_interval=(
+                        challenge.payment_interval_s if challenge is not None else None
+                    ),
+                    _session=session,
+                    _response=resp,
                 )
 
             data = await request_json(
@@ -819,6 +839,9 @@ async def call_runner(
                     or (data["session_id"].strip() if isinstance(data.get("session_id"), str) else "")
                 ),
                 payment_session=None if payment_type == "fixed" else payment_session,
+                server_payment_interval=(
+                    challenge.payment_interval_s if challenge is not None else None
+                ),
             )
         except LivepeerHTTPError as e:
             if e.status_code != 402:
@@ -836,6 +859,9 @@ class _RunnerPaymentChallenge:
     payment_params: str
     orchestrator_url: str
     manifest_id: str
+    # Orchestrator debit cadence in seconds (payment_interval_ms); None when
+    # the orchestrator does not report it.
+    payment_interval_s: Optional[float] = None
 
 
 def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentChallenge:
@@ -856,10 +882,16 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
     if not isinstance(manifest_id, str) or not manifest_id:
         raise LivepeerGatewayError("Live runner payment challenge missing manifest_id")
 
+    interval_ms = data.get("payment_interval_ms")
+    payment_interval_s: Optional[float] = None
+    if isinstance(interval_ms, (int, float)) and not isinstance(interval_ms, bool) and interval_ms > 0:
+        payment_interval_s = float(interval_ms) / 1000.0
+
     return _RunnerPaymentChallenge(
         payment_params=payment_params,
         orchestrator_url=orchestrator_url,
         manifest_id=manifest_id,
+        payment_interval_s=payment_interval_s,
     )
 
 
@@ -977,10 +1009,10 @@ async def stop_runner_session(
         url = _join_endpoint(control_url, "stop")
         if isinstance(token, str) and token.strip():
             request_headers = {"Livepeer-Session-Token": token}
-    await _post_empty(
+    await post_empty(
         url,
-        request_headers,
-        timeout,
+        headers=request_headers,
+        timeout=timeout,
     )
 
 
@@ -1144,25 +1176,6 @@ def _is_trickle_channel_response(value: object) -> bool:
         isinstance(value.get(key), str)
         for key in ("name", "channel_name", "url", "mime_type")
     ) and ("internal_url" not in value or isinstance(value.get("internal_url"), str))
-
-
-async def _post_empty(url: str, headers: dict[str, str], timeout: float) -> None:
-    try:
-        client_timeout = aiohttp.ClientTimeout(total=timeout)
-        connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(timeout=client_timeout, connector=connector) as session:
-            async with session.post(url, data=b"", headers=headers) as resp:
-                body = await resp.text()
-                if resp.status >= 400:
-                    raise LivepeerGatewayError(
-                        f"HTTP empty POST error: HTTP {resp.status}; body={body!r}"
-                    )
-    except LivepeerGatewayError:
-        raise
-    except getattr(aiohttp, "ClientConnectorError", ()) as e:
-        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
 
 
 def _detect_gpu_pynvml() -> Optional[LiveRunnerGPU]:
