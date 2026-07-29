@@ -738,6 +738,40 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
     )
 
 
+_FIXED_PRICE_UNIT = "fixed"
+
+
+def _runner_price_unit(runner: Optional[LiveRunnerInstance]) -> str:
+    """Return the runner's advertised pricing unit, lowercased.
+
+    The unit is read from the discovery/offering ``price_info`` carried on the
+    runner (``runner.raw["price_info"]["unit"]``). Returns ``""`` when the runner
+    or its price info is missing or malformed.
+    """
+    if runner is None:
+        return ""
+    price_info = runner.raw.get("price_info")
+    if not isinstance(price_info, dict):
+        return ""
+    unit = price_info.get("unit")
+    return unit.strip().lower() if isinstance(unit, str) else ""
+
+
+def _fixed_price_in_pixels(runner: Optional[LiveRunnerInstance]) -> Optional[int]:
+    """Unit count to bill for a runner's ``lv2v`` payment, or ``None``.
+
+    A fixed-price single-shot runner advertises ``price_info.unit == "fixed"`` and
+    the v0.9.0 orchestrator debits exactly one unit per generation (with
+    ``PixelsPerUnit == 1``). Return ``1`` so the gateway sends ``inPixels:1`` and
+    the fee equals the per-request fixed price. Return ``None`` for continuous
+    runners (e.g. ``720p``/``hour``) so the signer keeps its automatic 720p30
+    estimate and the request payload is unchanged.
+    """
+    if _runner_price_unit(runner) == _FIXED_PRICE_UNIT:
+        return 1
+    return None
+
+
 async def _get_runner_payment(
     challenge: _RunnerPaymentChallenge,
     *,
@@ -754,6 +788,7 @@ async def _get_runner_payment(
         manifest_id=challenge.manifest_id,
         orchestrator_url=challenge.orchestrator_url,
         capabilities=byoc_capabilities_from_app(app),
+        in_pixels=_fixed_price_in_pixels(runner),
     )
     payment = await session.get_payment()
     if not payment.payment:
