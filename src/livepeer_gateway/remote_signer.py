@@ -207,6 +207,7 @@ class LivePaymentSession:
         manifest_id: str,
         orchestrator_url: Optional[str] = None,
         capabilities: Optional[lp_rpc_pb2.Capabilities] = None,
+        in_pixels: Optional[int] = None,
         max_refresh_retries: int = 3,
     ) -> None:
         self._signer_url = signer_url
@@ -215,6 +216,12 @@ class LivePaymentSession:
         self._payment_params = payment_params
         self._manifest_id = manifest_id
         self._capabilities = capabilities
+        # Explicit unit count for the signer's `inPixels`. When set (e.g. 1 for a
+        # fixed-price single-shot live-runner generation) it is forwarded to
+        # /generate-live-payment and takes precedence over the signer's automatic
+        # continuous 720p30 estimate on the lv2v path. Left None for continuous
+        # live-video runners so their payload stays byte-identical.
+        self._in_pixels = in_pixels
         self._max_refresh_retries = max(0, int(max_refresh_retries))
         self._state: Optional[dict[str, Any]] = None
         self._orchestrator_url = orchestrator_url
@@ -290,6 +297,8 @@ class LivePaymentSession:
             "type": self._type,
             "ManifestID": self._manifest_id,
         }
+        if self._in_pixels is not None:
+            payload["inPixels"] = self._in_pixels
         if self._capabilities is not None:
             payload["capabilities"] = base64.b64encode(
                 self._capabilities.SerializeToString()
