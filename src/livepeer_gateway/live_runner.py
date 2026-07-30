@@ -746,6 +746,8 @@ async def call_runner(
 
     ``application/json`` and ``+json`` types parse into ``result.data``; anything else
     (an image, ndjson) comes back unparsed in ``result.content`` + ``result.content_type``.
+
+    The request asks for no particular format, so the app picks what it returns.
     """
     runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
     if not runner_url:
@@ -761,7 +763,9 @@ async def call_runner(
         payment_session: LivePaymentSession | None = None
         payment_type = ""
         session_id = ""
-        request_headers: dict[str, str] = {}
+        # No preferred format: the app, or the upstream it fronts, picks. Only
+        # control-plane calls ask for JSON.
+        request_headers: dict[str, str] = {"Accept": "*/*"}
         if signer_url:
             request_headers[_LIVE_RUNNER_PAYER_ADDRESS_HEADER] = payer_address
         # Pending challenge means payment is needed.
