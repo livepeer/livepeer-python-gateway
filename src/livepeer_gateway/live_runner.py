@@ -120,12 +120,22 @@ class LiveRunnerSession:
     app_url: str
     runner_url: str
     runner: LiveRunnerInstance | None = None
+    # Base URL for this session's control endpoints, as reported by the
+    # orchestrator when the session was reserved.
+    control_url: str = ""
     # True once the orchestrator reported this session gone, either because it
     # was stopped elsewhere or because it ran out of funds.
     released: bool = False
     _payment_task: Optional[asyncio.Task[None]] = field(
         default=None, repr=False, compare=False
     )
+
+    @property
+    def payment_url(self) -> str:
+        """This session's payment endpoint, or "" if it reported no control URL."""
+        if not self.control_url:
+            return ""
+        return _join_endpoint(self.control_url, "payment")
 
     def _start_payments(
         self,
