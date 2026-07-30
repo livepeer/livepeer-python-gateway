@@ -128,9 +128,11 @@ class MediaPublishConfig:
     # Timeout for rotating trickle transport segments if PyAV is idle.
     segment_post_idle_timeout_s: float = 25.0
 
+
 @dataclass(frozen=True)
 class TrackQueueStats:
     """Per-track queue statistics."""
+
     label: str
     frames_in: int
     frames_dropped_overflow: int
@@ -194,7 +196,12 @@ class MediaPublishStats:
         )
 
 
-_TRACK_STAT_KEYS = ("frames_in", "frames_dropped_overflow", "frames_dropped_debt", "frames_dropped_non_monotonic_pts")
+_TRACK_STAT_KEYS = (
+    "frames_in",
+    "frames_dropped_overflow",
+    "frames_dropped_debt",
+    "frames_dropped_non_monotonic_pts",
+)
 
 
 def _new_track_stats() -> dict[str, int]:
@@ -274,7 +281,9 @@ class MediaPublish:
         self.publish_url = publish_url
         self._channel_name = publish_url.rstrip("/").rsplit("/", 1)[-1]
         if not config.tracks:
-            raise ValueError("MediaPublishConfig.tracks must include at least one track")
+            raise ValueError(
+                "MediaPublishConfig.tracks must include at least one track"
+            )
 
         self._publisher = TricklePublisher(
             publish_url,
@@ -347,7 +356,9 @@ class MediaPublish:
                 )
                 self._audio_tracks.append(track_writer)
             else:
-                raise TypeError(f"Unsupported track config type: {type(track_config).__name__}")
+                raise TypeError(
+                    f"Unsupported track config type: {type(track_config).__name__}"
+                )
             self._tracks.append(track_writer)
 
         video_count = len(self._video_tracks)
@@ -356,7 +367,11 @@ class MediaPublish:
             count = video_count if track.kind == "video" else audio_count
             track._label = track.kind if count == 1 else f"{track.kind}_{track.index}"
 
-        video_configs = [track.config for track in self._video_tracks if isinstance(track.config, VideoOutputConfig)]
+        video_configs = [
+            track.config
+            for track in self._video_tracks
+            if isinstance(track.config, VideoOutputConfig)
+        ]
         self._segment_time_s = (
             min(float(track.keyframe_interval_s) for track in video_configs)
             if video_configs
@@ -370,7 +385,9 @@ class MediaPublish:
         self._active_segment_started_at: Optional[float] = None
 
         # Drain bytes for the rest of the current PyAV segment.
-        self._active_segment_drain: bool = False
+        self._segment_draining: bool = False
+        # A failed segment must not leave its rollover replacement open at EOF.
+        self._eof_close_pending: bool = False
 
     @property
     def tracks(self) -> tuple[MediaPublishTrack, ...]:
@@ -394,7 +411,9 @@ class MediaPublish:
         if self._closed:
             raise LivepeerGatewayError("MediaPublish is closed")
         if self._error:
-            raise LivepeerGatewayError(f"MediaPublish failed: {self._error}") from self._error
+            raise LivepeerGatewayError(
+                f"MediaPublish failed: {self._error}"
+            ) from self._error
         if track not in self._tracks:
             raise TypeError("MediaPublish track is not recognized")
         track._queue.resize(queue_size)
@@ -403,7 +422,9 @@ class MediaPublish:
         track = self._resolve_track_for_frame(frame)
         await self._write_frame_to_track(track, frame)
 
-    def _resolve_track_for_frame(self, frame: av.VideoFrame | av.AudioFrame) -> MediaPublishTrack:
+    def _resolve_track_for_frame(
+        self, frame: av.VideoFrame | av.AudioFrame
+    ) -> MediaPublishTrack:
         if isinstance(frame, av.VideoFrame):
             tracks = self._video_tracks
             kind = "video"
@@ -411,7 +432,9 @@ class MediaPublish:
             tracks = self._audio_tracks
             kind = "audio"
         else:
-            raise TypeError(f"write_frame expects av.VideoFrame or av.AudioFrame, got {type(frame).__name__}")
+            raise TypeError(
+                f"write_frame expects av.VideoFrame or av.AudioFrame, got {type(frame).__name__}"
+            )
         if not tracks:
             raise TypeError(f"MediaPublish {kind} track is not enabled")
         if len(tracks) > 1:
@@ -429,7 +452,9 @@ class MediaPublish:
         if self._closed:
             raise LivepeerGatewayError("MediaPublish is closed")
         if self._error:
-            raise LivepeerGatewayError(f"MediaPublish failed: {self._error}") from self._error
+            raise LivepeerGatewayError(
+                f"MediaPublish failed: {self._error}"
+            ) from self._error
 
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
@@ -438,12 +463,16 @@ class MediaPublish:
             raise TypeError("MediaPublish track is not recognized")
         if track.kind == "video":
             if not isinstance(frame, av.VideoFrame):
-                raise TypeError(f"Track kind {track.kind!r} expects av.VideoFrame, got {type(frame).__name__}")
+                raise TypeError(
+                    f"Track kind {track.kind!r} expects av.VideoFrame, got {type(frame).__name__}"
+                )
             if track not in self._video_tracks:
                 raise TypeError("MediaPublish video track is not enabled")
         elif track.kind == "audio":
             if not isinstance(frame, av.AudioFrame):
-                raise TypeError(f"Track kind {track.kind!r} expects av.AudioFrame, got {type(frame).__name__}")
+                raise TypeError(
+                    f"Track kind {track.kind!r} expects av.AudioFrame, got {type(frame).__name__}"
+                )
             if track not in self._audio_tracks:
                 raise TypeError("MediaPublish audio track is not enabled")
         else:
@@ -456,11 +485,15 @@ class MediaPublish:
         track._stats["frames_in"] += 1
         track._queue.put(frame)
 
-    async def _suppress_close_step(self, step_name: str, awaitable: Awaitable[Any]) -> None:
+    async def _suppress_close_step(
+        self, step_name: str, awaitable: Awaitable[Any]
+    ) -> None:
         try:
             await awaitable
         except Exception:
-            _LOG.warning("MediaPublish close suppressed %s failure", step_name, exc_info=True)
+            _LOG.warning(
+                "MediaPublish close suppressed %s failure", step_name, exc_info=True
+            )
 
     async def close(self) -> None:
         if self._closed:
@@ -476,9 +509,13 @@ class MediaPublish:
                     f"{track.kind} sentinel enqueue",
                     asyncio.to_thread(track._queue.put, _STOP),
                 )
-            await self._suppress_close_step("encoder join", asyncio.to_thread(self._thread.join, 2.0))
+            await self._suppress_close_step(
+                "encoder join", asyncio.to_thread(self._thread.join, 2.0)
+            )
             if self._thread.is_alive():
-                _LOG.warning("MediaPublish encoder thread still alive after join timeout")
+                _LOG.warning(
+                    "MediaPublish encoder thread still alive after join timeout"
+                )
 
         # Segment tasks may be blocked writing into trickle when the network
         # path is unhealthy; cancel them first so the close stays bounded.
@@ -589,7 +626,9 @@ class MediaPublish:
                 return track, item
         return None
 
-    def _stage_frame_before_open(self, track: MediaPublishTrack, frame: av.VideoFrame | av.AudioFrame) -> None:
+    def _stage_frame_before_open(
+        self, track: MediaPublishTrack, frame: av.VideoFrame | av.AudioFrame
+    ) -> None:
         if track._first_frame is None:
             track._first_frame = frame
         if self._first_frame_arrived_at is None:
@@ -686,16 +725,19 @@ class MediaPublish:
             sample_rate = int(
                 config.sample_rate
                 if config.sample_rate is not None
-                else (getattr(first_audio_frame, "sample_rate", 0) or _DEFAULT_AUDIO_SAMPLE_RATE)
+                else (
+                    getattr(first_audio_frame, "sample_rate", 0)
+                    or _DEFAULT_AUDIO_SAMPLE_RATE
+                )
             )
             layout = (
                 config.layout
                 if config.layout is not None
                 else (
-                str(first_audio_frame.layout.name)
-                if getattr(first_audio_frame, "layout", None) is not None
-                and getattr(first_audio_frame.layout, "name", None)
-                else _DEFAULT_AUDIO_LAYOUT
+                    str(first_audio_frame.layout.name)
+                    if getattr(first_audio_frame, "layout", None) is not None
+                    and getattr(first_audio_frame.layout, "name", None)
+                    else _DEFAULT_AUDIO_LAYOUT
                 )
             )
             track._audio_sample_rate = sample_rate
@@ -724,7 +766,9 @@ class MediaPublish:
             for frame in pending:
                 self._encode_track_frame(track, frame)
 
-    def _encode_track_frame(self, track: MediaPublishTrack, frame: av.VideoFrame | av.AudioFrame) -> None:
+    def _encode_track_frame(
+        self, track: MediaPublishTrack, frame: av.VideoFrame | av.AudioFrame
+    ) -> None:
         if track.kind == "video":
             assert isinstance(frame, av.VideoFrame)
             encode_started = time.monotonic()
@@ -740,7 +784,9 @@ class MediaPublish:
         assert isinstance(frame, av.AudioFrame)
         self._encode_audio_frame(track, frame)
 
-    def _encode_video_frame(self, track: MediaPublishTrack, frame: av.VideoFrame) -> tuple[bool, float]:
+    def _encode_video_frame(
+        self, track: MediaPublishTrack, frame: av.VideoFrame
+    ) -> tuple[bool, float]:
         if track._stream is None or self._container is None:
             raise RuntimeError("MediaPublish encoder is not initialized")
         config = track.config
@@ -765,7 +811,8 @@ class MediaPublish:
 
         if (
             track._last_keyframe_time is None
-            or current_time_s - track._last_keyframe_time >= float(config.keyframe_interval_s)
+            or current_time_s - track._last_keyframe_time
+            >= float(config.keyframe_interval_s)
         ):
             frame.pict_type = PictureType.I
             track._last_keyframe_time = current_time_s
@@ -777,7 +824,9 @@ class MediaPublish:
             self._container.mux(packet)
         return True, current_time_s
 
-    def _encode_audio_frame(self, track: MediaPublishTrack, frame: av.AudioFrame) -> None:
+    def _encode_audio_frame(
+        self, track: MediaPublishTrack, frame: av.AudioFrame
+    ) -> None:
         if track._stream is None or self._container is None:
             raise RuntimeError("MediaPublish audio encoder is not initialized")
         config = track.config
@@ -807,7 +856,9 @@ class MediaPublish:
 
         self._encode_audio_frame_converted(track, frame)
 
-    def _encode_audio_frame_converted(self, track: MediaPublishTrack, frame: av.AudioFrame) -> None:
+    def _encode_audio_frame_converted(
+        self, track: MediaPublishTrack, frame: av.AudioFrame
+    ) -> None:
         if track._stream is None or self._container is None:
             raise RuntimeError("MediaPublish audio encoder is not initialized")
 
@@ -854,7 +905,9 @@ class MediaPublish:
         current_time_s = now - track._wallclock_start
         return current_time_s, int(current_time_s * _OUT_TIME_BASE.denominator)
 
-    def _compute_audio_pts(self, track: MediaPublishTrack, frame: av.AudioFrame) -> tuple[float, int]:
+    def _compute_audio_pts(
+        self, track: MediaPublishTrack, frame: av.AudioFrame
+    ) -> tuple[float, int]:
         if frame.pts is not None and frame.time_base is not None:
             tb = _fraction_from_time_base(frame.time_base)
             current_time_s = float(Fraction(frame.pts) * tb)
@@ -871,7 +924,9 @@ class MediaPublish:
         sample_rate = track._audio_sample_rate
         if sample_rate is None:
             raise RuntimeError("MediaPublish audio sample rate is not initialized")
-        sample_rate_for_step = max(1, int(getattr(frame, "sample_rate", 0) or sample_rate))
+        sample_rate_for_step = max(
+            1, int(getattr(frame, "sample_rate", 0) or sample_rate)
+        )
         samples = max(0, int(getattr(frame, "samples", 0) or 0))
         step = int(round(samples * (_OUT_TIME_BASE.denominator / sample_rate_for_step)))
         track._next_out_pts = out_pts + max(1, step)
@@ -893,7 +948,8 @@ class MediaPublish:
         segment = self._active_segment
         self._active_segment = None
         self._active_segment_started_at = None
-        self._active_segment_drain = False
+        self._segment_draining = False
+        self._eof_close_pending = False
         if segment is None:
             return
         await segment.close()
@@ -901,7 +957,11 @@ class MediaPublish:
             self._stats["segments_completed"] += 1
 
     def _should_close_segment_after_loop(self) -> bool:
-        if self._closed or self._min_segment_wallclock_s <= 0:
+        if (
+            self._closed
+            or self._eof_close_pending
+            or self._min_segment_wallclock_s <= 0
+        ):
             return True
         started_at = self._active_segment_started_at
         if started_at is None:
@@ -957,14 +1017,14 @@ class MediaPublish:
                             segment_seq,
                             idle_timeout_s,
                         )
-                        await self._close_active_segment_locked(
-                            mark_completed=False
-                        )
+                        close_replacement_at_eof = self._segment_draining
+                        await self._close_active_segment_locked(mark_completed=False)
                         # If we've already consumed bytes from this PyAV
                         # segment, following bytes must be drained until EOF
                         # TODO: maybe make more keyframe-aware
                         if pipe_past_keyframe:
-                            self._active_segment_drain = True
+                            self._segment_draining = True
+                        self._eof_close_pending = close_replacement_at_eof
                         self._active_segment = await self._publisher.next()
                         self._active_segment_started_at = _MONOTONIC()
                         self._stats["segments_started"] += 1
@@ -975,7 +1035,7 @@ class MediaPublish:
                     pending_read = None
                     if not chunk:
                         break
-                    if self._active_segment_drain:
+                    if self._segment_draining:
                         # Drain until EOF after a write failure or a
                         # mid-segment idle cutover.
                         self._stats["bytes_drained"] += len(chunk)
@@ -987,7 +1047,7 @@ class MediaPublish:
                     try:
                         await segment.write(chunk)
                     except TrickleSegmentWriteError:
-                        self._active_segment_drain = True
+                        self._segment_draining = True
                         self._stats["segments_failed"] += 1
                         _LOG.warning(
                             "MediaPublish[%s] dropped segment seq=%s mid-stream; "
@@ -998,7 +1058,7 @@ class MediaPublish:
                         )
                 if self._should_close_segment_after_loop():
                     await self._close_active_segment_locked(
-                        mark_completed=not self._active_segment_drain
+                        mark_completed=not self._segment_draining
                     )
         except TricklePublisherTerminalError as e:
             # At this point, publisher.next() has exhausted its retries and the
@@ -1058,7 +1118,9 @@ class MediaPublish:
                 frames_in=track._stats["frames_in"],
                 frames_dropped_overflow=track._stats["frames_dropped_overflow"],
                 frames_dropped_debt=track._stats["frames_dropped_debt"],
-                frames_dropped_non_monotonic_pts=track._stats["frames_dropped_non_monotonic_pts"],
+                frames_dropped_non_monotonic_pts=track._stats[
+                    "frames_dropped_non_monotonic_pts"
+                ],
                 time_debt_s=track._queue.time_debt_s,
                 queue_depth=track._queue.qsize,
                 queue_media_time_s=track._queue.queue_media_time_s,
@@ -1112,7 +1174,9 @@ class _FrameQueue:
     - If media progress catches up relative to encode cost, debt shrinks.
     """
 
-    def __init__(self, *, maxsize: int, stats: dict[str, int], debt_skip: bool = False) -> None:
+    def __init__(
+        self, *, maxsize: int, stats: dict[str, int], debt_skip: bool = False
+    ) -> None:
         self._queue: queue.Queue[object] = queue.Queue(maxsize=maxsize)
         self._stats = stats
         self._debt_skip = debt_skip
@@ -1164,7 +1228,10 @@ class _FrameQueue:
                 # Overflow drops come off the head, so their media time should
                 # advance the "consumed" watermark just like a normal get.
                 self._track_get_media_time(dropped)
-        _LOG.error("MediaPublish frame queue put exceeded retry limit (%d); dropping item", max_retries)
+        _LOG.error(
+            "MediaPublish frame queue put exceeded retry limit (%d); dropping item",
+            max_retries,
+        )
         if item is not _STOP:
             self._stats["frames_dropped_overflow"] += 1
 
@@ -1218,7 +1285,9 @@ class _FrameQueue:
             self._track_get_media_time(candidate)
             candidate = next_item
 
-    def update_after_encode(self, *, encoded_media_time_s: float, encode_duration_s: float) -> None:
+    def update_after_encode(
+        self, *, encoded_media_time_s: float, encode_duration_s: float
+    ) -> None:
         if not self._debt_skip:
             return
         if self._last_encoded_media_time_s is None:
@@ -1227,8 +1296,12 @@ class _FrameQueue:
             return
 
         # Debt tracks wall-clock encode cost relative to media-time progress.
-        media_advance_s = max(0.0, encoded_media_time_s - self._last_encoded_media_time_s)
-        self._time_debt_s = max(0.0, self._time_debt_s + encode_duration_s - media_advance_s)
+        media_advance_s = max(
+            0.0, encoded_media_time_s - self._last_encoded_media_time_s
+        )
+        self._time_debt_s = max(
+            0.0, self._time_debt_s + encode_duration_s - media_advance_s
+        )
         self._last_encoded_media_time_s = encoded_media_time_s
 
     @property
