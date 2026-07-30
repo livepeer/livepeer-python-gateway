@@ -315,8 +315,7 @@ class LivePaymentSession:
         else is retried: a payment covers the time since the last one, so the
         next success settles the arrears.
         """
-        # Resolved per call rather than as a default argument so the cadence
-        # stays overridable at the module level.
+        # Not a default argument: those bind at import and freeze the constant.
         interval_s = PAYMENT_INTERVAL_S if interval_s is None else interval_s
         while True:
             await asyncio.sleep(interval_s)
