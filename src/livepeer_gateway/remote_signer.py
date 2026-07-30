@@ -314,8 +314,6 @@ class LivePaymentSession:
             await asyncio.sleep(interval_s)
             try:
                 await self.send_payment(payment_url=payment_url)
-            except asyncio.CancelledError:
-                raise
             except SkipPaymentCycle as e:
                 _LOG.debug("Payment loop skipped cycle: %s", e)
             except LivepeerHTTPError as e:
