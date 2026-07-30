@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -26,7 +27,7 @@ from aiohttp.helpers import parse_mimetype
 
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
-from .http import _request_body, open_stream, post_json, request_json
+from .http import _request_body, open_stream, post_empty, post_json, request_json
 from .remote_signer import (
     GetPaymentResponse,
     LivePaymentSession,
@@ -46,6 +47,9 @@ _RUNNER_PAYMENT_TYPES_BY_UNIT = {
     "720p-pixel-seconds": "lv2v",
     "fixed": "fixed",
 }
+# Metered types are billed for as long as the work runs, so they need ongoing
+# payments. Fixed pricing is settled by the upfront payment alone.
+_METERED_PAYMENT_TYPES = frozenset({"live", "lv2v"})
 
 # golang format duration, eg "10s"
 _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u00b5s|ms|s|m|h)\s*$")
@@ -130,6 +134,9 @@ class LiveRunnerCallResult:
     # Non-JSON responses (an image, say) arrive unparsed in `content`; `data` stays empty.
     content: Optional[bytes] = field(default=None, repr=False)
     content_type: str = ""
+    # Session-scoped payment endpoint for this call, when one could be built.
+    # Empty means payments fall back to the orchestrator's generic /payment.
+    payment_url: str = ""
 
 
 @dataclass
@@ -146,8 +153,14 @@ class LiveRunnerCallStream:
     runner_url: str
     runner: LiveRunnerInstance | None
     payment_session: LivePaymentSession | None
-    _session: aiohttp.ClientSession = field(repr=False, compare=False)
-    _response: aiohttp.ClientResponse = field(repr=False, compare=False)
+    # True once the orchestrator reported the backing session gone. The stream
+    # itself ends when the orchestrator cancels the proxied request.
+    released: bool = False
+    _session: aiohttp.ClientSession = field(repr=False, compare=False, kw_only=True)
+    _response: aiohttp.ClientResponse = field(repr=False, compare=False, kw_only=True)
+    _payment_task: Optional[asyncio.Task[None]] = field(
+        default=None, repr=False, compare=False, kw_only=True
+    )
 
     @property
     def content_type(self) -> str:
@@ -162,6 +175,9 @@ class LiveRunnerCallStream:
             yield line.decode(errors="replace").rstrip("\n")
 
     async def aclose(self) -> None:
+        # Stop funding first: no point minting a payment for a stream we are
+        # about to drop.
+        self._payment_task = await _stop_funding(self._payment_task)
         self._response.release()
         await self._session.close()
 
@@ -297,10 +313,10 @@ class LiveRunnerRegistration:
                 _LOG.warning("Skipping live runner unregister without heartbeat secret")
                 return
             try:
-                await _post_empty(
+                await post_empty(
                     _join_endpoint(self.orchestrator_url, f"/runners/{quote(self.runner_id, safe='')}/unregister"),
-                    {"Authorization": secret},
-                    self._timeout,
+                    headers={"Authorization": secret},
+                    timeout=self._timeout,
                 )
             except Exception:
                 _LOG.debug("Live runner unregister failed", exc_info=True)
@@ -792,6 +808,19 @@ async def call_runner(
             request_headers["Livepeer-Segment"] = payment.seg_creds or ""
             session_id = challenge.manifest_id
 
+        # Metered pricing keeps billing for as long as the work runs, so
+        # whoever holds the session open has to keep paying for it.
+        needs_funding = payment_session is not None and payment_type in _METERED_PAYMENT_TYPES
+        payment_url = (
+            _session_payment_url(
+                challenge.orchestrator_url if challenge is not None else "",
+                runner.runner_id if runner is not None else "",
+                session_id,
+            )
+            if needs_funding
+            else ""
+        )
+
         try:
             request_kwargs: dict[str, Any] = {"timeout": timeout}
             if request_headers:
@@ -806,16 +835,41 @@ async def call_runner(
                     payload=request_payload,
                     headers=request_headers or None,
                 )
-                return LiveRunnerCallStream(
-                    resp.status, resp.headers, runner_url, runner, payment_session, session, resp,
+                call_stream = LiveRunnerCallStream(
+                    status=resp.status,
+                    headers=resp.headers,
+                    runner_url=runner_url,
+                    runner=runner,
+                    payment_session=None if payment_type == "fixed" else payment_session,
+                    _session=session,
+                    _response=resp,
                 )
+                # The stream outlives this call, so it owns the funding;
+                # aclose() stops both.
+                if needs_funding:
+                    call_stream._payment_task = _start_funding(
+                        cast(LivePaymentSession, payment_session),
+                        payment_url,
+                        lambda: setattr(call_stream, "released", True),
+                    )
+                return call_stream
 
-            body, content_type = await _request_body(
-                runner_url,
-                method=method,
-                payload=request_payload,
-                **request_kwargs,
+            # A metered call is billed while we wait on it, so fund it for
+            # exactly as long as the request is in flight.
+            pay_task = (
+                _start_funding(cast(LivePaymentSession, payment_session), payment_url)
+                if needs_funding
+                else None
             )
+            try:
+                body, content_type = await _request_body(
+                    runner_url,
+                    method=method,
+                    payload=request_payload,
+                    **request_kwargs,
+                )
+            finally:
+                await _stop_funding(pay_task)
             # Non-JSON bodies (an image, ndjson) are handed back unparsed in `content`.
             is_json = _is_json_content_type(content_type)
             data: dict[str, Any] = {}
@@ -842,6 +896,7 @@ async def call_runner(
                 payment_session=None if payment_type == "fixed" else payment_session,
                 content=None if is_json else body,
                 content_type=content_type,
+                payment_url=payment_url,
             )
         except LivepeerHTTPError as e:
             if e.status_code != 402:
@@ -884,6 +939,49 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
         orchestrator_url=orchestrator_url,
         manifest_id=manifest_id,
     )
+
+
+def _session_payment_url(orchestrator_url: str, runner_id: str, session_id: str) -> str:
+    """Build the session-scoped payment endpoint for a live runner session.
+
+    Unlike the orchestrator's generic ``/payment``, which credits the payer
+    balance and returns 200 whether or not the session exists, this endpoint
+    404s once the session is released, which is the only signal a payment loop
+    gets that it is funding nothing. Returns "" when a part is missing, in
+    which case payments fall back to the generic endpoint.
+    """
+    if not (orchestrator_url and runner_id and session_id):
+        return ""
+    try:
+        return _join_endpoint(
+            orchestrator_url,
+            f"/apps/{quote(runner_id, safe='')}/session/{quote(session_id, safe='')}/payment",
+        )
+    except LivepeerGatewayError:
+        return ""
+
+
+def _start_funding(
+    payment_session: LivePaymentSession,
+    payment_url: str,
+    on_released: Optional[Callable[[], None]] = None,
+) -> asyncio.Task[None]:
+    """Run payments in the background for as long as the caller keeps the task."""
+
+    async def _fund() -> None:
+        released = await payment_session.run_payments(payment_url=payment_url or None)
+        if released and on_released is not None:
+            on_released()
+
+    return asyncio.create_task(_fund())
+
+
+async def _stop_funding(task: Optional[asyncio.Task[None]]) -> None:
+    if task is not None and not task.done():
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    return None
 
 
 async def _get_runner_payment(
@@ -1000,10 +1098,10 @@ async def stop_runner_session(
         url = _join_endpoint(control_url, "stop")
         if isinstance(token, str) and token.strip():
             request_headers = {"Livepeer-Session-Token": token}
-    await _post_empty(
+    await post_empty(
         url,
-        request_headers,
-        timeout,
+        headers=request_headers,
+        timeout=timeout,
     )
 
 
@@ -1172,25 +1270,6 @@ def _is_trickle_channel_response(value: object) -> bool:
         isinstance(value.get(key), str)
         for key in ("name", "channel_name", "url", "mime_type")
     ) and ("internal_url" not in value or isinstance(value.get("internal_url"), str))
-
-
-async def _post_empty(url: str, headers: dict[str, str], timeout: float) -> None:
-    try:
-        client_timeout = aiohttp.ClientTimeout(total=timeout)
-        connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(timeout=client_timeout, connector=connector) as session:
-            async with session.post(url, data=b"", headers=headers) as resp:
-                body = await resp.text()
-                if resp.status >= 400:
-                    raise LivepeerGatewayError(
-                        f"HTTP empty POST error: HTTP {resp.status}; body={body!r}"
-                    )
-    except LivepeerGatewayError:
-        raise
-    except getattr(aiohttp, "ClientConnectorError", ()) as e:
-        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
-    except (TimeoutError, aiohttp.ClientError) as e:
-        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
 
 
 def _detect_gpu_pynvml() -> LiveRunnerGPU | None:
