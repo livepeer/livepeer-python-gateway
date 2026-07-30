@@ -758,7 +758,7 @@ def _runner_price_unit(runner: Optional[LiveRunnerInstance]) -> str:
 
 
 def _fixed_price_in_pixels(runner: Optional[LiveRunnerInstance]) -> Optional[int]:
-    """Unit count to bill for a runner's ``lv2v`` payment, or ``None``.
+    """Unit count to bill for a runner's payment, or ``None``.
 
     A fixed-price single-shot runner advertises ``price_info.unit == "fixed"`` and
     the v0.9.0 orchestrator debits exactly one unit per generation (with
@@ -766,10 +766,39 @@ def _fixed_price_in_pixels(runner: Optional[LiveRunnerInstance]) -> Optional[int
     the fee equals the per-request fixed price. Return ``None`` for continuous
     runners (e.g. ``720p``/``hour``) so the signer keeps its automatic 720p30
     estimate and the request payload is unchanged.
+
+    Note this is belt-and-braces: under the ``fixed`` job type the signer sets
+    ``billableUnits = 1`` itself, so ``inPixels`` is not what makes the fee right —
+    :func:`_payment_job_type` is.
     """
     if _runner_price_unit(runner) == _FIXED_PRICE_UNIT:
         return 1
     return None
+
+
+def _payment_job_type(runner: Optional[LiveRunnerInstance]) -> str:
+    """Job type the signer should bill this runner under.
+
+    go-livepeer v0.9.0 accepts ``live``, ``lv2v`` and ``fixed``, and derives the
+    billable units from it (``server/remote_signer.go``)::
+
+        lv2v  -> billableUnits = pixelsPerSec * billableSecs   (inPixels DISCARDED)
+        live  -> billableUnits = ceil(billableSecs)
+        fixed -> billableUnits = 1
+
+    A fixed-price single-shot runner must bill exactly one unit, so it needs
+    ``fixed``. Sending ``lv2v`` for one is not merely imprecise: the signer throws
+    ``inPixels`` away and substitutes its continuous 720p30 estimate over a 60s
+    preload — 1280*720*30*60 = 1,658,880,000 units — inflating the fee ~1.66e9x.
+    ``numTickets = ceil(fee / ticketEV)`` then overflows the orchestrator's
+    100-ticket guard and every payment is rejected with
+    ``numTickets ... exceeds maximum of 100``.
+
+    Continuous runners keep ``lv2v``, so streaming behaviour is unchanged.
+    """
+    if _runner_price_unit(runner) == _FIXED_PRICE_UNIT:
+        return _FIXED_PRICE_UNIT
+    return "lv2v"
 
 
 async def _get_runner_payment(
@@ -783,7 +812,7 @@ async def _get_runner_payment(
     session = LivePaymentSession(
         signer_url=signer_url,
         signer_headers=signer_headers,
-        type="lv2v",
+        type=_payment_job_type(runner),
         payment_params=challenge.payment_params,
         manifest_id=challenge.manifest_id,
         orchestrator_url=challenge.orchestrator_url,
