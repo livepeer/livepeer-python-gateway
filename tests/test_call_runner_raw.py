@@ -3,7 +3,7 @@
 Single-document JSON responses (``application/json`` or an RFC 6839 ``+json``
 suffix) keep today's behavior: parsed into ``result.data``, strict about being an
 object. Anything else — binary, or a multi-document format like ndjson — returns
-the body unparsed in ``result.raw`` with ``result.content_type`` set.
+the body unparsed in ``result.content`` with ``result.content_type`` set.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def test_json_response_unchanged():
     result = _run(app, scenario)
     assert result.data == {"message": "hello", "session_id": " s1 "}
     assert result.session_id == "s1"
-    assert result.raw is None
+    assert result.content is None
     assert result.content_type == "application/json"
 
 
@@ -64,7 +64,7 @@ def test_binary_response_returns_raw():
         return await call_runner(f"{base}/img", payload={"prompt": "x"})
 
     result = _run(app, scenario)
-    assert result.raw == FAKE_JPEG
+    assert result.content == FAKE_JPEG
     assert result.content_type == "image/jpeg"
     assert result.data == {}
 
@@ -85,7 +85,7 @@ def test_json_suffix_content_type_is_parsed():
 
     result = _run(app, scenario)
     assert result.data == {"message": "hello"}
-    assert result.raw is None
+    assert result.content is None
     assert result.content_type == "application/vnd.acme.v1+json"
 
 
@@ -104,7 +104,7 @@ def test_ndjson_returns_raw():
         return await call_runner(f"{base}/ndjson", payload={})
 
     result = _run(app, scenario)
-    assert result.raw == body
+    assert result.content == body
     assert result.content_type == "application/x-ndjson"
     assert result.data == {}
 

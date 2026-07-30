@@ -127,8 +127,8 @@ class LiveRunnerCallResult:
         repr=False,
         compare=False,
     )
-    # Non-JSON responses (an image, say) arrive unparsed in `raw`; `data` stays empty.
-    raw: Optional[bytes] = field(default=None, repr=False)
+    # Non-JSON responses (an image, say) arrive unparsed in `content`; `data` stays empty.
+    content: Optional[bytes] = field(default=None, repr=False)
     content_type: str = ""
 
 
@@ -745,7 +745,7 @@ async def call_runner(
     one upfront payment. Raises ``LivepeerHTTPError`` on non-402 errors.
 
     ``application/json`` and ``+json`` types parse into ``result.data``; anything else
-    (an image, ndjson) comes back unparsed in ``result.raw`` + ``result.content_type``.
+    (an image, ndjson) comes back unparsed in ``result.content`` + ``result.content_type``.
     """
     runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
     if not runner_url:
@@ -806,18 +806,18 @@ async def call_runner(
                     resp.status, resp.headers, runner_url, runner, payment_session, session, resp,
                 )
 
-            raw, content_type = await request_data(
+            body, content_type = await request_data(
                 runner_url,
                 method=method,
                 payload=request_payload,
                 **request_kwargs,
             )
-            # Non-JSON bodies (an image, ndjson) are handed back unparsed in `raw`.
+            # Non-JSON bodies (an image, ndjson) are handed back unparsed in `content`.
             is_json = _is_json_content_type(content_type)
             data: dict[str, Any] = {}
             if is_json:
                 try:
-                    data = json.loads(raw)
+                    data = json.loads(body)
                 except json.JSONDecodeError as e:
                     raise LivepeerGatewayError(
                         f"HTTP JSON error: endpoint did not return valid JSON: {e} "
@@ -836,7 +836,7 @@ async def call_runner(
                     or (data["session_id"].strip() if isinstance(data.get("session_id"), str) else "")
                 ),
                 payment_session=None if payment_type == "fixed" else payment_session,
-                raw=None if is_json else raw,
+                content=None if is_json else body,
                 content_type=content_type,
             )
         except LivepeerHTTPError as e:
