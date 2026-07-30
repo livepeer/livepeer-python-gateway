@@ -16,14 +16,11 @@ import aiohttp
 
 from .channel_reader import ChannelReader
 from .capabilities import byoc_capabilities_from_app
-from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired, SkipPaymentCycle
+from .errors import LivepeerGatewayError, SignerRefreshRequired, SkipPaymentCycle
+from .lr_compat import LivepeerHTTPError
 from .http import post_json, request_json
-from .remote_signer import (
-    GetPaymentResponse,
-    LivePaymentSession,
-    _freeze_headers,
-    get_signer_info,
-)
+from .remote_signer import GetPaymentResponse, _freeze_headers
+from .lr_compat import LivePaymentSession, get_signer_info
 
 _LOG = logging.getLogger(__name__)
 
@@ -653,6 +650,7 @@ async def call_runner(
             try:
                 payment_session, payment = await _get_runner_payment(
                     challenge,
+                    runner_url=runner_url,
                     signer_url=signer_url or "",
                     signer_headers=signer_headers,
                     runner=runner,
@@ -776,27 +774,36 @@ def _fixed_price_in_pixels(runner: Optional[LiveRunnerInstance]) -> Optional[int
     return None
 
 
-def _payment_job_type(runner: Optional[LiveRunnerInstance]) -> str:
-    """Job type the signer should bill this runner under.
+def _payment_job_type(
+    runner: Optional[LiveRunnerInstance], runner_url: str = ""
+) -> str:
+    """Job type the signer should bill this call under.
 
-    go-livepeer v0.9.0 accepts ``live``, ``lv2v`` and ``fixed``, and derives the
-    billable units from it (``server/remote_signer.go``)::
+    v0.9.0 derives billable units from the type (``server/remote_signer.go``)::
 
         lv2v  -> billableUnits = pixelsPerSec * billableSecs   (inPixels DISCARDED)
         live  -> billableUnits = ceil(billableSecs)
         fixed -> billableUnits = 1
 
-    A fixed-price single-shot runner must bill exactly one unit, so it needs
-    ``fixed``. Sending ``lv2v`` for one is not merely imprecise: the signer throws
-    ``inPixels`` away and substitutes its continuous 720p30 estimate over a 60s
-    preload — 1280*720*30*60 = 1,658,880,000 units — inflating the fee ~1.66e9x.
-    ``numTickets = ceil(fee / ticketEV)`` then overflows the orchestrator's
-    100-ticket guard and every payment is rejected with
-    ``numTickets ... exceeds maximum of 100``.
+    A fixed-price single-shot generation must bill ONE unit. Billing it as ``lv2v``
+    makes the signer substitute its continuous 720p30-over-60s estimate
+    (1280*720*30*60 = 1,658,880,000 units), inflating the fee ~1.66e9x so
+    ``numTickets`` overflows the orchestrator's 100-ticket guard.
 
-    Continuous runners keep ``lv2v``, so streaming behaviour is unchanged.
+    Resolution order:
+      1. the runner's advertised ``price_info.unit`` when the caller passed a runner
+      2. otherwise the URL shape — v0.9.0 serves single-shot at
+         ``/apps/{id}/app/{path}`` and persistent sessions at ``/apps/{id}/session``,
+         and single-shot runners are fixed-price by construction. Callers that do
+         not carry discovery metadata (e.g. an SDK that only knows the app URL)
+         would otherwise silently fall back to ``lv2v`` and fail every payment.
+
+    Anything else keeps ``lv2v``, so streaming/persistent billing is unchanged.
     """
-    if _runner_price_unit(runner) == _FIXED_PRICE_UNIT:
+    unit = _runner_price_unit(runner)
+    if unit:
+        return _FIXED_PRICE_UNIT if unit == _FIXED_PRICE_UNIT else "lv2v"
+    if "/app/" in (runner_url or ""):
         return _FIXED_PRICE_UNIT
     return "lv2v"
 
@@ -807,12 +814,13 @@ async def _get_runner_payment(
     signer_url: str,
     signer_headers: Optional[dict[str, str]],
     runner: Optional[LiveRunnerInstance] = None,
+    runner_url: str = "",
 ) -> tuple[LivePaymentSession, GetPaymentResponse]:
     app = runner.app if runner is not None else ""
     session = LivePaymentSession(
         signer_url=signer_url,
         signer_headers=signer_headers,
-        type=_payment_job_type(runner),
+        type=_payment_job_type(runner, runner_url),
         payment_params=challenge.payment_params,
         manifest_id=challenge.manifest_id,
         orchestrator_url=challenge.orchestrator_url,
