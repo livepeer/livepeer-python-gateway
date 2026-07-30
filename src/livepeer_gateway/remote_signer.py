@@ -23,14 +23,7 @@ from .errors import (
 )
 _LOG = logging.getLogger(__name__)
 
-# Client payment cadence. The orchestrator debits metered sessions every
-# -livePaymentInterval (5s by default) and drops the session on the first tick
-# it cannot cover, so pay comfortably ahead of it.
-#
-# TODO: drive this from the orchestrator instead of guessing. Once
-# livepeer/go-livepeer#4001 lands, payment challenges carry
-# payment_interval_ms; read it there and pass it as run_payments(interval_s=),
-# keeping this as the fallback for orchestrators that do not report one.
+# Must stay under the signer's opening payment: 10s per-second, 60s pixel.
 PAYMENT_INTERVAL_S = 3.0
 
 @dataclass(frozen=True)
