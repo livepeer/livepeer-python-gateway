@@ -325,9 +325,9 @@ class LivePaymentSession:
             except SkipPaymentCycle as e:
                 _LOG.debug("Payment loop skipped cycle: %s", e)
             except LivepeerHTTPError as e:
-                # 404 session released, 409 fixed price, 403 session/payment
-                # mismatch: all terminal, and paying on would mint tickets the
-                # orchestrator will never honor.
+                # A 4xx will not change on a retry (404 gone, 409 fixed price,
+                # 403 mismatch), so stop rather than mint tickets nobody will
+                # honour. 408 and 429 are the two that do ask to be retried.
                 if 400 <= e.status_code < 500 and e.status_code not in (408, 429):
                     _LOG.info("Payment loop stopping (HTTP %d): %s", e.status_code, e)
                     return e.status_code == 404
