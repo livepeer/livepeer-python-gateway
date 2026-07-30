@@ -5,6 +5,28 @@ uv sync --extra dev
 uv run generate-lp-rpc
 ```
 
+## Tests
+
+Install the locked test dependencies and run the complete pytest suite:
+
+```
+uv sync --locked --group test
+uv run --group test pytest
+```
+
+Pass a test file or node ID to pytest for a focused run:
+
+```
+uv run --group test pytest tests/test_live_runner.py
+uv run --group test pytest tests/test_live_runner.py::TestLiveRunnerHelpers::test_parse_go_duration
+```
+
+Run the suite with the configured line and branch coverage:
+
+```
+uv run --group test pytest --cov=livepeer_gateway --cov-branch --cov-report=term-missing
+```
+
 ## Usage Examples
 
 First install dependencies for example code

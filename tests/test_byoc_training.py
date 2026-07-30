@@ -16,8 +16,6 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 from urllib.request import Request
 
-import pytest
-
 from livepeer_gateway.byoc import (
     ByocJobRequest,
     ByocTrainingRequest,
