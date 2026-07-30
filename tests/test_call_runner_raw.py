@@ -1,7 +1,8 @@
 """Tests for non-JSON (raw byte) responses in call_runner.
 
-JSON responses (by content type) keep today's behavior: parsed into
-``result.data``, strict about being an object. Any other content type returns
+Single-document JSON responses (``application/json`` or an RFC 6839 ``+json``
+suffix) keep today's behavior: parsed into ``result.data``, strict about being an
+object. Anything else — binary, or a multi-document format like ndjson — returns
 the body unparsed in ``result.raw`` with ``result.content_type`` set.
 """
 
@@ -68,6 +69,46 @@ def test_binary_response_returns_raw():
     assert result.data == {}
 
 
+def test_json_suffix_content_type_is_parsed():
+    """RFC 6839 ``+json`` types are single JSON documents, so they parse."""
+
+    async def handler(request):
+        return web.Response(
+            text='{"message": "hello"}', content_type="application/vnd.acme.v1+json"
+        )
+
+    app = web.Application()
+    app.router.add_post("/vnd", handler)
+
+    async def scenario(base):
+        return await call_runner(f"{base}/vnd", payload={})
+
+    result = _run(app, scenario)
+    assert result.data == {"message": "hello"}
+    assert result.raw is None
+    assert result.content_type == "application/vnd.acme.v1+json"
+
+
+def test_ndjson_returns_raw():
+    """Multi-document formats json.loads can't parse come back as bytes."""
+
+    body = b'{"token": "Hello"}\n{"token": " world"}\n'
+
+    async def handler(request):
+        return web.Response(body=body, content_type="application/x-ndjson")
+
+    app = web.Application()
+    app.router.add_post("/ndjson", handler)
+
+    async def scenario(base):
+        return await call_runner(f"{base}/ndjson", payload={})
+
+    result = _run(app, scenario)
+    assert result.raw == body
+    assert result.content_type == "application/x-ndjson"
+    assert result.data == {}
+
+
 def test_invalid_json_with_json_content_type_raises():
     async def handler(request):
         return web.Response(text="not json", content_type="application/json")
@@ -78,8 +119,10 @@ def test_invalid_json_with_json_content_type_raises():
     async def scenario(base):
         return await call_runner(f"{base}/bad", payload={})
 
-    with pytest.raises(LivepeerGatewayError, match="did not return valid JSON"):
+    with pytest.raises(LivepeerGatewayError, match="did not return valid JSON") as excinfo:
         _run(app, scenario)
+    # The content type is in the message: it is what routed us into parsing.
+    assert "content_type=application/json" in str(excinfo.value)
 
 
 def test_json_array_still_rejected():

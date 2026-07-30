@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from urllib.parse import quote, urlparse, urlunparse
 
 import aiohttp
+from aiohttp.helpers import parse_mimetype
 
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
@@ -744,9 +745,8 @@ async def call_runner(
     paid via the signer and retried (up to ``max_payment_challenge_retries``), one job,
     one upfront payment. Raises ``LivepeerHTTPError`` on non-402 errors.
 
-    JSON responses (by content type) are parsed into ``result.data``; anything else
-    (an image, say) is returned unparsed in ``result.raw`` with ``result.content_type``
-    set.
+    ``application/json`` and ``+json`` types parse into ``result.data``; anything else
+    (an image, ndjson) comes back unparsed in ``result.raw`` + ``result.content_type``.
     """
     runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
     if not runner_url:
@@ -813,27 +813,21 @@ async def call_runner(
                 payload=request_payload,
                 **request_kwargs,
             )
-            if "json" not in content_type.lower():
-                # Non-JSON body (an image, say): hand back the bytes unparsed.
-                return LiveRunnerCallResult(
-                    {},
-                    runner_url=runner_url,
-                    runner=runner,
-                    session_id=session_id,
-                    payment_session=None if payment_type == "fixed" else payment_session,
-                    raw=raw,
-                    content_type=content_type,
-                )
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError as e:
-                raise LivepeerGatewayError(
-                    f"HTTP JSON error: endpoint did not return valid JSON: {e} (url={runner_url})"
-                ) from e
-            if not isinstance(data, dict):
-                raise LivepeerGatewayError(
-                    f"Live runner call expected JSON object, got {type(data).__name__}"
-                )
+            # Non-JSON bodies (an image, ndjson) are handed back unparsed in `raw`.
+            is_json = _is_json_content_type(content_type)
+            data: dict[str, Any] = {}
+            if is_json:
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError as e:
+                    raise LivepeerGatewayError(
+                        f"HTTP JSON error: endpoint did not return valid JSON: {e} "
+                        f"(url={runner_url}, content_type={content_type})"
+                    ) from e
+                if not isinstance(data, dict):
+                    raise LivepeerGatewayError(
+                        f"Live runner call expected JSON object, got {type(data).__name__}"
+                    )
             return LiveRunnerCallResult(
                 data,
                 runner_url=runner_url,
@@ -843,6 +837,7 @@ async def call_runner(
                     or (data["session_id"].strip() if isinstance(data.get("session_id"), str) else "")
                 ),
                 payment_session=None if payment_type == "fixed" else payment_session,
+                raw=None if is_json else raw,
                 content_type=content_type,
             )
         except LivepeerHTTPError as e:
@@ -1160,6 +1155,11 @@ def _validate_trickle_channel_requests(channels: list[LiveRunnerTrickleChannelRe
             raise TypeError("trickle channel name must be str")
         if not isinstance(channel.get("mime_type"), str):
             raise TypeError("trickle channel mime_type must be str")
+
+
+def _is_json_content_type(content_type: str) -> bool:
+    mime = parse_mimetype(content_type)
+    return mime.subtype == "json" or mime.suffix == "json"
 
 
 def _is_trickle_channel_response(value: object) -> bool:
