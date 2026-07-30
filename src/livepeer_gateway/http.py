@@ -403,6 +403,21 @@ async def get_json(
     return await request_json(url, headers=headers, timeout=timeout)
 
 
+async def post_empty(
+    url: str,
+    *,
+    headers: Optional[dict[str, str]] = None,
+    timeout: float = 5.0,
+) -> None:
+    """POST an empty body to ``url`` and discard the response."""
+    await _request_body(
+        url,
+        method="POST",
+        headers=headers,
+        timeout=timeout,
+    )
+
+
 def _parse_http_url(url: str, *, context: str = "URL") -> ParseResult:
     """
     Normalize a URL for HTTP(S) endpoints.
