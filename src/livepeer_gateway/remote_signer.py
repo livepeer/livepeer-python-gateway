@@ -298,14 +298,22 @@ class LivePaymentSession:
     ) -> bool:
         """Keep a metered session funded until cancelled or the session ends.
 
-        Returns True when the orchestrator reports the session gone, so the
-        owner can surface it as released; returns False for the other terminal
-        rejections. Cancel the task to stop funding.
+        The orchestrator debits the session's prepaid balance on its own
+        interval and drops the session on the first tick it cannot cover, so
+        whoever holds a session open runs this for as long as they hold it.
+        Cancel the task to stop. The caller pays upfront, so the first payment
+        here waits one ``interval_s`` (default ``PAYMENT_INTERVAL_S``).
 
-        The caller pays upfront before starting this loop, so the first
-        follow-up waits one interval. A payment covers the time since the
-        previous one, so transient failures are retried rather than fatal:
-        the next payment settles the arrears.
+        ``payment_url`` should be the session-scoped endpoint, which 404s once
+        the session is gone; without it payments fall back to the
+        orchestrator's generic ``/payment``, which credits the balance whether
+        or not the session still exists.
+
+        Returns True when the session is reported gone, so the owner can
+        surface it as released, and False on the other terminal rejections
+        (fixed price, or credentials naming a different session). Everything
+        else is retried: a payment covers the time since the last one, so the
+        next success settles the arrears.
         """
         # Resolved per call rather than as a default argument so the cadence
         # stays overridable at the module level.
