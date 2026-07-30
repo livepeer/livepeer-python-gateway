@@ -289,7 +289,7 @@ class LivePaymentSession:
         self,
         *,
         payment_url: Optional[str] = None,
-        interval_s: float = PAYMENT_INTERVAL_S,
+        interval_s: Optional[float] = None,
     ) -> bool:
         """Keep a metered session funded until cancelled or the session ends.
 
@@ -302,6 +302,9 @@ class LivePaymentSession:
         previous one, so transient failures are retried rather than fatal:
         the next payment settles the arrears.
         """
+        # Resolved per call rather than as a default argument so the cadence
+        # stays overridable at the module level.
+        interval_s = PAYMENT_INTERVAL_S if interval_s is None else interval_s
         while True:
             await asyncio.sleep(interval_s)
             try:
