@@ -300,12 +300,18 @@ async def reserve_session(
         raise LivepeerGatewayError("runner session response missing session_id")
     if not isinstance(app_url, str) or not app_url.strip():
         raise LivepeerGatewayError("runner session response missing app_url")
-    return LiveRunnerSession(
+    session = LiveRunnerSession(
         session_id=session_id.strip(),
         app_url=app_url.strip(),
         runner_url=result.runner_url,
         runner=result.runner,
     )
+    # A metered session is billed for as long as it is held, so it funds
+    # itself from here until it is closed. Fixed-price and offchain
+    # reservations have no payment session and need nothing further.
+    if result.payment_session is not None:
+        session._start_payments(result.payment_session, result.payment_url)
+    return session
 
 
 def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list[LiveRunnerInstance]:

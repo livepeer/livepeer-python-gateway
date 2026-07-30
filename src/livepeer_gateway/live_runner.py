@@ -106,12 +106,56 @@ class LiveRunnerInstance:
     price_info: LiveRunnerPriceInfo | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class LiveRunnerSession:
+    """A reserved live runner session.
+
+    A metered session is billed for as long as it is held, so on-chain
+    sessions fund themselves from the moment they are reserved until they are
+    closed. Use it as an async context manager (or call ``aclose()``) to
+    release the session's resources.
+    """
+
     session_id: str
     app_url: str
     runner_url: str
     runner: LiveRunnerInstance | None = None
+    # True once the orchestrator reported this session gone, either because it
+    # was stopped elsewhere or because it ran out of funds.
+    released: bool = False
+    _payment_task: Optional[asyncio.Task[None]] = field(
+        default=None, repr=False, compare=False
+    )
+
+    def _start_payments(
+        self,
+        payment_session: LivePaymentSession,
+        payment_url: str = "",
+    ) -> None:
+        if self._payment_task is not None:
+            return
+        self._payment_task = _start_funding(
+            payment_session,
+            payment_url,
+            lambda: setattr(self, "released", True),
+        )
+
+    async def stop_payments(self) -> None:
+        """Stop funding this session without releasing it.
+
+        Useful to hand funding to something else, or to let a session lapse
+        deliberately. Closing the session stops payments too.
+        """
+        self._payment_task = await _stop_funding(self._payment_task)
+
+    async def aclose(self) -> None:
+        await self.stop_payments()
+
+    async def __aenter__(self) -> LiveRunnerSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
 
 
 @dataclass(frozen=True)
@@ -1054,25 +1098,6 @@ def _live_runner_price_info_from_json(value: object) -> LiveRunnerPriceInfo | No
         unit=unit.strip().lower() if isinstance(unit, str) else "",
     )
 
-
-def _live_runner_session_from_json(
-    data: dict[str, Any],
-    *,
-    runner_url: str,
-    runner: LiveRunnerInstance | None,
-) -> LiveRunnerSession:
-    session_id = data.get("session_id")
-    app_url = data.get("app_url")
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise LivepeerGatewayError("Live runner session reserve response missing session_id")
-    if not isinstance(app_url, str) or not app_url.strip():
-        raise LivepeerGatewayError("Live runner session reserve response missing app_url")
-    return LiveRunnerSession(
-        session_id=session_id.strip(),
-        app_url=app_url.strip(),
-        runner_url=runner_url,
-        runner=runner,
-    )
 
 async def stop_runner_session(
     session: LiveRunnerSession | LiveRunnerSessionRequest,
