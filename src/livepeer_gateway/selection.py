@@ -300,24 +300,17 @@ async def reserve_session(
         raise LivepeerGatewayError("runner session response missing session_id")
     if not isinstance(app_url, str) or not app_url.strip():
         raise LivepeerGatewayError("runner session response missing app_url")
-    control_url = result.data.get("control_url")
     session = LiveRunnerSession(
         session_id=session_id.strip(),
         app_url=app_url.strip(),
         runner_url=result.runner_url,
         runner=result.runner,
-        control_url=control_url.strip() if isinstance(control_url, str) else "",
+        control_url=_string_value(result.data.get("control_url")),
     )
-    # A metered session is billed for as long as it is held, so it funds
-    # itself from here until it is closed. Fixed-price and offchain
-    # reservations have no payment session and need nothing further.
+
+    # No payment session means fixed price or offchain: nothing to fund.
     if result.payment_session is not None:
-        # The reservation response carries the session's control URL, so
-        # prefer it over the endpoint call_runner had to derive.
-        session._start_payments(
-            result.payment_session,
-            session.payment_url or result.payment_url,
-        )
+        session._start_payments(result.payment_session)
     return session
 
 

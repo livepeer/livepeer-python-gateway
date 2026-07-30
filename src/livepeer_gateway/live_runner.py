@@ -123,8 +123,7 @@ class LiveRunnerSession:
     # Base URL for this session's control endpoints, as reported by the
     # orchestrator when the session was reserved.
     control_url: str = ""
-    # True once the orchestrator reported this session gone, either because it
-    # was stopped elsewhere or because it ran out of funds.
+    # True once the orchestrator reported this session gone.
     released: bool = False
     _payment_task: Optional[asyncio.Task[None]] = field(
         default=None, repr=False, compare=False
@@ -132,21 +131,15 @@ class LiveRunnerSession:
 
     @property
     def payment_url(self) -> str:
-        """This session's payment endpoint, or "" if it reported no control URL."""
-        if not self.control_url:
-            return ""
-        return _join_endpoint(self.control_url, "payment")
+        """This session's payment endpoint, or "" when none was reported."""
+        return _payment_endpoint(self.control_url)
 
-    def _start_payments(
-        self,
-        payment_session: LivePaymentSession,
-        payment_url: str = "",
-    ) -> None:
+    def _start_payments(self, payment_session: LivePaymentSession) -> None:
         if self._payment_task is not None:
             return
         self._payment_task = _start_funding(
             payment_session,
-            payment_url,
+            self.payment_url,
             lambda: setattr(self, "released", True),
         )
 
@@ -188,9 +181,6 @@ class LiveRunnerCallResult:
     # Non-JSON responses (an image, say) arrive unparsed in `content`; `data` stays empty.
     content: Optional[bytes] = field(default=None, repr=False)
     content_type: str = ""
-    # Session-scoped payment endpoint for this call, when one could be built.
-    # Empty means payments fall back to the orchestrator's generic /payment.
-    payment_url: str = ""
 
 
 @dataclass
@@ -207,13 +197,12 @@ class LiveRunnerCallStream:
     runner_url: str
     runner: LiveRunnerInstance | None
     payment_session: LivePaymentSession | None
-    # True once the orchestrator reported the backing session gone. The stream
-    # itself ends when the orchestrator cancels the proxied request.
+    _session: aiohttp.ClientSession = field(repr=False, compare=False)
+    _response: aiohttp.ClientResponse = field(repr=False, compare=False)
+    # True once the orchestrator reported the backing session gone.
     released: bool = False
-    _session: aiohttp.ClientSession = field(repr=False, compare=False, kw_only=True)
-    _response: aiohttp.ClientResponse = field(repr=False, compare=False, kw_only=True)
     _payment_task: Optional[asyncio.Task[None]] = field(
-        default=None, repr=False, compare=False, kw_only=True
+        default=None, repr=False, compare=False
     )
 
     @property
@@ -228,9 +217,21 @@ class LiveRunnerCallStream:
         async for line in self._response.content:
             yield line.decode(errors="replace").rstrip("\n")
 
+    def _start_payments(
+        self,
+        payment_session: LivePaymentSession,
+        payment_url: str = "",
+    ) -> None:
+        if self._payment_task is not None:
+            return
+        self._payment_task = _start_funding(
+            payment_session,
+            payment_url,
+            lambda: setattr(self, "released", True),
+        )
+
     async def aclose(self) -> None:
-        # Stop funding first: no point minting a payment for a stream we are
-        # about to drop.
+        # Stop funding first: don't pay for a stream we are about to drop.
         self._payment_task = await _stop_funding(self._payment_task)
         self._response.release()
         await self._session.close()
@@ -833,6 +834,8 @@ async def call_runner(
         payment_session: LivePaymentSession | None = None
         payment_type = ""
         session_id = ""
+        needs_ongoing_funding = False
+        payment_url = ""
         # No preferred format: the app, or the upstream it fronts, picks. Only
         # control-plane calls ask for JSON.
         request_headers: dict[str, str] = {"Accept": "*/*"}
@@ -862,18 +865,16 @@ async def call_runner(
             request_headers["Livepeer-Segment"] = payment.seg_creds or ""
             session_id = challenge.manifest_id
 
-        # Metered pricing keeps billing for as long as the work runs, so
-        # whoever holds the session open has to keep paying for it.
-        needs_funding = payment_session is not None and payment_type in _METERED_PAYMENT_TYPES
-        payment_url = (
-            _session_payment_url(
-                challenge.orchestrator_url if challenge is not None else "",
-                runner.runner_id if runner is not None else "",
-                session_id,
-            )
-            if needs_funding
-            else ""
-        )
+            # Metered pricing bills for as long as the work runs.
+            needs_ongoing_funding = payment_type in _METERED_PAYMENT_TYPES
+            if needs_ongoing_funding:
+                payment_url = _payment_endpoint(
+                    _session_control_url(
+                        challenge.orchestrator_url,
+                        runner.runner_id if runner is not None else "",
+                        session_id,
+                    )
+                )
 
         try:
             request_kwargs: dict[str, Any] = {"timeout": timeout}
@@ -890,29 +891,25 @@ async def call_runner(
                     headers=request_headers or None,
                 )
                 call_stream = LiveRunnerCallStream(
-                    status=resp.status,
-                    headers=resp.headers,
-                    runner_url=runner_url,
-                    runner=runner,
-                    payment_session=None if payment_type == "fixed" else payment_session,
-                    _session=session,
-                    _response=resp,
+                    resp.status,
+                    resp.headers,
+                    runner_url,
+                    runner,
+                    None if payment_type == "fixed" else payment_session,
+                    session,
+                    resp,
                 )
-                # The stream outlives this call, so it owns the funding;
-                # aclose() stops both.
-                if needs_funding:
-                    call_stream._payment_task = _start_funding(
-                        cast(LivePaymentSession, payment_session),
-                        payment_url,
-                        lambda: setattr(call_stream, "released", True),
+                # The stream outlives this call, so it owns the funding.
+                if needs_ongoing_funding:
+                    call_stream._start_payments(
+                        cast(LivePaymentSession, payment_session), payment_url
                     )
                 return call_stream
 
-            # A metered call is billed while we wait on it, so fund it for
-            # exactly as long as the request is in flight.
+            # The request ends with this call, so the funding ends with it.
             pay_task = (
                 _start_funding(cast(LivePaymentSession, payment_session), payment_url)
-                if needs_funding
+                if needs_ongoing_funding
                 else None
             )
             try:
@@ -950,7 +947,6 @@ async def call_runner(
                 payment_session=None if payment_type == "fixed" else payment_session,
                 content=None if is_json else body,
                 content_type=content_type,
-                payment_url=payment_url,
             )
         except LivepeerHTTPError as e:
             if e.status_code != 402:
@@ -995,24 +991,31 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
     )
 
 
-def _session_payment_url(orchestrator_url: str, runner_id: str, session_id: str) -> str:
-    """Build the session-scoped payment endpoint for a live runner session.
+def _session_control_url(orchestrator_url: str, runner_id: str, session_id: str) -> str:
+    """Rebuild the control URL an orchestrator reports when reserving a session.
 
-    Unlike the orchestrator's generic ``/payment``, which credits the payer
-    balance and returns 200 whether or not the session exists, this endpoint
-    404s once the session is released, which is the only signal a payment loop
-    gets that it is funding nothing. Returns "" when a part is missing, in
-    which case payments fall back to the generic endpoint.
+    Single-shot calls never receive one, since a payment challenge carries only
+    the orchestrator, the runner and the session id. Returns "" if a part is
+    missing.
     """
     if not (orchestrator_url and runner_id and session_id):
         return ""
     try:
         return _join_endpoint(
             orchestrator_url,
-            f"/apps/{quote(runner_id, safe='')}/session/{quote(session_id, safe='')}/payment",
+            f"/apps/{quote(runner_id, safe='')}/session/{quote(session_id, safe='')}",
         )
     except LivepeerGatewayError:
         return ""
+
+
+def _payment_endpoint(control_url: str) -> str:
+    """The session-scoped payment endpoint under a control URL.
+
+    Unlike the generic ``/payment``, it 404s once the session is gone. Returns
+    "" without a control URL, so callers fall back to the generic endpoint.
+    """
+    return _join_endpoint(control_url, "payment") if control_url else ""
 
 
 def _start_funding(

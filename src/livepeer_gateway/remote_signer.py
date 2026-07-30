@@ -284,41 +284,26 @@ class LivePaymentSession:
             url = f"{_http_origin(target)}/payment"
 
         payment = await self.get_payment()
+        if not payment.seg_creds:
+            # An empty segment header fails the orchestrator's sig check and
+            # comes back 403, which reads as a dead session, not a bad signer.
+            raise PaymentError("Signer returned a payment with no segCreds")
         headers = {
             "Livepeer-Payment": payment.payment,
-            "Livepeer-Segment": payment.seg_creds or "",
+            "Livepeer-Segment": payment.seg_creds,
         }
         await post_empty(url, headers=headers, timeout=5.0)
 
-    async def run_payments(
-        self,
-        *,
-        payment_url: Optional[str] = None,
-        interval_s: Optional[float] = None,
-    ) -> bool:
+    async def run_payments(self, *, payment_url: Optional[str] = None) -> bool:
         """Keep a metered session funded until cancelled or the session ends.
 
-        The orchestrator debits the session's prepaid balance on its own
-        interval and drops the session on the first tick it cannot cover, so
-        whoever holds a session open runs this for as long as they hold it.
-        Cancel the task to stop. The caller pays upfront, so the first payment
-        here waits one ``interval_s`` (default ``PAYMENT_INTERVAL_S``).
-
-        ``payment_url`` should be the session-scoped endpoint, which 404s once
-        the session is gone; without it payments fall back to the
-        orchestrator's generic ``/payment``, which credits the balance whether
-        or not the session still exists.
-
-        Returns True when the session is reported gone, so the owner can
-        surface it as released, and False on the other terminal rejections
-        (fixed price, or credentials naming a different session). Everything
-        else is retried: a payment covers the time since the last one, so the
-        next success settles the arrears.
+        Cancel the task to stop; the first payment waits one interval, since
+        the caller pays upfront. Pass the session-scoped ``payment_url`` to
+        learn when the session is gone, since the generic ``/payment`` credits
+        blindly. Returns True if the orchestrator reported it gone.
         """
-        # Not a default argument: those bind at import and freeze the constant.
-        interval_s = PAYMENT_INTERVAL_S if interval_s is None else interval_s
         while True:
-            await asyncio.sleep(interval_s)
+            await asyncio.sleep(PAYMENT_INTERVAL_S)
             try:
                 await self.send_payment(payment_url=payment_url)
             except SkipPaymentCycle as e:
