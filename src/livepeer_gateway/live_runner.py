@@ -127,8 +127,7 @@ class LiveRunnerCallResult:
         repr=False,
         compare=False,
     )
-    # Non-JSON responses (an image, say) arrive unparsed: `raw` holds the body
-    # bytes and `content_type` its media type, while `data` stays empty.
+    # Non-JSON responses (an image, say) arrive unparsed in `raw`; `data` stays empty.
     raw: Optional[bytes] = field(default=None, repr=False)
     content_type: str = ""
 
