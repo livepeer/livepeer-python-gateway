@@ -246,12 +246,12 @@ async def request_data(
     payload: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 5.0,
-) -> tuple[bytes, str, str]:
+) -> tuple[bytes, str]:
     """
     Make an async JSON-payload HTTP request and return the raw response body.
 
-    Returns ``(body, content_type, encoding)`` without assuming the response is
-    JSON; request semantics and error mapping match request_json.
+    Returns ``(body, content_type)`` without assuming the response is JSON;
+    request semantics and error mapping match request_json.
 
     If method is None, defaults to POST when payload is provided, otherwise GET.
 
@@ -271,7 +271,6 @@ async def request_data(
             async with session.request(resolved_method, url, data=body, headers=req_headers) as resp:
                 raw = await resp.read()
                 content_type = resp.content_type or ""
-                encoding = resp.get_encoding()
                 if resp.status >= 400:
                     _raise_http_json_error(
                         resp.status, url, raw.decode(errors="replace"), dict(resp.headers.items())
@@ -300,7 +299,7 @@ async def request_data(
             f"HTTP JSON error: unexpected error: {e.__class__.__name__}: {e} (url={url})"
         ) from e
 
-    return raw, content_type, encoding
+    return raw, content_type
 
 
 async def request_json(
@@ -318,7 +317,7 @@ async def request_json(
 
     Raises LivepeerGatewayError on HTTP/network/JSON parsing errors.
     """
-    raw, _, encoding = await request_data(
+    raw, _ = await request_data(
         url,
         method=method,
         payload=payload,
@@ -326,7 +325,7 @@ async def request_json(
         timeout=timeout,
     )
     try:
-        return json.loads(raw.decode(encoding))
+        return json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         raise LivepeerGatewayError(
             f"HTTP JSON error: endpoint did not return valid JSON: {e} (url={url})"

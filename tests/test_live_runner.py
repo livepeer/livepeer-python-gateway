@@ -92,7 +92,7 @@ class TestLiveRunnerSession:
             method: str | None = None,
             payload: dict[str, object] | None = None,
             timeout: float,
-        ) -> tuple[bytes, str, str]:
+        ) -> tuple[bytes, str]:
             calls.append((url, method, payload, timeout))
             return _json_data({"session_id": "session-1", "ok": "true"})
 
@@ -190,7 +190,7 @@ class TestLiveRunnerSession:
             method: str | None = None,
             payload: dict[str, object] | None = None,
             timeout: float,
-        ) -> tuple[bytes, str, str]:
+        ) -> tuple[bytes, str]:
             del method, payload, timeout
             return _json_data(
                 {
@@ -229,7 +229,7 @@ class TestLiveRunnerSession:
             payload: dict[str, object] | None = None,
             headers: dict[str, str] | None = None,
             timeout: float,
-        ) -> tuple[bytes, str, str]:
+        ) -> tuple[bytes, str]:
             calls.append((url, method, payload, headers, timeout))
             if len([call for call in calls if call[0] == runner_url]) == 1:
                 body = _payment_challenge_body("manifest-1")
@@ -316,7 +316,7 @@ class TestLiveRunnerSession:
             payload: dict[str, object] | None = None,
             headers: dict[str, str] | None = None,
             timeout: float,
-        ) -> tuple[bytes, str, str]:
+        ) -> tuple[bytes, str]:
             del method, payload, timeout
             if headers and "Livepeer-Payment" in headers:
                 return _json_data({"session_id": "session-1"})
@@ -387,7 +387,7 @@ class TestLiveRunnerSession:
             payload: dict[str, object] | None = None,
             headers: dict[str, str] | None = None,
             timeout: float,
-        ) -> tuple[bytes, str, str]:
+        ) -> tuple[bytes, str]:
             nonlocal runner_calls
             del method, payload, timeout
             runner_calls += 1
@@ -461,7 +461,7 @@ class TestLiveRunnerSession:
             payload: dict[str, object] | None = None,
             headers: dict[str, str] | None = None,
             timeout: float,
-        ) -> tuple[bytes, str, str]:
+        ) -> tuple[bytes, str]:
             nonlocal unpaid_count
             del timeout
             calls.append((url, method, payload, headers))
@@ -555,7 +555,7 @@ class TestLiveRunnerSession:
             payload: dict[str, object] | None = None,
             headers: dict[str, str] | None = None,
             timeout: float,
-        ) -> tuple[bytes, str, str]:
+        ) -> tuple[bytes, str]:
             nonlocal unpaid_count
             del method, payload, timeout
             calls.append(headers)
@@ -604,8 +604,8 @@ def _payment_challenge_body(manifest_id: str) -> str:
     )
 
 
-def _json_data(data: dict[str, object]) -> tuple[bytes, str, str]:
-    return json.dumps(data).encode("utf-8"), "application/json", "utf-8"
+def _json_data(data: dict[str, object]) -> tuple[bytes, str]:
+    return json.dumps(data).encode("utf-8"), "application/json"
 
 
 class _FakeO2RReader:

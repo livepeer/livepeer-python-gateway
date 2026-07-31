@@ -126,29 +126,6 @@ def test_invalid_json_with_json_content_type_raises():
     assert "content_type=application/json" in str(excinfo.value)
 
 
-def test_json_response_uses_declared_charset():
-    body = '{"message": "café"}'.encode("iso-8859-1")
-
-    async def handler(request):
-        return web.Response(
-            body=body,
-            content_type="application/json",
-            charset="iso-8859-1",
-        )
-
-    app = web.Application()
-    app.router.add_route("*", "/charset", handler)
-
-    async def scenario(base):
-        direct = await request_json(f"{base}/charset")
-        result = await call_runner(f"{base}/charset", payload={})
-        return direct, result
-
-    direct, result = _run(app, scenario)
-    assert direct == {"message": "café"}
-    assert result.data == {"message": "café"}
-
-
 def test_invalid_json_encoding_raises_gateway_error():
     async def handler(request):
         return web.Response(

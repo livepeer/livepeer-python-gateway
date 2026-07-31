@@ -806,7 +806,7 @@ async def call_runner(
                     resp.status, resp.headers, runner_url, runner, payment_session, session, resp,
                 )
 
-            body, content_type, encoding = await request_data(
+            body, content_type = await request_data(
                 runner_url,
                 method=method,
                 payload=request_payload,
@@ -817,7 +817,7 @@ async def call_runner(
             data: dict[str, Any] = {}
             if is_json:
                 try:
-                    data = json.loads(body.decode(encoding))
+                    data = json.loads(body)
                 except (UnicodeDecodeError, json.JSONDecodeError) as e:
                     raise LivepeerGatewayError(
                         f"HTTP JSON error: endpoint did not return valid JSON: {e} "
