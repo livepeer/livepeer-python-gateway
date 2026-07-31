@@ -891,6 +891,13 @@ class TestStatsPull:
             with pytest.raises(RuntimeError, match="frame callback boom"):
                 await media_output.close()
 
+            async def _wait_for_decoder_join() -> None:
+                decoder = _TrackingDecoder.instances[0]
+                while not decoder.joined:
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(_wait_for_decoder_join(), timeout=1.0)
+
         _TrackingDecoder.instances.clear()
         original_decoder = media_output_mod.MpegTsDecoder
         media_output_mod.MpegTsDecoder = lambda: _TrackingDecoder(  # type: ignore[assignment]
