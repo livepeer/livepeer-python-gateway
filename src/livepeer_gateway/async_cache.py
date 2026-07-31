@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from functools import wraps
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, TypeVar
+from collections.abc import Awaitable, Callable
 
 _T = TypeVar("_T")
 

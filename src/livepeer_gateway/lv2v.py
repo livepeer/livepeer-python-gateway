@@ -121,8 +121,8 @@ class LiveVideoToVideo:
         chunk_size: int = 64 * 1024,
         max_segments: int = 5,
         on_lag: LagPolicy = LagPolicy.LATEST,
-        on_frame: Optional[MediaFrameCallback] = None,
-        on_packet: Optional[MediaPacketCallback] = None,
+        on_frame: MediaFrameCallback | None = None,
+        on_packet: MediaPacketCallback | None = None,
     ) -> MediaOutput:
         """
         Convenience helper to create a `MediaOutput` for this job.

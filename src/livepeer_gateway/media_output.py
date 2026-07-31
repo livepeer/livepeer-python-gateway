@@ -11,7 +11,8 @@ import logging
 import time
 from enum import Enum
 from contextlib import suppress
-from typing import AsyncIterator, Awaitable, Callable, Collection, Optional
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection
+from typing import Optional
 
 from .errors import LivepeerGatewayError
 from .media_decode import (
@@ -145,9 +146,9 @@ class MediaOutput:
         max_segments: int = 5,
         on_lag: LagPolicy = LagPolicy.LATEST,
         accepted_content_types: Collection[str] = _DEFAULT_ACCEPTED_CONTENT_TYPES,
-        on_bytes: Optional[MediaBytesCallback] = None,
-        on_frame: Optional[MediaFrameCallback] = None,
-        on_packet: Optional[MediaPacketCallback] = None,
+        on_bytes: MediaBytesCallback | None = None,
+        on_frame: MediaFrameCallback | None = None,
+        on_packet: MediaPacketCallback | None = None,
     ) -> None:
         if max_segments < 1:
             raise ValueError("max_segments must be >= 1")
@@ -173,9 +174,9 @@ class MediaOutput:
         self._started_at = time.time()
         self._processor: Optional[MpegTsDecoder | MpegTsPacketDemuxer] = None
         self._last_decoder_stats: Optional[DecoderQueueStats] = None
-        self._bytes_callback_task: Optional[asyncio.Task[None]] = None
-        self._frame_callback_task: Optional[asyncio.Task[None]] = None
-        self._packet_callback_task: Optional[asyncio.Task[None]] = None
+        self._bytes_callback_task: asyncio.Task[None] | None = None
+        self._frame_callback_task: asyncio.Task[None] | None = None
+        self._packet_callback_task: asyncio.Task[None] | None = None
         self._callback_errors: list[BaseException] = []
         self._stats: dict[str, int] = {
             "segments_consumed": 0,
@@ -253,7 +254,7 @@ class MediaOutput:
             tasks.append(self._packet_callback_task)
         return tuple(tasks)
 
-    async def wait_callbacks(self, timeout: Optional[float] = None) -> tuple[object, ...]:
+    async def wait_callbacks(self, timeout: float | None = None) -> tuple[object, ...]:
         """
         Wait for configured callback consumers to finish.
 
@@ -546,13 +547,13 @@ class MediaOutput:
                 return self._segments[relative]
             return None
 
-    async def close(self, *, wait_callbacks: bool = True, timeout: Optional[float] = 10.0) -> None:
+    async def close(self, *, wait_callbacks: bool = True, timeout: float | None = 10.0) -> None:
         callback_tasks = self.callback_tasks()
         if callback_tasks:
             if wait_callbacks and (timeout is None or timeout > 0):
                 try:
                     await self.wait_callbacks(timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
             for task in callback_tasks:
                 if not task.done():

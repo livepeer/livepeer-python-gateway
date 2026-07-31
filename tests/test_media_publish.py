@@ -32,7 +32,7 @@ class _FakeVideoFrame:
         self.time_base = None
         self.pict_type = None
 
-    def reformat(self, *, format: str) -> "_FakeVideoFrame":
+    def reformat(self, *, format: str) -> _FakeVideoFrame:
         self.format = _Format(format)
         return self
 

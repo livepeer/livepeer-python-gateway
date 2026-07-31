@@ -36,7 +36,7 @@ class _FakeSegment:
 
 
 class _FakeSubscriber:
-    instances: list["_FakeSubscriber"] = []
+    instances: list[_FakeSubscriber] = []
     segments: list[_FakeSegment] = []
     init_kwargs: dict[str, object] = {}
 
@@ -48,7 +48,7 @@ class _FakeSubscriber:
         type(self).init_kwargs = kwargs
         type(self).instances.append(self)
 
-    async def __aenter__(self) -> "_FakeSubscriber":
+    async def __aenter__(self) -> _FakeSubscriber:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> None:

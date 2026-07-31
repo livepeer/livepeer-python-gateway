@@ -20,7 +20,7 @@ async def _handle_sse(request: web.Request) -> web.StreamResponse:
 
     with open("story.txt", encoding="utf-8", errors="replace") as lines:
         for line in lines:
-            await response.write(f"data: {line.rstrip('\n')}\n\n".encode("utf-8"))
+            await response.write(f"data: {line.rstrip('\n')}\n\n".encode())
             await asyncio.sleep(0.5)
 
     await response.write_eof()

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
@@ -32,8 +31,8 @@ class SignerMaterial:
     address: opaque broadcaster address string.
     sig: opaque signature string.
     """
-    address: Optional[str]
-    sig: Optional[str]
+    address: str | None
+    sig: str | None
 
 
 @dataclass
@@ -179,7 +178,7 @@ def get_orch_info_sig(
 async def get_signer_info(
     signer_url: str,
     # frozenset instead of dict because cache keys require hashable arguments.
-    _signer_headers: Optional[frozenset[tuple[str, str]]] = None,
+    _signer_headers: frozenset[tuple[str, str]] | None = None,
 ) -> SignerMaterial:
     """
     Async-native version of get_orch_info_sig for callers that should not block
@@ -199,13 +198,13 @@ async def get_signer_info(
 class LivePaymentSession:
     def __init__(
         self,
-        signer_url: Optional[str],
+        signer_url: str | None,
         *,
-        signer_headers: Optional[dict[str, str]] = None,
+        signer_headers: dict[str, str] | None = None,
         type: str,
         payment_params: str,
         manifest_id: str,
-        orchestrator_url: Optional[str] = None,
+        orchestrator_url: str | None = None,
         max_refresh_retries: int = 3,
     ) -> None:
         self._signer_url = signer_url
@@ -214,7 +213,7 @@ class LivePaymentSession:
         self._payment_params = payment_params
         self._manifest_id = manifest_id
         self._max_refresh_retries = max(0, int(max_refresh_retries))
-        self._state: Optional[dict[str, Any]] = None
+        self._state: dict[str, Any] | None = None
         self._orchestrator_url = orchestrator_url
 
     async def get_payment(self) -> GetPaymentResponse:
@@ -240,7 +239,7 @@ class LivePaymentSession:
                 await self._refresh_payment_params(orchestrator_url)
                 attempts += 1
 
-    async def send_payment(self, orchestrator_url: Optional[str] = None) -> None:
+    async def send_payment(self, orchestrator_url: str | None = None) -> None:
         if not self._signer_url:
             return
 
@@ -274,7 +273,7 @@ class LivePaymentSession:
             raise PaymentError(
                 f"HTTP payment error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
             ) from e
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        except (aiohttp.ClientError, TimeoutError) as e:
             raise PaymentError(
                 f"HTTP payment error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
             ) from e

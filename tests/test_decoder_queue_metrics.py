@@ -4,12 +4,10 @@ import asyncio
 import os
 import queue
 import tempfile
-import time
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional
 
 import av
 import pytest
@@ -28,7 +26,7 @@ class _Cadence:
     idle_count: int = 0
     active_delay_s: float = 0.0
     idle_delay_s: float = 0.0
-    stall_after: Optional[int] = None
+    stall_after: int | None = None
     stall_delay_s: float = 0.0
 
     def delay_for(self, completed_count: int) -> float:
@@ -123,7 +121,7 @@ def _generate_mpegts_payload(
     height: int = 90,
     fps: int = 30,
 ) -> bytes:
-    tmp_path: Optional[str] = None
+    tmp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".ts", delete=False) as tmp:
             tmp_path = tmp.name

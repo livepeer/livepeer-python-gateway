@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import ssl
-from typing import Any, Optional
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import ParseResult, urlparse
 from urllib.request import Request, urlopen
@@ -76,7 +75,7 @@ def _extract_error_message(e: HTTPError) -> str:
     return _extract_error_message_from_body(_http_error_body(e))
 
 
-def _header_value(headers: dict[str, str], name: str) -> Optional[str]:
+def _header_value(headers: dict[str, str], name: str) -> str | None:
     needle = name.lower()
     for key, value in headers.items():
         if key.lower() == needle and isinstance(value, str) and value.strip():
@@ -87,15 +86,15 @@ def _header_value(headers: dict[str, str], name: str) -> Optional[str]:
 def _json_request_parts(
     url: str,
     *,
-    method: Optional[str] = None,
-    payload: Optional[dict[str, Any]] = None,
-    headers: Optional[dict[str, str]] = None,
-) -> tuple[str, dict[str, str], Optional[bytes]]:
+    method: str | None = None,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> tuple[str, dict[str, str], bytes | None]:
     req_headers: dict[str, str] = {
         "Accept": "application/json",
         "User-Agent": "livepeer-python-gateway/0.1",
     }
-    body: Optional[bytes] = None
+    body: bytes | None = None
     if payload is not None:
         req_headers["Content-Type"] = "application/json"
         body = json.dumps(payload).encode("utf-8")
@@ -110,7 +109,7 @@ def _raise_http_json_error(
     status: int,
     url: str,
     body: str = "",
-    headers: Optional[dict[str, str]] = None,
+    headers: dict[str, str] | None = None,
 ) -> None:
     message = _extract_error_message_from_body(body)
     body_part = f"; body={message!r}" if message else ""
@@ -142,9 +141,9 @@ def _ensure_json_object(data: Any, *, url: str) -> dict[str, Any]:
 def request_json_sync(
     url: str,
     *,
-    method: Optional[str] = None,
-    payload: Optional[dict[str, Any]] = None,
-    headers: Optional[dict[str, str]] = None,
+    method: str | None = None,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
     timeout: float = 5.0,
 ) -> Any:
     """
@@ -213,7 +212,7 @@ def post_json_sync(
     url: str,
     payload: dict[str, Any],
     *,
-    headers: Optional[dict[str, str]] = None,
+    headers: dict[str, str] | None = None,
     timeout: float = 5.0,
 ) -> dict[str, Any]:
     """
@@ -231,7 +230,7 @@ def post_json_sync(
 def get_json_sync(
     url: str,
     *,
-    headers: Optional[dict[str, str]] = None,
+    headers: dict[str, str] | None = None,
     timeout: float = 5.0,
 ) -> Any:
     """
@@ -243,9 +242,9 @@ def get_json_sync(
 async def request_json(
     url: str,
     *,
-    method: Optional[str] = None,
-    payload: Optional[dict[str, Any]] = None,
-    headers: Optional[dict[str, str]] = None,
+    method: str | None = None,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
     timeout: float = 5.0,
 ) -> Any:
     """
@@ -288,7 +287,7 @@ async def request_json(
         raise LivepeerGatewayError(
             f"HTTP JSON error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
         ) from e
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+    except (TimeoutError, aiohttp.ClientError) as e:
         raise LivepeerGatewayError(
             f"HTTP JSON error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
         ) from e
@@ -303,11 +302,11 @@ async def request_json(
 async def open_stream(
     url: str,
     *,
-    method: Optional[str] = None,
-    payload: Optional[dict[str, Any]] = None,
-    headers: Optional[dict[str, str]] = None,
+    method: str | None = None,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
     connect_timeout: float = 10.0,
-) -> "tuple[aiohttp.ClientSession, aiohttp.ClientResponse]":
+) -> tuple[aiohttp.ClientSession, aiohttp.ClientResponse]:
     """
     Open an HTTP request and return the live (session, response) without reading the
     body, for streaming responses (SSE, chunked). The caller owns both and must close
@@ -327,7 +326,7 @@ async def open_stream(
     session = aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(ssl=False))
     try:
         resp = await session.request(resolved_method, url, data=body, headers=req_headers)
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+    except (TimeoutError, aiohttp.ClientError) as e:
         await session.close()
         raise LivepeerGatewayError(
             f"HTTP stream error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
@@ -344,7 +343,7 @@ async def post_json(
     url: str,
     payload: dict[str, Any],
     *,
-    headers: Optional[dict[str, str]] = None,
+    headers: dict[str, str] | None = None,
     timeout: float = 5.0,
 ) -> dict[str, Any]:
     """
@@ -362,7 +361,7 @@ async def post_json(
 async def get_json(
     url: str,
     *,
-    headers: Optional[dict[str, str]] = None,
+    headers: dict[str, str] | None = None,
     timeout: float = 5.0,
 ) -> Any:
     """

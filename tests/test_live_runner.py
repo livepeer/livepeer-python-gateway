@@ -597,7 +597,7 @@ def _payment_challenge_body(manifest_id: str) -> str:
 
 
 class _FakeO2RReader:
-    instances: list["_FakeO2RReader"] = []
+    instances: list[_FakeO2RReader] = []
 
     def __init__(
         self,

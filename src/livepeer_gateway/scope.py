@@ -82,11 +82,11 @@ async def start_scope(
 async def _start_scope_with_runner(
     *,
     body: dict[str, Any],
-    signer_url: Optional[str],
-    signer_headers: Optional[dict[str, str]],
-    discovery_url: Optional[str],
-    discovery_headers: Optional[dict[str, str]],
-    orch_url: Optional[Sequence[str] | str],
+    signer_url: str | None,
+    signer_headers: dict[str, str] | None,
+    discovery_url: str | None,
+    discovery_headers: dict[str, str] | None,
+    orch_url: Sequence[str] | str | None,
     timeout: float,
 ):
     cursor = await runner_selector(

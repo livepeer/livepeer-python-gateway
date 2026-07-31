@@ -102,7 +102,7 @@ class TestLivePaymentSession:
             status = 204
             headers: dict[str, str] = {}
 
-            async def __aenter__(self) -> "_Response":
+            async def __aenter__(self) -> _Response:
                 return self
 
             async def __aexit__(self, *args: object) -> None:
@@ -120,7 +120,7 @@ class TestLivePaymentSession:
             def __init__(self, **kwargs: object) -> None:
                 self.kwargs = kwargs
 
-            async def __aenter__(self) -> "_Session":
+            async def __aenter__(self) -> _Session:
                 return self
 
             async def __aexit__(self, *args: object) -> None:
@@ -164,7 +164,7 @@ class TestLivePaymentSession:
             status = 204
             headers: dict[str, str] = {}
 
-            async def __aenter__(self) -> "_Response":
+            async def __aenter__(self) -> _Response:
                 return self
 
             async def __aexit__(self, *args: object) -> None:
@@ -177,7 +177,7 @@ class TestLivePaymentSession:
             def __init__(self, **kwargs: object) -> None:
                 del kwargs
 
-            async def __aenter__(self) -> "_Session":
+            async def __aenter__(self) -> _Session:
                 return self
 
             async def __aexit__(self, *args: object) -> None:
@@ -221,7 +221,7 @@ class TestLivePaymentSession:
             status = 200
             headers: dict[str, str] = {}
 
-            async def __aenter__(self) -> "_Response":
+            async def __aenter__(self) -> _Response:
                 return self
 
             async def __aexit__(self, *args: object) -> None:
@@ -239,7 +239,7 @@ class TestLivePaymentSession:
             def __init__(self, **kwargs: object) -> None:
                 del kwargs
 
-            async def __aenter__(self) -> "_Session":
+            async def __aenter__(self) -> _Session:
                 return self
 
             async def __aexit__(self, *args: object) -> None:
@@ -276,7 +276,7 @@ class TestLivePaymentSession:
             status = 400
             headers: dict[str, str] = {}
 
-            async def __aenter__(self) -> "_Response":
+            async def __aenter__(self) -> _Response:
                 return self
 
             async def __aexit__(self, *args: object) -> None:
@@ -292,7 +292,7 @@ class TestLivePaymentSession:
             def __init__(self, **kwargs: object) -> None:
                 del kwargs
 
-            async def __aenter__(self) -> "_Session":
+            async def __aenter__(self) -> _Session:
                 return self
 
             async def __aexit__(self, *args: object) -> None:

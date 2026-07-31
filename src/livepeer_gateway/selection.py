@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any, Optional
 
 from . import lp_rpc_pb2
 from .discovery import (
@@ -56,10 +57,10 @@ class SelectionCursor:
         self._capabilities = capabilities
         self._use_tofu = use_tofu
         self._batch_start = 0
-        self._pending_successes: list[Tuple[str, lp_rpc_pb2.OrchestratorInfo]] = []
+        self._pending_successes: list[tuple[str, lp_rpc_pb2.OrchestratorInfo]] = []
         self.rejections: list[OrchestratorRejection] = []
 
-    def next(self) -> Tuple[str, lp_rpc_pb2.OrchestratorInfo]:
+    def next(self) -> tuple[str, lp_rpc_pb2.OrchestratorInfo]:
         while True:
             if self._pending_successes:
                 selected = self._pending_successes.pop(0)
@@ -102,7 +103,7 @@ class SelectionCursor:
                 for url in batch
             }
 
-            batch_successes: list[Tuple[str, lp_rpc_pb2.OrchestratorInfo]] = []
+            batch_successes: list[tuple[str, lp_rpc_pb2.OrchestratorInfo]] = []
             for future in as_completed(futures):
                 url = futures[future]
                 try:
@@ -168,10 +169,10 @@ class RunnerSelectionCursor:
         self,
         candidates: Sequence[LiveRunnerInstance],
         *,
-        body: Optional[dict[str, Any]] = None,
+        body: dict[str, Any] | None = None,
         method: str = "POST",
-        signer_url: Optional[str] = None,
-        signer_headers: Optional[dict[str, str]] = None,
+        signer_url: str | None = None,
+        signer_headers: dict[str, str] | None = None,
         timeout: float = 5.0,
     ) -> None:
         self._candidates = list(candidates)
@@ -228,15 +229,15 @@ class RunnerSelectionCursor:
 
 async def runner_selector(
     *,
-    body: Optional[dict[str, Any]] = None,
+    body: dict[str, Any] | None = None,
     method: str = "POST",
-    orchestrators: Optional[Sequence[str] | str] = None,
-    signer_url: Optional[str] = None,
-    signer_headers: Optional[dict[str, str]] = None,
-    discovery_url: Optional[str] = None,
-    discovery_headers: Optional[dict[str, str]] = None,
-    app: Optional[FilterValue] = None,
-    gpu: Optional[FilterValue] = None,
+    orchestrators: Sequence[str] | str | None = None,
+    signer_url: str | None = None,
+    signer_headers: dict[str, str] | None = None,
+    discovery_url: str | None = None,
+    discovery_headers: dict[str, str] | None = None,
+    app: FilterValue | None = None,
+    gpu: FilterValue | None = None,
     timeout: float = 5.0,
 ) -> RunnerSelectionCursor:
     if orchestrators is not None:
@@ -273,13 +274,13 @@ async def runner_selector(
 
 async def reserve_session(
     *,
-    signer_url: Optional[str] = None,
-    signer_headers: Optional[dict[str, str]] = None,
-    discovery_url: Optional[str] = None,
-    discovery_headers: Optional[dict[str, str]] = None,
-    orchestrators: Optional[Sequence[str] | str] = None,
-    app: Optional[FilterValue] = None,
-    gpu: Optional[FilterValue] = None,
+    signer_url: str | None = None,
+    signer_headers: dict[str, str] | None = None,
+    discovery_url: str | None = None,
+    discovery_headers: dict[str, str] | None = None,
+    orchestrators: Sequence[str] | str | None = None,
+    app: FilterValue | None = None,
+    gpu: FilterValue | None = None,
     timeout: float = 5.0,
 ) -> LiveRunnerSession:
     cursor = await runner_selector(

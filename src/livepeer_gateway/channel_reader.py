@@ -4,7 +4,8 @@ import asyncio
 import inspect
 import json
 import logging
-from typing import Any, AsyncIterator, Awaitable, Callable, Optional
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 from .errors import LivepeerGatewayError
 from .segment_reader import SegmentReader
@@ -34,15 +35,15 @@ class _ChannelReaderCallback:
         start_seq: int = -2,
         max_retries: int = 5,
         max_event_bytes: int = 1_048_576,
-        on_event: Optional[ChannelEventCallback] = None,
+        on_event: ChannelEventCallback | None = None,
     ) -> None:
         self.events_url = events_url
         self.start_seq = start_seq
         self.max_retries = max_retries
         self.max_event_bytes = max_event_bytes
         self.on_event = on_event
-        self._event_callback_task: Optional[asyncio.Task[None]] = None
-        self._callback_error: Optional[BaseException] = None
+        self._event_callback_task: asyncio.Task[None] | None = None
+        self._callback_error: BaseException | None = None
         if self.on_event is not None:
             self.start_callback()
 
@@ -57,7 +58,7 @@ class _ChannelReaderCallback:
 
     def start_callback(
         self,
-    ) -> Optional[asyncio.Task[None]]:
+    ) -> asyncio.Task[None] | None:
         """
         Start the configured event callback consumer.
 
@@ -96,13 +97,13 @@ class _ChannelReaderCallback:
         self._event_callback_task = task
         return task
 
-    def callback_task(self) -> Optional[asyncio.Task[None]]:
+    def callback_task(self) -> asyncio.Task[None] | None:
         """
         Return the active or completed callback task, if one has been created.
         """
         return self._event_callback_task
 
-    async def wait_callback(self, timeout: Optional[float] = None) -> object:
+    async def wait_callback(self, timeout: float | None = None) -> object:
         """
         Wait for the configured event callback consumer to finish.
 
@@ -159,7 +160,7 @@ class _ChannelReaderCallback:
         self,
         *,
         wait_callback: bool = True,
-        timeout: Optional[float] = 10.0,
+        timeout: float | None = 10.0,
     ) -> None:
         """
         Stop callback consumption and surface callback errors.
@@ -173,7 +174,7 @@ class _ChannelReaderCallback:
             if wait_callback and (timeout is None or timeout > 0):
                 try:
                     await self.wait_callback(timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
             if not task.done():
                 task.cancel()
@@ -217,7 +218,7 @@ class ChannelReader(_ChannelReaderCallback):
         start_seq: int = -2,
         max_retries: int = 5,
         max_event_bytes: int = 1_048_576,
-        on_event: Optional[ChannelEventCallback] = None,
+        on_event: ChannelEventCallback | None = None,
     ) -> None:
         """
         Create a JSON channel reader.
@@ -341,7 +342,7 @@ class JSONLReader(_ChannelReaderCallback):
         start_seq: int = -2,
         max_retries: int = 5,
         max_event_bytes: int = 1_048_576,
-        on_event: Optional[ChannelEventCallback] = None,
+        on_event: ChannelEventCallback | None = None,
     ) -> None:
         """
         Create a JSONL channel reader.

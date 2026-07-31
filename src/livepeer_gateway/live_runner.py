@@ -11,18 +11,14 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import (
     Any,
-    AsyncIterator,
-    Awaitable,
-    Callable,
     Literal,
-    Mapping,
     NotRequired,
-    Optional,
     Protocol,
     TypedDict,
     cast,
     overload,
 )
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from urllib.parse import quote, urlparse, urlunparse
 
 import aiohttp
@@ -84,7 +80,7 @@ class LiveRunnerSessionRequest(Protocol):
 class LiveRunnerSessionEvent:
     session_id: str
     event: Literal["reserved", "released"]
-    timestamp: Optional[str]
+    timestamp: str | None
     raw: dict[str, Any]
 
 
@@ -101,7 +97,7 @@ class LiveRunnerInstance:
     mode: str
     orchestrator_url: str
     raw: dict[str, Any]
-    price_info: Optional[LiveRunnerPriceInfo] = None
+    price_info: LiveRunnerPriceInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -109,7 +105,7 @@ class LiveRunnerSession:
     session_id: str
     app_url: str
     runner_url: str
-    runner: Optional[LiveRunnerInstance] = None
+    runner: LiveRunnerInstance | None = None
 
 
 @dataclass(frozen=True)
@@ -122,9 +118,9 @@ class LiveRunnerProxy:
 class LiveRunnerCallResult:
     data: dict[str, Any]
     runner_url: str
-    runner: Optional[LiveRunnerInstance] = None
+    runner: LiveRunnerInstance | None = None
     session_id: str = ""
-    payment_session: Optional[LivePaymentSession] = field(
+    payment_session: LivePaymentSession | None = field(
         default=None,
         repr=False,
         compare=False,
@@ -143,8 +139,8 @@ class LiveRunnerCallStream:
     status: int
     headers: Mapping[str, str]
     runner_url: str
-    runner: Optional[LiveRunnerInstance]
-    payment_session: Optional[LivePaymentSession]
+    runner: LiveRunnerInstance | None
+    payment_session: LivePaymentSession | None
     _session: aiohttp.ClientSession = field(repr=False, compare=False)
     _response: aiohttp.ClientResponse = field(repr=False, compare=False)
 
@@ -219,20 +215,20 @@ class LiveRunnerRegistration:
         metadata: str = "",
         status: str = "ready",
         capacity: int = 1,
-        gpu: Optional[LiveRunnerGPU] = None,
+        gpu: LiveRunnerGPU | None = None,
         timeout: float = 5.0,
-        heartbeat_interval_s: Optional[float] = None,
+        heartbeat_interval_s: float | None = None,
         unregister_on_close: bool = True,
-        on_session_reserve: Optional[LiveRunnerSessionCallback] = None,
-        on_session_release: Optional[LiveRunnerSessionCallback] = None,
+        on_session_reserve: LiveRunnerSessionCallback | None = None,
+        on_session_release: LiveRunnerSessionCallback | None = None,
     ) -> None:
         self.orchestrator_url = _normalize_http_base(orchestrator_url)
         self.runner_id = runner_id
         self.heartbeat_interval_s = heartbeat_interval_s or _DEFAULT_HEARTBEAT_INTERVAL_S
-        self.heartbeat_ttl_s: Optional[float] = None
+        self.heartbeat_ttl_s: float | None = None
 
         self._bootstrap_secret = secret
-        self._heartbeat_secret: Optional[str] = None
+        self._heartbeat_secret: str | None = None
         self._runner_url = runner_url
         self._app = app
         self._mode = _normalize_runner_mode(mode)
@@ -250,11 +246,11 @@ class LiveRunnerRegistration:
         self._on_session_reserve = on_session_reserve
         self._on_session_release = on_session_release
         self._active_session_ids: list[str] = []
-        self.o2r_channel: Optional[LiveRunnerTrickleChannel] = None
-        self._o2r_reader: Optional[ChannelReader] = None
+        self.o2r_channel: LiveRunnerTrickleChannel | None = None
+        self._o2r_reader: ChannelReader | None = None
         self._closed = False
-        self._task: Optional[asyncio.Task[None]] = None
-        self._o2r_task: Optional[asyncio.Task[None]] = None
+        self._task: asyncio.Task[None] | None = None
+        self._o2r_task: asyncio.Task[None] | None = None
 
     async def start(self) -> LiveRunnerRegistration:
         await self._send_heartbeat()
@@ -360,7 +356,7 @@ class LiveRunnerRegistration:
         target_url: str | None = None,
         *,
         session_token: str = "",
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
     ) -> LiveRunnerProxy:
         """Create a public proxy URL for a live runner app session or target."""
         return await create_proxy(
@@ -554,13 +550,13 @@ async def register_runner(
     metadata: str = "",
     status: str = "ready",
     capacity: int = 1,
-    gpu: Optional[LiveRunnerGPU] = None,
+    gpu: LiveRunnerGPU | None = None,
     auto_detect_gpu: bool = True,
     timeout: float = 5.0,
-    heartbeat_interval_s: Optional[float] = None,
+    heartbeat_interval_s: float | None = None,
     unregister_on_close: bool = True,
-    on_session_reserve: Optional[LiveRunnerSessionCallback] = None,
-    on_session_release: Optional[LiveRunnerSessionCallback] = None,
+    on_session_reserve: LiveRunnerSessionCallback | None = None,
+    on_session_release: LiveRunnerSessionCallback | None = None,
 ) -> LiveRunnerRegistration:
     if gpu is None and auto_detect_gpu:
         gpu = detect_process_gpu()
@@ -694,12 +690,12 @@ async def create_proxy(
 async def call_runner(
     runner_url: str = ...,
     *,
-    runner: Optional[LiveRunnerInstance] = ...,
-    payload: Optional[dict[str, Any]] = ...,
+    runner: LiveRunnerInstance | None = ...,
+    payload: dict[str, Any] | None = ...,
     method: str = ...,
-    signer_url: Optional[str] = ...,
-    signer_headers: Optional[dict[str, str]] = ...,
-    payment_unit: Optional[str] = ...,
+    signer_url: str | None = ...,
+    signer_headers: dict[str, str] | None = ...,
+    payment_unit: str | None = ...,
     timeout: float = ...,
     max_payment_challenge_retries: int = ...,
     stream: Literal[False] = False,
@@ -710,12 +706,12 @@ async def call_runner(
 async def call_runner(
     runner_url: str = ...,
     *,
-    runner: Optional[LiveRunnerInstance] = ...,
-    payload: Optional[dict[str, Any]] = ...,
+    runner: LiveRunnerInstance | None = ...,
+    payload: dict[str, Any] | None = ...,
     method: str = ...,
-    signer_url: Optional[str] = ...,
-    signer_headers: Optional[dict[str, str]] = ...,
-    payment_unit: Optional[str] = ...,
+    signer_url: str | None = ...,
+    signer_headers: dict[str, str] | None = ...,
+    payment_unit: str | None = ...,
     timeout: float = ...,
     max_payment_challenge_retries: int = ...,
     stream: Literal[True],
@@ -725,12 +721,12 @@ async def call_runner(
 async def call_runner(
     runner_url: str = "",
     *,
-    runner: Optional[LiveRunnerInstance] = None,
-    payload: Optional[dict[str, Any]] = None,
+    runner: LiveRunnerInstance | None = None,
+    payload: dict[str, Any] | None = None,
     method: str = "POST",
-    signer_url: Optional[str] = None,
-    signer_headers: Optional[dict[str, str]] = None,
-    payment_unit: Optional[str] = None,
+    signer_url: str | None = None,
+    signer_headers: dict[str, str] | None = None,
+    payment_unit: str | None = None,
     timeout: float = 5.0,
     max_payment_challenge_retries: int = 3,
     stream: bool = False,
@@ -749,10 +745,10 @@ async def call_runner(
     if signer_url:
         signer = await get_signer_info(signer_url, _freeze_headers(signer_headers))
         payer_address = cast(str, signer.address)
-    challenge: Optional[_RunnerPaymentChallenge] = None
+    challenge: _RunnerPaymentChallenge | None = None
     attempts = (max(0, int(max_payment_challenge_retries)) + 1) * 2
     for attempt in range(attempts):
-        payment_session: Optional[LivePaymentSession] = None
+        payment_session: LivePaymentSession | None = None
         payment_type = ""
         session_id = ""
         request_headers: dict[str, str] = {}
@@ -868,7 +864,7 @@ async def _get_runner_payment(
     *,
     payment_type: str,
     signer_url: str,
-    signer_headers: Optional[dict[str, str]],
+    signer_headers: dict[str, str] | None,
 ) -> tuple[LivePaymentSession, GetPaymentResponse]:
     session = LivePaymentSession(
         signer_url=signer_url,
@@ -887,8 +883,8 @@ async def _get_runner_payment(
 
 
 def _runner_payment_type(
-    runner: Optional[LiveRunnerInstance],
-    payment_unit: Optional[str] = None,
+    runner: LiveRunnerInstance | None,
+    payment_unit: str | None = None,
 ) -> str:
     # Discovery supplies price_info.unit; direct calls may supply payment_unit instead.
     # If both are present, they must agree.
@@ -919,7 +915,7 @@ def _runner_payment_type(
     return "live"
 
 
-def _live_runner_price_info_from_json(value: object) -> Optional[LiveRunnerPriceInfo]:
+def _live_runner_price_info_from_json(value: object) -> LiveRunnerPriceInfo | None:
     if not isinstance(value, dict):
         return None
     price = value.get("price")
@@ -938,7 +934,7 @@ def _live_runner_session_from_json(
     data: dict[str, Any],
     *,
     runner_url: str,
-    runner: Optional[LiveRunnerInstance],
+    runner: LiveRunnerInstance | None,
 ) -> LiveRunnerSession:
     session_id = data.get("session_id")
     app_url = data.get("app_url")
@@ -984,7 +980,7 @@ async def stop_runner_session(
     )
 
 
-def detect_process_gpu() -> Optional[LiveRunnerGPU]:
+def detect_process_gpu() -> LiveRunnerGPU | None:
     for detector in (_detect_gpu_pynvml, _detect_gpu_torch, _detect_gpu_nvidia_smi):
         try:
             gpu = detector()
@@ -1057,7 +1053,7 @@ def _session_proxy_endpoint(
     )
 
 
-def _parse_go_duration_s(value: object, *, default: Optional[float]) -> Optional[float]:
+def _parse_go_duration_s(value: object, *, default: float | None) -> float | None:
     if not isinstance(value, str) or not value.strip():
         return default
     match = _DURATION_RE.match(value)
@@ -1161,11 +1157,11 @@ async def _post_empty(url: str, headers: dict[str, str], timeout: float) -> None
         raise
     except getattr(aiohttp, "ClientConnectorError", ()) as e:
         raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+    except (TimeoutError, aiohttp.ClientError) as e:
         raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
 
 
-def _detect_gpu_pynvml() -> Optional[LiveRunnerGPU]:
+def _detect_gpu_pynvml() -> LiveRunnerGPU | None:
     try:
         import pynvml  # type: ignore[import-not-found]
     except Exception:
@@ -1190,7 +1186,7 @@ def _detect_gpu_pynvml() -> Optional[LiveRunnerGPU]:
             pass
 
 
-def _pynvml_process_device_index(pynvml: Any) -> Optional[int]:
+def _pynvml_process_device_index(pynvml: Any) -> int | None:
     pid = os.getpid()
     count = int(pynvml.nvmlDeviceGetCount())
     for index in range(count):
@@ -1210,7 +1206,7 @@ def _pynvml_process_device_index(pynvml: Any) -> Optional[int]:
     return None
 
 
-def _detect_gpu_torch() -> Optional[LiveRunnerGPU]:
+def _detect_gpu_torch() -> LiveRunnerGPU | None:
     try:
         import torch  # type: ignore[import-not-found]
     except Exception:
@@ -1228,7 +1224,7 @@ def _detect_gpu_torch() -> Optional[LiveRunnerGPU]:
         return None
 
 
-def _detect_gpu_nvidia_smi() -> Optional[LiveRunnerGPU]:
+def _detect_gpu_nvidia_smi() -> LiveRunnerGPU | None:
     if shutil.which("nvidia-smi") is None:
         return None
     uuid = _nvidia_smi_process_gpu_uuid()
@@ -1300,7 +1296,7 @@ def _gpu_from_nvidia_smi_row(row: dict[str, str]) -> LiveRunnerGPU:
     return LiveRunnerGPU(id=row.get("uuid", ""), name=row.get("name", ""), vram_mb=vram_mb)
 
 
-def _first_visible_cuda_index() -> Optional[int]:
+def _first_visible_cuda_index() -> int | None:
     visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
     if not visible:
         return 0

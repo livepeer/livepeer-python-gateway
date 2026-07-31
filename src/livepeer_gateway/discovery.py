@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional, Sequence
+from typing import Any
+from collections.abc import Sequence
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from . import lp_rpc_pb2
@@ -17,7 +18,7 @@ FilterValue = str | Sequence[str]
 _RUNNER_DISCOVERY_BATCH_SIZE = 5
 
 
-def _normalize_filter_values(value: Optional[FilterValue]) -> list[str]:
+def _normalize_filter_values(value: FilterValue | None) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
@@ -38,7 +39,7 @@ def _append_query_values(url: str, values: Sequence[tuple[str, str]]) -> str:
     return urlunparse(parsed._replace(query=query))
 
 
-def _append_caps(url: str, capabilities: Optional[lp_rpc_pb2.Capabilities]) -> str:
+def _append_caps(url: str, capabilities: lp_rpc_pb2.Capabilities | None) -> str:
     """
     Append repeated `caps` query parameters to a URL.
 
@@ -52,8 +53,8 @@ def _append_caps(url: str, capabilities: Optional[lp_rpc_pb2.Capabilities]) -> s
 def _append_runner_filters(
     url: str,
     *,
-    app: Optional[FilterValue] = None,
-    gpu: Optional[FilterValue] = None,
+    app: FilterValue | None = None,
+    gpu: FilterValue | None = None,
 ) -> str:
     values: list[tuple[str, str]] = []
     values.extend(("app", item) for item in _normalize_filter_values(app))
@@ -62,13 +63,13 @@ def _append_runner_filters(
 
 
 def discover_orchestrators(
-    orchestrators: Optional[Sequence[str] | str] = None,
+    orchestrators: Sequence[str] | str | None = None,
     *,
-    signer_url: Optional[str] = None,
-    signer_headers: Optional[dict[str, str]] = None,
-    discovery_url: Optional[str] = None,
-    discovery_headers: Optional[dict[str, str]] = None,
-    capabilities: Optional[lp_rpc_pb2.Capabilities] = None,
+    signer_url: str | None = None,
+    signer_headers: dict[str, str] | None = None,
+    discovery_url: str | None = None,
+    discovery_headers: dict[str, str] | None = None,
+    capabilities: lp_rpc_pb2.Capabilities | None = None,
 ) -> list[str]:
     """
     Discover orchestrators and return a list of addresses.
@@ -144,12 +145,12 @@ def discover_orchestrators(
 
 async def discover_runners(
     *,
-    signer_url: Optional[str] = None,
-    signer_headers: Optional[dict[str, str]] = None,
-    discovery_url: Optional[str] = None,
-    discovery_headers: Optional[dict[str, str]] = None,
-    app: Optional[FilterValue] = None,
-    gpu: Optional[FilterValue] = None,
+    signer_url: str | None = None,
+    signer_headers: dict[str, str] | None = None,
+    discovery_url: str | None = None,
+    discovery_headers: dict[str, str] | None = None,
+    app: FilterValue | None = None,
+    gpu: FilterValue | None = None,
 ) -> list[dict[str, Any]]:
     """
     Discover live runners and return discovery entries.
@@ -200,10 +201,10 @@ async def discover_runners(
 
 
 async def discover_orchestrator_runners(
-    orchestrators: Optional[Sequence[str] | str],
+    orchestrators: Sequence[str] | str | None,
     *,
-    app: Optional[FilterValue] = None,
-    gpu: Optional[FilterValue] = None,
+    app: FilterValue | None = None,
+    gpu: FilterValue | None = None,
     batch_size: int = _RUNNER_DISCOVERY_BATCH_SIZE,
 ) -> list[dict[str, Any]]:
     first_error: Exception | None = None
@@ -228,7 +229,7 @@ async def discover_orchestrator_runners(
     return []
 
 
-def orchestrator_discovery_urls(orchestrators: Optional[Sequence[str] | str]) -> list[str]:
+def orchestrator_discovery_urls(orchestrators: Sequence[str] | str | None) -> list[str]:
     if orchestrators is None:
         return []
     if isinstance(orchestrators, str):

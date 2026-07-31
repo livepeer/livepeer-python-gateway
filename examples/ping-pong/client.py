@@ -48,10 +48,7 @@ async def _run_client(url: str, *, count: int) -> None:
                 receiver_delta_ms = float(msg.get("delta_ms", -1))
                 round_trip_ms = (received_at - ping) * 1000.0
                 print(
-                    "ping-pong receiver_delta_ms={:.2f} round_trip_ms={:.2f}".format(
-                        receiver_delta_ms,
-                        round_trip_ms,
-                    )
+                    f"ping-pong receiver_delta_ms={receiver_delta_ms:.2f} round_trip_ms={round_trip_ms:.2f}"
                 )
 
                 elapsed = time.time() - ping
