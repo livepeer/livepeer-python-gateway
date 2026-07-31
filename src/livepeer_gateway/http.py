@@ -239,7 +239,7 @@ def get_json_sync(
     return request_json_sync(url, headers=headers, timeout=timeout)
 
 
-async def request_data(
+async def _request_body(
     url: str,
     *,
     method: str | None = None,
@@ -317,7 +317,7 @@ async def request_json(
 
     Raises LivepeerGatewayError on HTTP/network/JSON parsing errors.
     """
-    raw, _ = await request_data(
+    raw, _ = await _request_body(
         url,
         method=method,
         payload=payload,

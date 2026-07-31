@@ -86,7 +86,7 @@ class TestLiveRunnerSession:
     async def test_call_runner_returns_json_and_metadata(self) -> None:
         calls: list[tuple[str, str | None, dict[str, object] | None, float]] = []
 
-        def _request_data(
+        def _request_body(
             url: str,
             *,
             method: str | None = None,
@@ -96,7 +96,7 @@ class TestLiveRunnerSession:
             calls.append((url, method, payload, timeout))
             return _json_data({"session_id": "session-1", "ok": "true"})
 
-        with mock.patch.object(live_runner, "request_data", side_effect=_request_data):
+        with mock.patch.object(live_runner, "_request_body", side_effect=_request_body):
             result = await call_runner(
                 "https://service.example.com/apps/runner-1/app",
                 payload={"hello": "world"},
@@ -184,7 +184,7 @@ class TestLiveRunnerSession:
             raw={"label": "echo"},
         )
 
-        def _request_data(
+        def _request_body(
             url: str,
             *,
             method: str | None = None,
@@ -199,7 +199,7 @@ class TestLiveRunnerSession:
                 }
             )
 
-        with mock.patch.object(live_runner, "request_data", side_effect=_request_data):
+        with mock.patch.object(live_runner, "_request_body", side_effect=_request_body):
             result = await call_runner(runner=runner)
 
         assert result.runner is runner
@@ -222,7 +222,7 @@ class TestLiveRunnerSession:
             async def get_payment(self) -> object:
                 return SimpleNamespace(payment="payment-b64", seg_creds="seg-b64")
 
-        def _request_data(
+        def _request_body(
             url: str,
             *,
             method: str | None = None,
@@ -242,7 +242,7 @@ class TestLiveRunnerSession:
             )
 
         with (
-            mock.patch.object(live_runner, "request_data", side_effect=_request_data),
+            mock.patch.object(live_runner, "_request_body", side_effect=_request_body),
             mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
             mock.patch.object(
                 live_runner,
@@ -309,7 +309,7 @@ class TestLiveRunnerSession:
             async def get_payment(self) -> object:
                 return SimpleNamespace(payment="payment-b64", seg_creds="seg-b64")
 
-        def _request_data(
+        def _request_body(
             url: str,
             *,
             method: str | None = None,
@@ -325,7 +325,7 @@ class TestLiveRunnerSession:
             )
 
         with (
-            mock.patch.object(live_runner, "request_data", side_effect=_request_data),
+            mock.patch.object(live_runner, "_request_body", side_effect=_request_body),
             mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
             mock.patch.object(
                 live_runner,
@@ -380,7 +380,7 @@ class TestLiveRunnerSession:
                     seg_creds=f"fixed-segment-{payment_number}",
                 )
 
-        def _request_data(
+        def _request_body(
             url: str,
             *,
             method: str | None = None,
@@ -407,7 +407,7 @@ class TestLiveRunnerSession:
             )
 
         with (
-            mock.patch.object(live_runner, "request_data", side_effect=_request_data),
+            mock.patch.object(live_runner, "_request_body", side_effect=_request_body),
             mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
             mock.patch.object(
                 live_runner,
@@ -454,7 +454,7 @@ class TestLiveRunnerSession:
                     raise SignerRefreshRequired("refresh")
                 return SimpleNamespace(payment="payment-2", seg_creds="seg-2")
 
-        def _request_data(
+        def _request_body(
             url: str,
             *,
             method: str | None = None,
@@ -481,7 +481,7 @@ class TestLiveRunnerSession:
             )
 
         with (
-            mock.patch.object(live_runner, "request_data", side_effect=_request_data),
+            mock.patch.object(live_runner, "_request_body", side_effect=_request_body),
             mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
             mock.patch.object(
                 live_runner,
@@ -548,7 +548,7 @@ class TestLiveRunnerSession:
                 payment_attempts += 1
                 raise SignerRefreshRequired("fixed price not found for session")
 
-        def _request_data(
+        def _request_body(
             url: str,
             *,
             method: str | None = None,
@@ -568,7 +568,7 @@ class TestLiveRunnerSession:
             )
 
         with (
-            mock.patch.object(live_runner, "request_data", side_effect=_request_data),
+            mock.patch.object(live_runner, "_request_body", side_effect=_request_body),
             mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
             mock.patch.object(
                 live_runner,

@@ -26,7 +26,7 @@ from aiohttp.helpers import parse_mimetype
 
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
-from .http import open_stream, post_json, request_data, request_json
+from .http import _request_body, open_stream, post_json, request_json
 from .remote_signer import (
     GetPaymentResponse,
     LivePaymentSession,
@@ -806,7 +806,7 @@ async def call_runner(
                     resp.status, resp.headers, runner_url, runner, payment_session, session, resp,
                 )
 
-            body, content_type = await request_data(
+            body, content_type = await _request_body(
                 runner_url,
                 method=method,
                 payload=request_payload,
