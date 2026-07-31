@@ -1023,7 +1023,7 @@ class TestMediaPublishStall:
                 for _ in range(writes_after_failure):
                     write_file.write(b"y" * 64)
                     write_file.flush()
-            except BaseException as e:  # noqa: BLE001
+            except Exception as e:
                 writer_errors.append(e)
             finally:
                 # Modeling PyAV rotating to the next segment: close our write

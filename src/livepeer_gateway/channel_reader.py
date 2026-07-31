@@ -24,7 +24,7 @@ before the next event is delivered.
 
 async def _maybe_await(value: object) -> None:
     if inspect.isawaitable(value):
-        await value
+        return await value
 
 
 class _ChannelReaderCallback:
@@ -175,7 +175,10 @@ class _ChannelReaderCallback:
                 try:
                     await self.wait_callback(timeout=timeout)
                 except TimeoutError:
-                    pass
+                    _LOG.debug(
+                        "%s callback did not finish before shutdown timeout; cancelling",
+                        type(self).__name__,
+                    )
             if not task.done():
                 task.cancel()
             (result,) = await asyncio.gather(task, return_exceptions=True)

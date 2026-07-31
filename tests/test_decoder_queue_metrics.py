@@ -215,7 +215,13 @@ async def _simulate_decoder_metric_drift(
                 await asyncio.sleep(delay_s)
     finally:
         stop_sampling.set()
-        await sampler_task
+        if not sampler_task.done():
+            sampler_task.cancel()
+        try:
+            await sampler_task
+        except asyncio.CancelledError:
+            # Expected after the explicit cancellation above.
+            pass
 
     final_stats = output.get_stats().decoder
     assert final_stats is not None

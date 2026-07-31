@@ -630,4 +630,4 @@ def _require_content_type(value: Optional[str], accepted: frozenset[str]) -> Non
 
 async def _maybe_await(value: None | Awaitable[None]) -> None:
     if inspect.isawaitable(value):
-        await value
+        return await value

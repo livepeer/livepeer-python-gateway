@@ -69,7 +69,8 @@ class LiveRunnerTrickleChannel(TypedDict):
 
 
 class LiveRunnerSessionHeaders(Protocol):
-    def get(self, key: str, default: str = "") -> str: ...
+    def get(self, key: str, default: str = "") -> str:
+        pass
 
 
 class LiveRunnerSessionRequest(Protocol):
@@ -282,7 +283,7 @@ class LiveRunnerRegistration:
             try:
                 await task
             except asyncio.CancelledError:
-                pass
+                _LOG.debug("Live runner heartbeat task cancelled during shutdown")
             except Exception:
                 _LOG.exception("Live runner heartbeat task failed during shutdown")
 
@@ -530,7 +531,7 @@ class LiveRunnerRegistration:
         try:
             self._active_session_ids.remove(session_id)
         except ValueError:
-            pass
+            _LOG.debug("Live runner session %s was already released", session_id)
 
 
 async def register_runner(
@@ -699,7 +700,8 @@ async def call_runner(
     timeout: float = ...,
     max_payment_challenge_retries: int = ...,
     stream: Literal[False] = False,
-) -> LiveRunnerCallResult: ...
+) -> LiveRunnerCallResult:
+    pass
 
 
 @overload
@@ -715,7 +717,8 @@ async def call_runner(
     timeout: float = ...,
     max_payment_challenge_retries: int = ...,
     stream: Literal[True],
-) -> LiveRunnerCallStream: ...
+) -> LiveRunnerCallStream:
+    pass
 
 
 async def call_runner(
