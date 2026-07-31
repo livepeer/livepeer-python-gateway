@@ -24,8 +24,8 @@ from .live_runner import (
     LiveRunnerInstance,
     LiveRunnerSession,
     _live_runner_price_info_from_json,
+    _stop_runner_session_by_url,
     call_runner,
-    stop_runner_session,
 )
 from .orch_info import get_orch_info
 
@@ -326,17 +326,13 @@ def _reserved_session_from_result(result: LiveRunnerCallResult) -> LiveRunnerSes
         raise LivepeerGatewayError("runner session response missing app_url")
     if not control_url:
         raise LivepeerGatewayError("runner session response missing control_url")
-    session = LiveRunnerSession(
+    return LiveRunnerSession(
         session_id=session_id.strip(),
         app_url=app_url.strip(),
         runner_url=result.runner_url,
-        runner=result.runner,
         control_url=control_url,
+        runner=result.runner,
     )
-    # Validate the reported URL before accepting the reservation or starting a
-    # background task. This also guarantees that funding is session-scoped.
-    _ = session.payment_url
-    return session
 
 
 async def _cleanup_rejected_reservation(
@@ -347,16 +343,12 @@ async def _cleanup_rejected_reservation(
     session_id = _string_value(result.data.get("session_id"))
     if not session_id:
         return
-    # Do not trust a malformed control_url during cleanup. The runner URL plus
-    # session id names the same stop endpoint and is safe for this best effort.
-    session = LiveRunnerSession(
-        session_id=session_id,
-        app_url=_string_value(result.data.get("app_url")),
-        runner_url=result.runner_url,
-        runner=result.runner,
-    )
     try:
-        await stop_runner_session(session, timeout=timeout)
+        await _stop_runner_session_by_url(
+            result.runner_url,
+            session_id,
+            timeout=timeout,
+        )
     except Exception:
         _LOG.debug(
             "Failed to clean up rejected runner reservation %s",

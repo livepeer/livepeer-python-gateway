@@ -119,15 +119,21 @@ class LiveRunnerSession:
     session_id: str
     app_url: str
     runner_url: str
-    runner: LiveRunnerInstance | None = None
     # Base URL for this session's control endpoints, as reported by the
     # orchestrator when the session was reserved.
-    control_url: str = ""
+    control_url: str
+    runner: LiveRunnerInstance | None = None
     # True once the orchestrator reported this session gone.
     released: bool = False
     _payment_task: asyncio.Task[None] | None = field(
         default=None, repr=False, compare=False
     )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.control_url, str) or not self.control_url.strip():
+            raise LivepeerGatewayError("Live runner session requires control_url")
+        self.control_url = self.control_url.strip()
+        _ = _payment_endpoint(self.control_url)
 
     @property
     def payment_url(self) -> str:
@@ -1147,20 +1153,7 @@ async def stop_runner_session(
         await session.stop_payments()
         if session.released:
             return
-
-        control_url = session.control_url.strip()
-        if control_url:
-            url = _join_endpoint(control_url, "stop")
-        else:
-            # Kept only for cleaning up a malformed legacy reservation. New
-            # reservations require control_url before they can be selected.
-            runner_url = session.runner_url.strip()
-            session_id = session.session_id.strip()
-            if not runner_url:
-                raise LivepeerGatewayError("Live runner session stop requires runner_url")
-            if not session_id:
-                raise LivepeerGatewayError("Live runner session stop requires session_id")
-            url = _join_endpoint(runner_url, f"/{quote(session_id, safe='')}/stop")
+        url = _join_endpoint(session.control_url, "stop")
     else:
         headers = getattr(session, "headers", None)
         get = getattr(headers, "get", None)
@@ -1178,6 +1171,26 @@ async def stop_runner_session(
     )
     if isinstance(session, LiveRunnerSession):
         session.released = True
+
+
+async def _stop_runner_session_by_url(
+    runner_url: str,
+    session_id: str,
+    *,
+    timeout: float = 5.0,
+) -> None:
+    """Best-effort cleanup path for a reservation with no valid control URL."""
+    runner_url = runner_url.strip()
+    session_id = session_id.strip()
+    if not runner_url:
+        raise LivepeerGatewayError("Live runner session cleanup requires runner_url")
+    if not session_id:
+        raise LivepeerGatewayError("Live runner session cleanup requires session_id")
+    await post_empty(
+        _join_endpoint(runner_url, f"/{quote(session_id, safe='')}/stop"),
+        headers={},
+        timeout=timeout,
+    )
 
 
 def detect_process_gpu() -> LiveRunnerGPU | None:

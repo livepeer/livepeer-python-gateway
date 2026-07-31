@@ -132,6 +132,7 @@ class TestLiveRunnerSession:
             session_id="session-1",
             app_url="https://service.example.com/app",
             runner_url="https://service.example.com/apps/runner-1/session",
+            control_url="https://service.example.com/apps/runner-1/session/session-1",
         )
 
         with mock.patch.object(live_runner, "post_empty", side_effect=_post_empty):

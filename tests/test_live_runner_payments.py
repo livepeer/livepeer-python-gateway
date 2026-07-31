@@ -315,7 +315,7 @@ class TestReservationSelection:
                 "runner_selector",
                 new=mock.AsyncMock(return_value=cursor),
             ),
-            mock.patch.object(selection, "stop_runner_session", cleanup),
+            mock.patch.object(selection, "_stop_runner_session_by_url", cleanup),
         ):
             session = await selection.reserve_session()
 
@@ -331,7 +331,11 @@ class TestReservationSelection:
                 "runner_selector",
                 new=mock.AsyncMock(return_value=cursor),
             ),
-            mock.patch.object(selection, "stop_runner_session", new=mock.AsyncMock()),
+            mock.patch.object(
+                selection,
+                "_stop_runner_session_by_url",
+                new=mock.AsyncMock(),
+            ),
             pytest.raises(NoRunnerAvailableError, match="missing control_url"),
         ):
             await selection.reserve_session()
