@@ -5,11 +5,76 @@ from unittest import mock
 
 import pytest
 
+from livepeer_gateway import lp_rpc_pb2
 from livepeer_gateway.errors import (
     PaymentError,
     SignerRefreshRequired,
 )
-from livepeer_gateway.remote_signer import LivePaymentSession, get_signer_info
+from livepeer_gateway.remote_signer import (
+    LivePaymentSession,
+    PaymentSession,
+    get_signer_info,
+)
+
+
+class TestPaymentSession:
+    def test_get_payment_round_trips_state_without_cross_session_leak(self) -> None:
+        calls: list[tuple[str, dict[str, object], dict[str, str] | None]] = []
+        request_counts: dict[str, int] = {}
+
+        def _post_json(
+            url: str,
+            payload: dict[str, object],
+            *,
+            headers: dict[str, str] | None = None,
+            timeout: float = 5.0,
+        ) -> dict[str, object]:
+            del timeout
+            calls.append((url, dict(payload), headers))
+            manifest_id = payload["ManifestID"]
+            assert isinstance(manifest_id, str)
+            request_counts[manifest_id] = request_counts.get(manifest_id, 0) + 1
+            sequence = request_counts[manifest_id]
+            return {
+                "payment": f"payment-{manifest_id}-{sequence}",
+                "segCreds": f"segment-{manifest_id}-{sequence}",
+                "state": {"session": manifest_id, "sequence": str(sequence)},
+            }
+
+        info = lp_rpc_pb2.OrchestratorInfo(transcoder="https://orch.example.com")
+        first_session = PaymentSession(
+            "https://signer.example.com",
+            info,
+            signer_headers={"Authorization": "token"},
+            type="lv2v",
+        )
+        first_session.set_manifest_id("first")
+        second_session = PaymentSession(
+            "https://signer.example.com",
+            info,
+            signer_headers={"Authorization": "token"},
+            type="lv2v",
+        )
+        second_session.set_manifest_id("second")
+
+        with mock.patch(
+            "livepeer_gateway.http.post_json_sync", side_effect=_post_json
+        ):
+            first_payment = first_session.get_payment()
+            second_payment = second_session.get_payment()
+            first_session.get_payment()
+            second_session.get_payment()
+
+        assert first_payment.payment == "payment-first-1"
+        assert second_payment.seg_creds == "segment-second-1"
+        assert [call[0] for call in calls] == [
+            "https://signer.example.com/generate-live-payment"
+        ] * 4
+        assert all(call[2] == {"Authorization": "token"} for call in calls)
+        assert "state" not in calls[0][1]
+        assert "state" not in calls[1][1]
+        assert calls[2][1]["state"] == {"session": "first", "sequence": "1"}
+        assert calls[3][1]["state"] == {"session": "second", "sequence": "1"}
 
 
 class TestLivePaymentSession:
