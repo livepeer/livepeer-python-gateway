@@ -305,9 +305,9 @@ async def _request_body(
 async def request_json(
     url: str,
     *,
-    method: Optional[str] = None,
-    payload: Optional[dict[str, Any]] = None,
-    headers: Optional[dict[str, str]] = None,
+    method: str | None = None,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
     timeout: float = 5.0,
 ) -> Any:
     """
@@ -406,7 +406,7 @@ async def get_json(
 async def post_empty(
     url: str,
     *,
-    headers: Optional[dict[str, str]] = None,
+    headers: dict[str, str] | None = None,
     timeout: float = 5.0,
 ) -> None:
     """POST an empty body to ``url`` and discard the response."""

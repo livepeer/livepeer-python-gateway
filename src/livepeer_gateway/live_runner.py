@@ -20,7 +20,7 @@ from typing import (
     overload,
 )
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import aiohttp
 from aiohttp.helpers import parse_mimetype
@@ -125,13 +125,13 @@ class LiveRunnerSession:
     control_url: str = ""
     # True once the orchestrator reported this session gone.
     released: bool = False
-    _payment_task: Optional[asyncio.Task[None]] = field(
+    _payment_task: asyncio.Task[None] | None = field(
         default=None, repr=False, compare=False
     )
 
     @property
     def payment_url(self) -> str:
-        """This session's payment endpoint, or "" when none was reported."""
+        """Return this session's required session-scoped payment endpoint."""
         return _payment_endpoint(self.control_url)
 
     def _start_payments(self, payment_session: LivePaymentSession) -> None:
@@ -149,10 +149,15 @@ class LiveRunnerSession:
         Useful to hand funding to something else, or to let a session lapse
         deliberately. Closing the session stops payments too.
         """
-        self._payment_task = await _stop_funding(self._payment_task)
+        await _stop_funding(self._payment_task)
+        self._payment_task = None
 
     async def aclose(self) -> None:
+        # Stop funding first so a slow or failed remote stop cannot mint another
+        # payment while this session is being closed.
         await self.stop_payments()
+        if not self.released:
+            await stop_runner_session(self)
 
     async def __aenter__(self) -> LiveRunnerSession:
         return self
@@ -179,7 +184,7 @@ class LiveRunnerCallResult:
         compare=False,
     )
     # Non-JSON responses (an image, say) arrive unparsed in `content`; `data` stays empty.
-    content: Optional[bytes] = field(default=None, repr=False)
+    content: bytes | None = field(default=None, repr=False)
     content_type: str = ""
 
 
@@ -201,7 +206,7 @@ class LiveRunnerCallStream:
     _response: aiohttp.ClientResponse = field(repr=False, compare=False)
     # True once the orchestrator reported the backing session gone.
     released: bool = False
-    _payment_task: Optional[asyncio.Task[None]] = field(
+    _payment_task: asyncio.Task[None] | None = field(
         default=None, repr=False, compare=False
     )
 
@@ -220,7 +225,7 @@ class LiveRunnerCallStream:
     def _start_payments(
         self,
         payment_session: LivePaymentSession,
-        payment_url: str = "",
+        payment_url: str,
     ) -> None:
         if self._payment_task is not None:
             return
@@ -232,7 +237,8 @@ class LiveRunnerCallStream:
 
     async def aclose(self) -> None:
         # Stop funding first: don't pay for a stream we are about to drop.
-        self._payment_task = await _stop_funding(self._payment_task)
+        await _stop_funding(self._payment_task)
+        self._payment_task = None
         self._response.release()
         await self._session.close()
 
@@ -871,7 +877,11 @@ async def call_runner(
                 payment_url = _payment_endpoint(
                     _session_control_url(
                         challenge.orchestrator_url,
-                        runner.runner_id if runner is not None else "",
+                        (
+                            runner.runner_id
+                            if runner is not None
+                            else _runner_id_from_url(runner_url)
+                        ),
                         session_id,
                     )
                 )
@@ -995,50 +1005,63 @@ def _session_control_url(orchestrator_url: str, runner_id: str, session_id: str)
     """Rebuild the control URL an orchestrator reports when reserving a session.
 
     Single-shot calls never receive one, since a payment challenge carries only
-    the orchestrator, the runner and the session id. Returns "" if a part is
-    missing.
+    the orchestrator, the runner and the session id.
     """
     if not (orchestrator_url and runner_id and session_id):
-        return ""
-    try:
-        return _join_endpoint(
-            orchestrator_url,
-            f"/apps/{quote(runner_id, safe='')}/session/{quote(session_id, safe='')}",
+        raise LivepeerGatewayError(
+            "Live runner session payment requires orchestrator, runner_id, and session_id"
         )
-    except LivepeerGatewayError:
+    return _join_endpoint(
+        orchestrator_url,
+        f"/apps/{quote(runner_id, safe='')}/session/{quote(session_id, safe='')}",
+    )
+
+
+def _runner_id_from_url(runner_url: str) -> str:
+    """Extract the runner id from a canonical ``/apps/{id}/...`` URL."""
+    parts = [part for part in urlparse(runner_url).path.split("/") if part]
+    try:
+        apps_index = parts.index("apps")
+        runner_id = parts[apps_index + 1]
+    except (ValueError, IndexError):
         return ""
+    return unquote(runner_id)
 
 
 def _payment_endpoint(control_url: str) -> str:
     """The session-scoped payment endpoint under a control URL.
 
-    Unlike the generic ``/payment``, it 404s once the session is gone. Returns
-    "" without a control URL, so callers fall back to the generic endpoint.
+    Unlike the generic ``/payment``, it 404s once the session is gone.
     """
-    return _join_endpoint(control_url, "payment") if control_url else ""
+    if not control_url.strip():
+        raise LivepeerGatewayError(
+            "Live runner session payment requires control_url; refusing generic /payment fallback"
+        )
+    return _join_endpoint(control_url, "payment")
 
 
 def _start_funding(
     payment_session: LivePaymentSession,
     payment_url: str,
-    on_released: Optional[Callable[[], None]] = None,
+    on_released: Callable[[], None] | None = None,
 ) -> asyncio.Task[None]:
     """Run payments in the background for as long as the caller keeps the task."""
 
     async def _fund() -> None:
-        released = await payment_session.run_payments(payment_url=payment_url or None)
+        released = await payment_session.run_payments(payment_url=payment_url)
         if released and on_released is not None:
             on_released()
 
     return asyncio.create_task(_fund())
 
 
-async def _stop_funding(task: Optional[asyncio.Task[None]]) -> None:
-    if task is not None and not task.done():
+async def _stop_funding(task: asyncio.Task[None] | None) -> None:
+    if task is None:
+        return
+    if not task.done():
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-    return None
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 async def _get_runner_payment(
@@ -1119,13 +1142,25 @@ async def stop_runner_session(
 ) -> None:
     request_headers: dict[str, str] = {}
     if isinstance(session, LiveRunnerSession):
-        runner_url = session.runner_url.strip()
-        session_id = session.session_id.strip()
-        if not runner_url:
-            raise LivepeerGatewayError("Live runner session stop requires runner_url")
-        if not session_id:
-            raise LivepeerGatewayError("Live runner session stop requires session_id")
-        url = _join_endpoint(runner_url, f"/{quote(session_id, safe='')}/stop")
+        # This helper is also the public cleanup path, so callers that do not
+        # use aclose() still stop local funding before the remote reservation.
+        await session.stop_payments()
+        if session.released:
+            return
+
+        control_url = session.control_url.strip()
+        if control_url:
+            url = _join_endpoint(control_url, "stop")
+        else:
+            # Kept only for cleaning up a malformed legacy reservation. New
+            # reservations require control_url before they can be selected.
+            runner_url = session.runner_url.strip()
+            session_id = session.session_id.strip()
+            if not runner_url:
+                raise LivepeerGatewayError("Live runner session stop requires runner_url")
+            if not session_id:
+                raise LivepeerGatewayError("Live runner session stop requires session_id")
+            url = _join_endpoint(runner_url, f"/{quote(session_id, safe='')}/stop")
     else:
         headers = getattr(session, "headers", None)
         get = getattr(headers, "get", None)
@@ -1141,6 +1176,8 @@ async def stop_runner_session(
         headers=request_headers,
         timeout=timeout,
     )
+    if isinstance(session, LiveRunnerSession):
+        session.released = True
 
 
 def detect_process_gpu() -> LiveRunnerGPU | None:

@@ -287,14 +287,19 @@ class LivePaymentSession:
         }
         await post_empty(url, headers=headers, timeout=5.0)
 
-    async def run_payments(self, *, payment_url: Optional[str] = None) -> bool:
+    async def run_payments(self, *, payment_url: str) -> bool:
         """Keep a metered session funded until cancelled or the session ends.
 
         Cancel the task to stop; the first payment waits one interval, since
-        the caller pays upfront. Pass the session-scoped ``payment_url`` to
-        learn when the session is gone, since the generic ``/payment`` credits
-        blindly. Returns True if the orchestrator reported it gone.
+        the caller pays upfront. ``payment_url`` must be the session-scoped
+        endpoint; the generic ``/payment`` endpoint is intentionally unsupported
+        because it cannot report that the session is gone. Returns True if the
+        orchestrator reported it gone.
         """
+        if not payment_url.strip():
+            raise PaymentError(
+                "session-scoped payment_url is required; refusing generic /payment fallback"
+            )
         while True:
             await asyncio.sleep(PAYMENT_INTERVAL_S)
             try:

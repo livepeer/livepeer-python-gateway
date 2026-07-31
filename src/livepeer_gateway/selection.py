@@ -25,6 +25,7 @@ from .live_runner import (
     LiveRunnerSession,
     _live_runner_price_info_from_json,
     call_runner,
+    stop_runner_session,
 )
 from .orch_info import get_orch_info
 
@@ -293,25 +294,75 @@ async def reserve_session(
         gpu=gpu,
         timeout=timeout,
     )
-    result = await cursor.next()
+    while True:
+        result = await cursor.next()
+        try:
+            session = _reserved_session_from_result(result)
+        except LivepeerGatewayError as e:
+            await _cleanup_rejected_reservation(result, timeout=timeout)
+            cursor.rejections.append(
+                RunnerRejection(url=result.runner_url, reason=str(e))
+            )
+            _LOG.debug(
+                "reserve_session rejected candidate %s: %s",
+                result.runner_url,
+                e,
+            )
+            continue
+
+        # No payment session means fixed price or offchain: nothing to fund.
+        if result.payment_session is not None:
+            session._start_payments(result.payment_session)
+        return session
+
+
+def _reserved_session_from_result(result: LiveRunnerCallResult) -> LiveRunnerSession:
     session_id = result.data.get("session_id")
     app_url = result.data.get("app_url")
+    control_url = _string_value(result.data.get("control_url"))
     if not isinstance(session_id, str) or not session_id.strip():
         raise LivepeerGatewayError("runner session response missing session_id")
     if not isinstance(app_url, str) or not app_url.strip():
         raise LivepeerGatewayError("runner session response missing app_url")
+    if not control_url:
+        raise LivepeerGatewayError("runner session response missing control_url")
     session = LiveRunnerSession(
         session_id=session_id.strip(),
         app_url=app_url.strip(),
         runner_url=result.runner_url,
         runner=result.runner,
-        control_url=_string_value(result.data.get("control_url")),
+        control_url=control_url,
     )
-
-    # No payment session means fixed price or offchain: nothing to fund.
-    if result.payment_session is not None:
-        session._start_payments(result.payment_session)
+    # Validate the reported URL before accepting the reservation or starting a
+    # background task. This also guarantees that funding is session-scoped.
+    _ = session.payment_url
     return session
+
+
+async def _cleanup_rejected_reservation(
+    result: LiveRunnerCallResult,
+    *,
+    timeout: float,
+) -> None:
+    session_id = _string_value(result.data.get("session_id"))
+    if not session_id:
+        return
+    # Do not trust a malformed control_url during cleanup. The runner URL plus
+    # session id names the same stop endpoint and is safe for this best effort.
+    session = LiveRunnerSession(
+        session_id=session_id,
+        app_url=_string_value(result.data.get("app_url")),
+        runner_url=result.runner_url,
+        runner=result.runner,
+    )
+    try:
+        await stop_runner_session(session, timeout=timeout)
+    except Exception:
+        _LOG.debug(
+            "Failed to clean up rejected runner reservation %s",
+            result.runner_url,
+            exc_info=True,
+        )
 
 
 def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list[LiveRunnerInstance]:
