@@ -84,16 +84,21 @@ class TestLiveRunnerHelpers:
 
 class TestLiveRunnerSession:
     async def test_call_runner_returns_json_and_metadata(self) -> None:
-        calls: list[tuple[str, str | None, dict[str, object] | None, float]] = []
+        calls: list[
+            tuple[
+                str, str | None, dict[str, object] | None, dict[str, str] | None, float
+            ]
+        ] = []
 
         def _request_body(
             url: str,
             *,
             method: str | None = None,
             payload: dict[str, object] | None = None,
+            headers: dict[str, str] | None = None,
             timeout: float,
         ) -> tuple[bytes, str]:
-            calls.append((url, method, payload, timeout))
+            calls.append((url, method, payload, headers, timeout))
             return _json_data({"session_id": "session-1", "ok": "true"})
 
         with mock.patch.object(live_runner, "_request_body", side_effect=_request_body):
@@ -109,6 +114,7 @@ class TestLiveRunnerSession:
                 "https://service.example.com/apps/runner-1/app",
                 "PUT",
                 {"hello": "world"},
+                {"Accept": "*/*"},
                 9.0,
             )
         ]
@@ -189,9 +195,11 @@ class TestLiveRunnerSession:
             *,
             method: str | None = None,
             payload: dict[str, object] | None = None,
+            headers: dict[str, str] | None = None,
             timeout: float,
         ) -> tuple[bytes, str]:
             del method, payload, timeout
+            assert headers == {"Accept": "*/*"}
             return _json_data(
                 {
                     "session_id": "session-1",
@@ -271,7 +279,10 @@ class TestLiveRunnerSession:
         assert calls[1][1] == "PATCH"
         assert calls[0][2] == {"prompt": "hi"}
         assert calls[1][2] == {"prompt": "hi"}
-        assert calls[0][3] == {"Livepeer-Payer-Address": "opaque-payer"}
+        assert calls[0][3] == {
+            "Accept": "*/*",
+            "Livepeer-Payer-Address": "opaque-payer",
+        }
         assert sessions == [
             {
                 "signer_url": "https://signer.example.com",
@@ -284,6 +295,7 @@ class TestLiveRunnerSession:
         ]
         assert result.payment_session is payment_sessions[0]
         assert calls[1][3] == {
+            "Accept": "*/*",
             "Livepeer-Payer-Address": "opaque-payer",
             "Livepeer-Payment": "payment-b64",
             "Livepeer-Segment": "seg-b64",
@@ -501,12 +513,14 @@ class TestLiveRunnerSession:
         assert result.session_id == "manifest-2"
         assert result.payment_session is payment_sessions[1]
         challenge_headers = {
+            "Accept": "*/*",
             "Livepeer-Payer-Address": "opaque-payer",
         }
         assert [headers for url, _, _, headers in calls if url == runner_url] == [
             challenge_headers,
             challenge_headers,
             {
+                "Accept": "*/*",
                 "Livepeer-Payer-Address": "opaque-payer",
                 "Livepeer-Payment": "payment-2",
                 "Livepeer-Segment": "seg-2",
@@ -587,8 +601,8 @@ class TestLiveRunnerSession:
                 )
 
         assert calls == [
-            {"Livepeer-Payer-Address": "opaque-payer"},
-            {"Livepeer-Payer-Address": "opaque-payer"},
+            {"Accept": "*/*", "Livepeer-Payer-Address": "opaque-payer"},
+            {"Accept": "*/*", "Livepeer-Payer-Address": "opaque-payer"},
         ]
         assert unpaid_count == 2
         assert payment_attempts == 2
