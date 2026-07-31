@@ -554,7 +554,9 @@ class MediaOutput:
                 try:
                     await self.wait_callbacks(timeout=timeout)
                 except TimeoutError:
-                    pass
+                    _LOG.debug(
+                        "Media output callbacks did not finish before shutdown timeout; cancelling"
+                    )
             for task in callback_tasks:
                 if not task.done():
                     task.cancel()
@@ -630,4 +632,5 @@ def _require_content_type(value: Optional[str], accepted: frozenset[str]) -> Non
 
 async def _maybe_await(value: None | Awaitable[None]) -> None:
     if inspect.isawaitable(value):
-        return await value
+        _ = await value
+    return None

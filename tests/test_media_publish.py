@@ -1031,6 +1031,7 @@ class TestMediaPublishStall:
                 try:
                     write_file.close()
                 except Exception:
+                    # Best-effort cleanup may race with concurrent test teardown.
                     pass
 
         writer_thread = threading.Thread(target=_simulated_encoder, daemon=True)

@@ -24,7 +24,8 @@ before the next event is delivered.
 
 async def _maybe_await(value: object) -> None:
     if inspect.isawaitable(value):
-        return await value
+        _ = await value
+    return None
 
 
 class _ChannelReaderCallback:
