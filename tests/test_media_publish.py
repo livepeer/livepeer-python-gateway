@@ -135,6 +135,127 @@ class TestMediaPublishInit:
         media._loop = object()  # bypass _open_container loop check in unit tests
         return media
 
+    def test_four_track_publish_initializes_every_configured_stream(self) -> None:
+        configs = [
+            media_publish_mod.VideoOutputConfig(
+                queue_size=2,
+                fps=12,
+                codec="video-codec-0",
+            ),
+            media_publish_mod.VideoOutputConfig(
+                queue_size=3,
+                fps=24,
+                codec="video-codec-1",
+            ),
+            media_publish_mod.AudioOutputConfig(
+                queue_size=4,
+                codec="audio-codec-0",
+                sample_rate=48_000,
+                layout="mono",
+                format="fltp",
+            ),
+            media_publish_mod.AudioOutputConfig(
+                queue_size=5,
+                codec="audio-codec-1",
+                sample_rate=44_100,
+                layout="stereo",
+                format="flt",
+            ),
+        ]
+        media = media_publish_mod.MediaPublish(
+            "http://example.test/trickle",
+            config=media_publish_mod.MediaPublishConfig(tracks=configs),
+        )
+        media._loop = object()
+
+        video_tracks = media.get_tracks("video")
+        audio_tracks = media.get_tracks("audio")
+        assert len(media.tracks) == 4
+        assert [track.index for track in video_tracks] == [0, 1]
+        assert [track.index for track in audio_tracks] == [0, 1]
+        assert [track._label for track in media.tracks] == [
+            "video_0",
+            "video_1",
+            "audio_0",
+            "audio_1",
+        ]
+        assert [track.config for track in media.tracks] == configs
+        assert len({id(track._queue) for track in media.tracks}) == 4
+        assert [track._queue.maxsize for track in media.tracks] == [2, 3, 4, 5]
+
+        media._stage_frame_before_open(
+            video_tracks[0], _FakeVideoFrame(width=160, height=90)
+        )
+        media._stage_frame_before_open(
+            video_tracks[1], _FakeVideoFrame(width=320, height=180)
+        )
+        media._stage_frame_before_open(
+            audio_tracks[0], _FakeAudioFrame(sample_rate=48_000, layout="mono")
+        )
+        media._stage_frame_before_open(
+            audio_tracks[1], _FakeAudioFrame(sample_rate=44_100, layout="stereo")
+        )
+        assert media._can_open_container()
+
+        fake_container = _FakeContainer()
+        with mock.patch.object(
+            media_publish_mod.av, "open", return_value=fake_container
+        ):
+            media._open_container()
+
+        assert [stream.codec for stream in fake_container.added_streams] == [
+            "video-codec-0",
+            "video-codec-1",
+            "audio-codec-0",
+            "audio-codec-1",
+        ]
+        assert [stream.rate for stream in fake_container.added_streams] == [
+            12,
+            24,
+            48_000,
+            44_100,
+        ]
+        assert [stream.layout for stream in fake_container.added_streams[2:]] == [
+            "mono",
+            "stereo",
+        ]
+        assert [stream.format for stream in fake_container.added_streams[2:]] == [
+            "fltp",
+            "flt",
+        ]
+
+    def test_multi_track_writes_require_an_explicit_track_handle(self) -> None:
+        media = media_publish_mod.MediaPublish(
+            "http://example.test/trickle",
+            config=media_publish_mod.MediaPublishConfig(
+                tracks=[
+                    media_publish_mod.VideoOutputConfig(),
+                    media_publish_mod.VideoOutputConfig(),
+                    media_publish_mod.AudioOutputConfig(),
+                    media_publish_mod.AudioOutputConfig(),
+                ]
+            ),
+        )
+        video_frame = _FakeVideoFrame()
+        audio_frame = _FakeAudioFrame()
+
+        with pytest.raises(TypeError, match="ambiguous with multiple video tracks"):
+            asyncio.run(media.write_frame(video_frame))
+        with pytest.raises(TypeError, match="ambiguous with multiple audio tracks"):
+            asyncio.run(media.write_frame(audio_frame))
+
+        with mock.patch.object(
+            media, "_write_frame_to_track", new_callable=mock.AsyncMock
+        ) as write_to_track:
+            selected_video = media.get_tracks("video")[1]
+            asyncio.run(selected_video.write_frame(video_frame))
+            write_to_track.assert_awaited_once_with(selected_video, video_frame)
+
+            write_to_track.reset_mock()
+            selected_audio = media.get_tracks("audio")[0]
+            asyncio.run(selected_audio.write_frame(audio_frame))
+            write_to_track.assert_awaited_once_with(selected_audio, audio_frame)
+
     def test_delayed_audio_arrives_before_timeout(self) -> None:
         media = self._build_media(timeout_s=5.0)
         video_track = media._tracks[0]
