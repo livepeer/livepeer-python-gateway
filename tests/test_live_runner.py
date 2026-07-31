@@ -86,17 +86,17 @@ class TestLiveRunnerSession:
     async def test_call_runner_returns_json_and_metadata(self) -> None:
         calls: list[tuple[str, str | None, dict[str, object] | None, float]] = []
 
-        def _request_json(
+        def _request_data(
             url: str,
             *,
             method: str | None = None,
             payload: dict[str, object] | None = None,
             timeout: float,
-        ) -> dict[str, str]:
+        ) -> tuple[bytes, str, str]:
             calls.append((url, method, payload, timeout))
-            return {"session_id": "session-1", "ok": "true"}
+            return _json_data({"session_id": "session-1", "ok": "true"})
 
-        with mock.patch.object(live_runner, "request_json", side_effect=_request_json):
+        with mock.patch.object(live_runner, "request_data", side_effect=_request_data):
             result = await call_runner(
                 "https://service.example.com/apps/runner-1/app",
                 payload={"hello": "world"},
@@ -184,20 +184,22 @@ class TestLiveRunnerSession:
             raw={"label": "echo"},
         )
 
-        def _request_json(
+        def _request_data(
             url: str,
             *,
             method: str | None = None,
             payload: dict[str, object] | None = None,
             timeout: float,
-        ) -> dict[str, str]:
+        ) -> tuple[bytes, str, str]:
             del method, payload, timeout
-            return {
-                "session_id": "session-1",
-                "app_url": "https://service.example.com/app",
-            }
+            return _json_data(
+                {
+                    "session_id": "session-1",
+                    "app_url": "https://service.example.com/app",
+                }
+            )
 
-        with mock.patch.object(live_runner, "request_json", side_effect=_request_json):
+        with mock.patch.object(live_runner, "request_data", side_effect=_request_data):
             result = await call_runner(runner=runner)
 
         assert result.runner is runner
@@ -220,25 +222,27 @@ class TestLiveRunnerSession:
             async def get_payment(self) -> object:
                 return SimpleNamespace(payment="payment-b64", seg_creds="seg-b64")
 
-        def _request_json(
+        def _request_data(
             url: str,
             *,
             method: str | None = None,
             payload: dict[str, object] | None = None,
             headers: dict[str, str] | None = None,
             timeout: float,
-        ) -> dict[str, str]:
+        ) -> tuple[bytes, str, str]:
             calls.append((url, method, payload, headers, timeout))
             if len([call for call in calls if call[0] == runner_url]) == 1:
                 body = _payment_challenge_body("manifest-1")
                 raise LivepeerHTTPError(402, url, body, "payment required")
-            return {
-                "session_id": "session-1",
-                "app_url": "https://service.example.com/app",
-            }
+            return _json_data(
+                {
+                    "session_id": "session-1",
+                    "app_url": "https://service.example.com/app",
+                }
+            )
 
         with (
-            mock.patch.object(live_runner, "request_json", side_effect=_request_json),
+            mock.patch.object(live_runner, "request_data", side_effect=_request_data),
             mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
             mock.patch.object(
                 live_runner,
@@ -305,23 +309,23 @@ class TestLiveRunnerSession:
             async def get_payment(self) -> object:
                 return SimpleNamespace(payment="payment-b64", seg_creds="seg-b64")
 
-        def _request_json(
+        def _request_data(
             url: str,
             *,
             method: str | None = None,
             payload: dict[str, object] | None = None,
             headers: dict[str, str] | None = None,
             timeout: float,
-        ) -> dict[str, str]:
+        ) -> tuple[bytes, str, str]:
             del method, payload, timeout
             if headers and "Livepeer-Payment" in headers:
-                return {"session_id": "session-1"}
+                return _json_data({"session_id": "session-1"})
             raise LivepeerHTTPError(
                 402, url, _payment_challenge_body("manifest-scope"), "payment required"
             )
 
         with (
-            mock.patch.object(live_runner, "request_json", side_effect=_request_json),
+            mock.patch.object(live_runner, "request_data", side_effect=_request_data),
             mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
             mock.patch.object(
                 live_runner,
@@ -376,14 +380,14 @@ class TestLiveRunnerSession:
                     seg_creds=f"fixed-segment-{payment_number}",
                 )
 
-        def _request_json(
+        def _request_data(
             url: str,
             *,
             method: str | None = None,
             payload: dict[str, object] | None = None,
             headers: dict[str, str] | None = None,
             timeout: float,
-        ) -> dict[str, str]:
+        ) -> tuple[bytes, str, str]:
             nonlocal runner_calls
             del method, payload, timeout
             runner_calls += 1
@@ -395,13 +399,15 @@ class TestLiveRunnerSession:
                     "payment required",
                 )
             assert headers["Livepeer-Payment"] == "fixed-payment-2"
-            return {
-                "session_id": "fixed-manifest",
-                "app_url": "https://service.example.com/app",
-            }
+            return _json_data(
+                {
+                    "session_id": "fixed-manifest",
+                    "app_url": "https://service.example.com/app",
+                }
+            )
 
         with (
-            mock.patch.object(live_runner, "request_json", side_effect=_request_json),
+            mock.patch.object(live_runner, "request_data", side_effect=_request_data),
             mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
             mock.patch.object(
                 live_runner,
@@ -448,22 +454,24 @@ class TestLiveRunnerSession:
                     raise SignerRefreshRequired("refresh")
                 return SimpleNamespace(payment="payment-2", seg_creds="seg-2")
 
-        def _request_json(
+        def _request_data(
             url: str,
             *,
             method: str | None = None,
             payload: dict[str, object] | None = None,
             headers: dict[str, str] | None = None,
             timeout: float,
-        ) -> dict[str, str]:
+        ) -> tuple[bytes, str, str]:
             nonlocal unpaid_count
             del timeout
             calls.append((url, method, payload, headers))
             if headers and "Livepeer-Payment" in headers:
-                return {
-                    "session_id": "session-2",
-                    "app_url": "https://service.example.com/app",
-                }
+                return _json_data(
+                    {
+                        "session_id": "session-2",
+                        "app_url": "https://service.example.com/app",
+                    }
+                )
             unpaid_count += 1
             raise LivepeerHTTPError(
                 402,
@@ -473,7 +481,7 @@ class TestLiveRunnerSession:
             )
 
         with (
-            mock.patch.object(live_runner, "request_json", side_effect=_request_json),
+            mock.patch.object(live_runner, "request_data", side_effect=_request_data),
             mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
             mock.patch.object(
                 live_runner,
@@ -540,14 +548,14 @@ class TestLiveRunnerSession:
                 payment_attempts += 1
                 raise SignerRefreshRequired("fixed price not found for session")
 
-        def _request_json(
+        def _request_data(
             url: str,
             *,
             method: str | None = None,
             payload: dict[str, object] | None = None,
             headers: dict[str, str] | None = None,
             timeout: float,
-        ) -> dict[str, str]:
+        ) -> tuple[bytes, str, str]:
             nonlocal unpaid_count
             del method, payload, timeout
             calls.append(headers)
@@ -560,7 +568,7 @@ class TestLiveRunnerSession:
             )
 
         with (
-            mock.patch.object(live_runner, "request_json", side_effect=_request_json),
+            mock.patch.object(live_runner, "request_data", side_effect=_request_data),
             mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
             mock.patch.object(
                 live_runner,
@@ -594,6 +602,10 @@ def _payment_challenge_body(manifest_id: str) -> str:
             "manifest_id": manifest_id,
         }
     )
+
+
+def _json_data(data: dict[str, object]) -> tuple[bytes, str, str]:
+    return json.dumps(data).encode("utf-8"), "application/json", "utf-8"
 
 
 class _FakeO2RReader:

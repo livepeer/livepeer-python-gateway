@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 
 from livepeer_gateway.errors import LivepeerGatewayError, LivepeerHTTPError
+from livepeer_gateway.http import request_json
 from livepeer_gateway.live_runner import call_runner
 
 FAKE_JPEG = b"\xff\xd8\xff\xe0" + b"jpeg-bytes" * 100
@@ -123,6 +124,57 @@ def test_invalid_json_with_json_content_type_raises():
         _run(app, scenario)
     # The content type is in the message: it is what routed us into parsing.
     assert "content_type=application/json" in str(excinfo.value)
+
+
+def test_json_response_uses_declared_charset():
+    body = '{"message": "café"}'.encode("iso-8859-1")
+
+    async def handler(request):
+        return web.Response(
+            body=body,
+            content_type="application/json",
+            charset="iso-8859-1",
+        )
+
+    app = web.Application()
+    app.router.add_route("*", "/charset", handler)
+
+    async def scenario(base):
+        direct = await request_json(f"{base}/charset")
+        result = await call_runner(f"{base}/charset", payload={})
+        return direct, result
+
+    direct, result = _run(app, scenario)
+    assert direct == {"message": "café"}
+    assert result.data == {"message": "café"}
+
+
+def test_invalid_json_encoding_raises_gateway_error():
+    async def handler(request):
+        return web.Response(
+            body=b'{"message": "\xff"}',
+            content_type="application/json",
+        )
+
+    app = web.Application()
+    app.router.add_route("*", "/bad-encoding", handler)
+
+    async def scenario(base):
+        errors = []
+        for request in (
+            request_json(f"{base}/bad-encoding"),
+            call_runner(f"{base}/bad-encoding", payload={}),
+        ):
+            try:
+                await request
+            except Exception as exc:
+                errors.append(exc)
+        return errors
+
+    errors = _run(app, scenario)
+    assert len(errors) == 2
+    assert all(isinstance(error, LivepeerGatewayError) for error in errors)
+    assert all("did not return valid JSON" in str(error) for error in errors)
 
 
 def test_json_array_still_rejected():
