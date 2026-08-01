@@ -173,7 +173,7 @@ class TestStopRunnerSession:
         await asyncio.wait_for(payment_session.started.wait(), timeout=1.0)
         post_empty = mock.AsyncMock()
 
-        with mock.patch.object(live_runner, "post_empty", post_empty):
+        with mock.patch.object(live_runner, "_post_empty", post_empty):
             await live_runner.stop_runner_session(session, timeout=12.0)
 
         assert payment_session.cancelled.is_set()
@@ -194,7 +194,7 @@ class TestStopRunnerSession:
         with (
             mock.patch.object(
                 live_runner,
-                "post_empty",
+                "_post_empty",
                 new=mock.AsyncMock(side_effect=LivepeerGatewayError("stop failed")),
             ),
             pytest.raises(LivepeerGatewayError, match="stop failed"),
@@ -213,7 +213,7 @@ class TestStopRunnerSession:
         session.released = True
         post_empty = mock.AsyncMock()
 
-        with mock.patch.object(live_runner, "post_empty", post_empty):
+        with mock.patch.object(live_runner, "_post_empty", post_empty):
             await live_runner.stop_runner_session(session)
 
         assert payment_session.cancelled.is_set()

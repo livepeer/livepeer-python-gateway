@@ -27,7 +27,7 @@ from aiohttp.helpers import parse_mimetype
 
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
-from .http import _request_body, open_stream, post_empty, post_json, request_json
+from .http import _post_empty, _request_body, open_stream, post_json, request_json
 from .remote_signer import (
     GetPaymentResponse,
     LivePaymentChallenge,
@@ -369,7 +369,7 @@ class LiveRunnerRegistration:
                 _LOG.warning("Skipping live runner unregister without heartbeat secret")
                 return
             try:
-                await post_empty(
+                await _post_empty(
                     _join_endpoint(self.orchestrator_url, f"/runners/{quote(self.runner_id, safe='')}/unregister"),
                     headers={"Authorization": secret},
                     timeout=self._timeout,
@@ -1089,7 +1089,7 @@ async def stop_runner_session(
         url = _join_endpoint(control_url, "stop")
         if isinstance(token, str) and token.strip():
             request_headers = {"Livepeer-Session-Token": token}
-    await post_empty(
+    await _post_empty(
         url,
         headers=request_headers,
         timeout=timeout,

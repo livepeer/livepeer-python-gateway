@@ -403,7 +403,7 @@ async def get_json(
     return await request_json(url, headers=headers, timeout=timeout)
 
 
-async def post_empty(
+async def _post_empty(
     url: str,
     *,
     headers: dict[str, str] | None = None,

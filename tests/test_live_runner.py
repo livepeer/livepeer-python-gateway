@@ -168,7 +168,7 @@ class TestLiveRunnerSession:
             control_url="https://service.example.com/apps/runner-1/session/session-1",
         )
 
-        with mock.patch.object(live_runner, "post_empty", side_effect=_post_empty):
+        with mock.patch.object(live_runner, "_post_empty", side_effect=_post_empty):
             await stop_runner_session(session)
 
         assert stopped == [
@@ -192,7 +192,7 @@ class TestLiveRunnerSession:
             }
         )
 
-        with mock.patch.object(live_runner, "post_empty", side_effect=_post_empty):
+        with mock.patch.object(live_runner, "_post_empty", side_effect=_post_empty):
             await stop_runner_session(request, timeout=12.0)
 
         assert stopped == [
@@ -1068,7 +1068,7 @@ class TestLiveRunnerRegistration:
                 "heartbeat_secret": "heartbeat-token",
             },
         ):
-            with mock.patch.object(live_runner, "post_empty", side_effect=_post_empty):
+            with mock.patch.object(live_runner, "_post_empty", side_effect=_post_empty):
                 reg = await register_runner(
                     "http://orch.example.com",
                     secret="secret-token",

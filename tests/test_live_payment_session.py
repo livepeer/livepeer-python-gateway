@@ -124,7 +124,7 @@ class TestLivePaymentSession:
                     return_value=types.SimpleNamespace(payment="p", seg_creds="s")
                 ),
             ),
-            mock.patch("livepeer_gateway.http.post_empty", post_empty),
+            mock.patch("livepeer_gateway.http._post_empty", post_empty),
         ):
             await session.send_payment()
 
@@ -156,7 +156,7 @@ class TestLivePaymentSession:
                 ),
             ),
             mock.patch(
-                "livepeer_gateway.http.post_empty",
+                "livepeer_gateway.http._post_empty",
                 new=mock.AsyncMock(side_effect=error),
             ),
         ):

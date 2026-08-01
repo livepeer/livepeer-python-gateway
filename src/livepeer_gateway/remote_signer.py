@@ -256,7 +256,7 @@ class LivePaymentSession:
         if not self._signer_url:
             return
 
-        from .http import post_empty
+        from .http import _post_empty
 
         payment = await self.get_payment()
         if not payment.seg_creds:
@@ -267,7 +267,7 @@ class LivePaymentSession:
             "Livepeer-Payment": payment.payment,
             "Livepeer-Segment": payment.seg_creds,
         }
-        await post_empty(self._challenge.payment_url, headers=headers, timeout=5.0)
+        await _post_empty(self._challenge.payment_url, headers=headers, timeout=5.0)
 
     async def run_payments(self) -> bool:
         """Keep a metered session funded until cancelled or the session ends.
