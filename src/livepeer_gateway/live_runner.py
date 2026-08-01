@@ -20,7 +20,7 @@ from typing import (
     overload,
 )
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from urllib.parse import quote, unquote, urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 
 import aiohttp
 from aiohttp.helpers import parse_mimetype
@@ -30,6 +30,7 @@ from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequir
 from .http import _request_body, open_stream, post_empty, post_json, request_json
 from .remote_signer import (
     GetPaymentResponse,
+    LivePaymentChallenge,
     LivePaymentSession,
     _freeze_headers,
     get_signer_info,
@@ -133,19 +134,13 @@ class LiveRunnerSession:
         if not isinstance(self.control_url, str) or not self.control_url.strip():
             raise LivepeerGatewayError("Live runner session requires control_url")
         self.control_url = self.control_url.strip()
-        _ = _payment_endpoint(self.control_url)
-
-    @property
-    def payment_url(self) -> str:
-        """Return this session's required session-scoped payment endpoint."""
-        return _payment_endpoint(self.control_url)
+        _ = _join_endpoint(self.control_url, "stop")
 
     def _start_payments(self, payment_session: LivePaymentSession) -> None:
         if self._payment_task is not None:
             return
         self._payment_task = _start_funding(
             payment_session,
-            self.payment_url,
             lambda: setattr(self, "released", True),
         )
 
@@ -231,13 +226,11 @@ class LiveRunnerCallStream:
     def _start_payments(
         self,
         payment_session: LivePaymentSession,
-        payment_url: str,
     ) -> None:
         if self._payment_task is not None:
             return
         self._payment_task = _start_funding(
             payment_session,
-            payment_url,
             lambda: setattr(self, "released", True),
         )
 
@@ -840,14 +833,13 @@ async def call_runner(
     if signer_url:
         signer = await get_signer_info(signer_url, _freeze_headers(signer_headers))
         payer_address = cast(str, signer.address)
-    challenge: _RunnerPaymentChallenge | None = None
+    challenge: LivePaymentChallenge | None = None
     attempts = (max(0, int(max_payment_challenge_retries)) + 1) * 2
     for attempt in range(attempts):
         payment_session: LivePaymentSession | None = None
         payment_type = ""
         session_id = ""
         needs_ongoing_funding = False
-        payment_url = ""
         # No preferred format: the app, or the upstream it fronts, picks. Only
         # control-plane calls ask for JSON.
         request_headers: dict[str, str] = {"Accept": "*/*"}
@@ -879,18 +871,6 @@ async def call_runner(
 
             # Metered pricing bills for as long as the work runs.
             needs_ongoing_funding = payment_type in _METERED_PAYMENT_TYPES
-            if needs_ongoing_funding:
-                payment_url = _payment_endpoint(
-                    _session_control_url(
-                        challenge.orchestrator_url,
-                        (
-                            runner.runner_id
-                            if runner is not None
-                            else _runner_id_from_url(runner_url)
-                        ),
-                        session_id,
-                    )
-                )
 
         try:
             request_kwargs: dict[str, Any] = {"timeout": timeout}
@@ -917,14 +897,12 @@ async def call_runner(
                 )
                 # The stream outlives this call, so it owns the funding.
                 if needs_ongoing_funding:
-                    call_stream._start_payments(
-                        cast(LivePaymentSession, payment_session), payment_url
-                    )
+                    call_stream._start_payments(cast(LivePaymentSession, payment_session))
                 return call_stream
 
             # The request ends with this call, so the funding ends with it.
             pay_task = (
-                _start_funding(cast(LivePaymentSession, payment_session), payment_url)
+                _start_funding(cast(LivePaymentSession, payment_session))
                 if needs_ongoing_funding
                 else None
             )
@@ -975,14 +953,7 @@ async def call_runner(
     raise LivepeerGatewayError("Live runner call exhausted payment challenge retries")
 
 
-@dataclass(frozen=True)
-class _RunnerPaymentChallenge:
-    payment_params: str
-    orchestrator_url: str
-    manifest_id: str
-
-
-def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentChallenge:
+def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> LivePaymentChallenge:
     try:
         data = json.loads(error.body)
     except json.JSONDecodeError as e:
@@ -991,70 +962,30 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
         raise LivepeerGatewayError("Live runner payment challenge response must be a JSON object")
 
     payment_params = data.get("payment_params")
-    orchestrator_url = data.get("orchestrator")
     manifest_id = data.get("manifest_id")
+    payment_url = data.get("payment_url")
     if not isinstance(payment_params, str) or not payment_params:
         raise LivepeerGatewayError("Live runner payment challenge missing payment_params")
-    if not isinstance(orchestrator_url, str) or not orchestrator_url:
-        raise LivepeerGatewayError("Live runner payment challenge missing orchestrator")
     if not isinstance(manifest_id, str) or not manifest_id:
         raise LivepeerGatewayError("Live runner payment challenge missing manifest_id")
+    if not isinstance(payment_url, str) or not payment_url:
+        raise LivepeerGatewayError("Live runner payment challenge missing payment_url")
 
-    return _RunnerPaymentChallenge(
+    return LivePaymentChallenge(
         payment_params=payment_params,
-        orchestrator_url=orchestrator_url,
         manifest_id=manifest_id,
+        payment_url=payment_url,
     )
-
-
-def _session_control_url(orchestrator_url: str, runner_id: str, session_id: str) -> str:
-    """Rebuild the control URL an orchestrator reports when reserving a session.
-
-    Single-shot calls never receive one, since a payment challenge carries only
-    the orchestrator, the runner and the session id.
-    """
-    if not (orchestrator_url and runner_id and session_id):
-        raise LivepeerGatewayError(
-            "Live runner session payment requires orchestrator, runner_id, and session_id"
-        )
-    return _join_endpoint(
-        orchestrator_url,
-        f"/apps/{quote(runner_id, safe='')}/session/{quote(session_id, safe='')}",
-    )
-
-
-def _runner_id_from_url(runner_url: str) -> str:
-    """Extract the runner id from a canonical ``/apps/{id}/...`` URL."""
-    parts = [part for part in urlparse(runner_url).path.split("/") if part]
-    try:
-        apps_index = parts.index("apps")
-        runner_id = parts[apps_index + 1]
-    except (ValueError, IndexError):
-        return ""
-    return unquote(runner_id)
-
-
-def _payment_endpoint(control_url: str) -> str:
-    """The session-scoped payment endpoint under a control URL.
-
-    Unlike the generic ``/payment``, it 404s once the session is gone.
-    """
-    if not control_url.strip():
-        raise LivepeerGatewayError(
-            "Live runner session payment requires control_url; refusing generic /payment fallback"
-        )
-    return _join_endpoint(control_url, "payment")
 
 
 def _start_funding(
     payment_session: LivePaymentSession,
-    payment_url: str,
     on_released: Callable[[], None] | None = None,
 ) -> asyncio.Task[None]:
     """Run payments in the background for as long as the caller keeps the task."""
 
     async def _fund() -> None:
-        released = await payment_session.run_payments(payment_url=payment_url)
+        released = await payment_session.run_payments()
         if released and on_released is not None:
             on_released()
 
@@ -1071,7 +1002,7 @@ async def _stop_funding(task: asyncio.Task[None] | None) -> None:
 
 
 async def _get_runner_payment(
-    challenge: _RunnerPaymentChallenge,
+    challenge: LivePaymentChallenge,
     *,
     payment_type: str,
     signer_url: str,
@@ -1081,9 +1012,7 @@ async def _get_runner_payment(
         signer_url=signer_url,
         signer_headers=signer_headers,
         type=payment_type,
-        payment_params=challenge.payment_params,
-        manifest_id=challenge.manifest_id,
-        orchestrator_url=challenge.orchestrator_url,
+        challenge=challenge,
     )
     payment = await session.get_payment()
     if not payment.payment:
@@ -1171,26 +1100,6 @@ async def stop_runner_session(
     )
     if isinstance(session, LiveRunnerSession):
         session.released = True
-
-
-async def _stop_runner_session_by_url(
-    runner_url: str,
-    session_id: str,
-    *,
-    timeout: float = 5.0,
-) -> None:
-    """Best-effort cleanup path for a reservation with no valid control URL."""
-    runner_url = runner_url.strip()
-    session_id = session_id.strip()
-    if not runner_url:
-        raise LivepeerGatewayError("Live runner session cleanup requires runner_url")
-    if not session_id:
-        raise LivepeerGatewayError("Live runner session cleanup requires session_id")
-    await post_empty(
-        _join_endpoint(runner_url, f"/{quote(session_id, safe='')}/stop"),
-        headers={},
-        timeout=timeout,
-    )
 
 
 def detect_process_gpu() -> LiveRunnerGPU | None:

@@ -24,7 +24,6 @@ from .live_runner import (
     LiveRunnerInstance,
     LiveRunnerSession,
     _live_runner_price_info_from_json,
-    _stop_runner_session_by_url,
     call_runner,
 )
 from .orch_info import get_orch_info
@@ -294,29 +293,7 @@ async def reserve_session(
         gpu=gpu,
         timeout=timeout,
     )
-    while True:
-        result = await cursor.next()
-        try:
-            session = _reserved_session_from_result(result)
-        except LivepeerGatewayError as e:
-            await _cleanup_rejected_reservation(result, timeout=timeout)
-            cursor.rejections.append(
-                RunnerRejection(url=result.runner_url, reason=str(e))
-            )
-            _LOG.debug(
-                "reserve_session rejected candidate %s: %s",
-                result.runner_url,
-                e,
-            )
-            continue
-
-        # No payment session means fixed price or offchain: nothing to fund.
-        if result.payment_session is not None:
-            session._start_payments(result.payment_session)
-        return session
-
-
-def _reserved_session_from_result(result: LiveRunnerCallResult) -> LiveRunnerSession:
+    result = await cursor.next()
     session_id = result.data.get("session_id")
     app_url = result.data.get("app_url")
     control_url = _string_value(result.data.get("control_url"))
@@ -326,7 +303,7 @@ def _reserved_session_from_result(result: LiveRunnerCallResult) -> LiveRunnerSes
         raise LivepeerGatewayError("runner session response missing app_url")
     if not control_url:
         raise LivepeerGatewayError("runner session response missing control_url")
-    return LiveRunnerSession(
+    session = LiveRunnerSession(
         session_id=session_id.strip(),
         app_url=app_url.strip(),
         runner_url=result.runner_url,
@@ -334,27 +311,10 @@ def _reserved_session_from_result(result: LiveRunnerCallResult) -> LiveRunnerSes
         runner=result.runner,
     )
 
-
-async def _cleanup_rejected_reservation(
-    result: LiveRunnerCallResult,
-    *,
-    timeout: float,
-) -> None:
-    session_id = _string_value(result.data.get("session_id"))
-    if not session_id:
-        return
-    try:
-        await _stop_runner_session_by_url(
-            result.runner_url,
-            session_id,
-            timeout=timeout,
-        )
-    except Exception:
-        _LOG.debug(
-            "Failed to clean up rejected runner reservation %s",
-            result.runner_url,
-            exc_info=True,
-        )
+    # No payment session means fixed price or offchain: nothing to fund.
+    if result.payment_session is not None:
+        session._start_payments(result.payment_session)
+    return session
 
 
 def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list[LiveRunnerInstance]:

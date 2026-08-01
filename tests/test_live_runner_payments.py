@@ -9,12 +9,10 @@ from livepeer_gateway import live_runner, remote_signer, selection
 from livepeer_gateway.errors import (
     LivepeerGatewayError,
     LivepeerHTTPError,
-    NoRunnerAvailableError,
-    PaymentError,
     SkipPaymentCycle,
 )
 from livepeer_gateway.live_runner import LiveRunnerCallResult, LiveRunnerSession
-from livepeer_gateway.remote_signer import LivePaymentSession
+from livepeer_gateway.remote_signer import LivePaymentChallenge, LivePaymentSession
 
 
 _CONTROL_URL = "https://orch.example.com/apps/runner-1/session/session-1"
@@ -29,20 +27,21 @@ def _live_payment_session() -> LivePaymentSession:
     return LivePaymentSession(
         "https://signer.example.com",
         type="live",
-        payment_params="opaque",
-        manifest_id="session-1",
+        challenge=LivePaymentChallenge(
+            payment_params="opaque",
+            manifest_id="session-1",
+            payment_url=_PAYMENT_URL,
+        ),
     )
 
 
 class _FundingSession:
     def __init__(self, *, released: bool = False) -> None:
         self.released = released
-        self.urls: list[str] = []
         self.started = asyncio.Event()
         self.cancelled = asyncio.Event()
 
-    async def run_payments(self, *, payment_url: str) -> bool:
-        self.urls.append(payment_url)
+    async def run_payments(self) -> bool:
         self.started.set()
         try:
             await asyncio.Future()
@@ -62,10 +61,6 @@ def _session(*, control_url: str = _CONTROL_URL) -> LiveRunnerSession:
 
 
 class TestPaymentLoop:
-    async def test_requires_session_scoped_url(self) -> None:
-        with pytest.raises(PaymentError, match="session-scoped payment_url"):
-            await _live_payment_session().run_payments(payment_url="")
-
     @pytest.mark.parametrize(
         "status, released", [(403, False), (404, True), (409, False)]
     )
@@ -82,12 +77,12 @@ class TestPaymentLoop:
             mock.patch.object(remote_signer, "PAYMENT_INTERVAL_S", 0),
         ):
             result = await asyncio.wait_for(
-                payment_session.run_payments(payment_url=_PAYMENT_URL),
+                payment_session.run_payments(),
                 timeout=1.0,
             )
 
         assert result is released
-        send_payment.assert_awaited_once_with(payment_url=_PAYMENT_URL)
+        send_payment.assert_awaited_once_with()
 
     @pytest.mark.parametrize(
         "first_error",
@@ -103,7 +98,7 @@ class TestPaymentLoop:
             mock.patch.object(remote_signer, "PAYMENT_INTERVAL_S", 0),
         ):
             released = await asyncio.wait_for(
-                payment_session.run_payments(payment_url=_PAYMENT_URL),
+                payment_session.run_payments(),
                 timeout=1.0,
             )
 
@@ -112,24 +107,20 @@ class TestPaymentLoop:
 
 
 class TestSessionPaymentLifecycle:
-    def test_payment_url_is_derived_from_control_url(self) -> None:
-        assert _session().payment_url == _PAYMENT_URL
-
     @pytest.mark.parametrize("control_url", ["", "ftp://orch/session/session-1"])
-    def test_payment_url_rejects_missing_or_invalid_control_url(
+    def test_session_rejects_missing_or_invalid_control_url(
         self, control_url: str
     ) -> None:
         with pytest.raises(LivepeerGatewayError):
-            _session(control_url=control_url).payment_url
+            _session(control_url=control_url)
 
-    async def test_start_payments_uses_only_session_scoped_endpoint(self) -> None:
+    async def test_start_payments_starts_challenge_owned_session(self) -> None:
         payment_session = _FundingSession()
         session = _session()
 
         session._start_payments(payment_session)  # type: ignore[arg-type]
         await asyncio.wait_for(payment_session.started.wait(), timeout=1.0)
 
-        assert payment_session.urls == [_PAYMENT_URL]
         await session.stop_payments()
 
     async def test_start_payments_is_idempotent(self) -> None:
@@ -251,10 +242,7 @@ class _Cursor:
     async def next(self) -> LiveRunnerCallResult:
         if self.results:
             return self.results.pop(0)
-        raise NoRunnerAvailableError(
-            f"All runners failed ({len(self.rejections)} tried)",
-            rejections=list(self.rejections),
-        )
+        raise AssertionError("unexpected extra runner selection")
 
 
 def _reservation(
@@ -293,49 +281,36 @@ class TestReservationSelection:
             session = await selection.reserve_session()
 
         await asyncio.wait_for(payment_session.started.wait(), timeout=1.0)
-        assert payment_session.urls == [_PAYMENT_URL]
         await session.stop_payments()
 
     @pytest.mark.parametrize(
         "bad_control_url",
         [None, "ftp://orch.example.com/session/bad"],
     )
-    async def test_invalid_control_url_rejects_candidate_and_tries_next(
+    async def test_invalid_control_url_fails_immediately(
         self, bad_control_url: str | None
     ) -> None:
         cursor = _Cursor(
             _reservation("bad", control_url=bad_control_url),
             _reservation("good", control_url=_CONTROL_URL),
         )
-        cleanup = mock.AsyncMock()
 
-        with (
-            mock.patch.object(
-                selection,
-                "runner_selector",
-                new=mock.AsyncMock(return_value=cursor),
-            ),
-            mock.patch.object(selection, "_stop_runner_session_by_url", cleanup),
+        with mock.patch.object(
+            selection,
+            "runner_selector",
+            new=mock.AsyncMock(return_value=cursor),
         ):
-            session = await selection.reserve_session()
+            with pytest.raises(LivepeerGatewayError):
+                await selection.reserve_session()
 
-        assert session.session_id == "session-good"
-        assert len(cursor.rejections) == 1
-        cleanup.assert_awaited_once()
+        assert len(cursor.results) == 1
 
-    async def test_all_missing_control_urls_fail_selection(self) -> None:
+    async def test_missing_control_url_is_contract_error(self) -> None:
         cursor = _Cursor(_reservation("bad", control_url=None))
-        with (
-            mock.patch.object(
-                selection,
-                "runner_selector",
-                new=mock.AsyncMock(return_value=cursor),
-            ),
-            mock.patch.object(
-                selection,
-                "_stop_runner_session_by_url",
-                new=mock.AsyncMock(),
-            ),
-            pytest.raises(NoRunnerAvailableError, match="missing control_url"),
+        with mock.patch.object(
+            selection,
+            "runner_selector",
+            new=mock.AsyncMock(return_value=cursor),
         ):
-            await selection.reserve_session()
+            with pytest.raises(LivepeerGatewayError, match="missing control_url"):
+                await selection.reserve_session()

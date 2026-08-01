@@ -8,14 +8,25 @@ import pytest
 from livepeer_gateway import lp_rpc_pb2
 from livepeer_gateway.errors import (
     LivepeerHTTPError,
-    PaymentError,
     SignerRefreshRequired,
 )
 from livepeer_gateway.remote_signer import (
+    LivePaymentChallenge,
     LivePaymentSession,
     PaymentSession,
     get_signer_info,
 )
+
+
+_PAYMENT_URL = "https://orch.example.com/apps/runner/session/manifest-1/payment"
+
+
+def _challenge(*, payment_params: str = "opaque") -> LivePaymentChallenge:
+    return LivePaymentChallenge(
+        payment_params=payment_params,
+        manifest_id="manifest-1",
+        payment_url=_PAYMENT_URL,
+    )
 
 
 class TestPaymentSession:
@@ -88,12 +99,11 @@ class TestLivePaymentSession:
         session = LivePaymentSession(
             None,
             type="lv2v",
-            payment_params="opaque",
-            manifest_id="manifest-1",
+            challenge=_challenge(),
         )
 
         payment = await session.get_payment()
-        await session.send_payment("https://orchestrator.example.com")
+        await session.send_payment()
 
         assert payment.payment == ""
         assert payment.seg_creds is None
@@ -102,36 +112,7 @@ class TestLivePaymentSession:
         session = LivePaymentSession(
             "https://signer.example.com",
             type="lv2v",
-            payment_params="opaque",
-            manifest_id="manifest-1",
-        )
-
-        post_empty = mock.AsyncMock()
-        with (
-            mock.patch.object(
-                session,
-                "get_payment",
-                new=mock.AsyncMock(
-                    return_value=types.SimpleNamespace(payment="p", seg_creds="s")
-                ),
-            ),
-            mock.patch("livepeer_gateway.http.post_empty", post_empty),
-        ):
-            await session.send_payment("https://orchestrator.example.com")
-
-        post_empty.assert_awaited_once_with(
-            "https://orchestrator.example.com/payment",
-            headers={"Livepeer-Payment": "p", "Livepeer-Segment": "s"},
-            timeout=5.0,
-        )
-
-    async def test_send_payment_uses_constructor_orchestrator_url(self) -> None:
-        session = LivePaymentSession(
-            "https://signer.example.com",
-            type="lv2v",
-            payment_params="opaque",
-            manifest_id="manifest-1",
-            orchestrator_url="https://orchestrator.example.com/base",
+            challenge=_challenge(),
         )
 
         post_empty = mock.AsyncMock()
@@ -147,43 +128,17 @@ class TestLivePaymentSession:
         ):
             await session.send_payment()
 
-        assert post_empty.await_args.args[0] == "https://orchestrator.example.com/payment"
-
-    async def test_send_payment_prefers_session_scoped_url(self) -> None:
-        session = LivePaymentSession(
-            "https://signer.example.com",
-            type="lv2v",
-            payment_params="opaque",
-            manifest_id="manifest-1",
-        )
-
-        post_empty = mock.AsyncMock()
-        with (
-            mock.patch.object(
-                session,
-                "get_payment",
-                new=mock.AsyncMock(
-                    return_value=types.SimpleNamespace(payment="p", seg_creds="s")
-                ),
-            ),
-            mock.patch("livepeer_gateway.http.post_empty", post_empty),
-        ):
-            await session.send_payment(
-                "https://orchestrator.example.com",
-                payment_url="https://orchestrator.example.com/apps/r/session/s/payment",
-            )
-
-        assert (
-            post_empty.await_args.args[0]
-            == "https://orchestrator.example.com/apps/r/session/s/payment"
+        post_empty.assert_awaited_once_with(
+            _PAYMENT_URL,
+            headers={"Livepeer-Payment": "p", "Livepeer-Segment": "s"},
+            timeout=5.0,
         )
 
     async def test_send_payment_preserves_typed_http_error(self) -> None:
         session = LivePaymentSession(
             "https://signer.example.com",
             type="lv2v",
-            payment_params="opaque",
-            manifest_id="manifest-1",
+            challenge=_challenge(),
         )
 
         error = LivepeerHTTPError(
@@ -206,7 +161,7 @@ class TestLivePaymentSession:
             ),
         ):
             with pytest.raises(LivepeerHTTPError) as raised:
-                await session.send_payment("https://orchestrator.example.com")
+                await session.send_payment()
 
         assert raised.value is error
 
@@ -233,8 +188,7 @@ class TestLivePaymentSession:
                 "https://signer.example.com",
                 signer_headers={"Authorization": "token"},
                 type="lv2v",
-                payment_params="opaque-payment-params",
-                manifest_id="manifest-1",
+                challenge=_challenge(payment_params="opaque-payment-params"),
             )
             first = await session.get_payment()
             second = await session.get_payment()
@@ -271,8 +225,7 @@ class TestLivePaymentSession:
             session = LivePaymentSession(
                 "https://signer.example.com",
                 type="lv2v",
-                payment_params="old-payment-params",
-                manifest_id="manifest-1",
+                challenge=_challenge(payment_params="old-payment-params"),
             )
             with pytest.raises(SignerRefreshRequired):
                 await session.get_payment()
@@ -288,7 +241,7 @@ class TestLivePaymentSession:
             )
         ]
 
-    async def test_stateful_480_refreshes_payment_params_from_orchestrator_header(
+    async def test_stateful_480_refreshes_params_from_payment_url_origin(
         self,
     ) -> None:
         calls: list[tuple[str, dict[str, object]]] = []
@@ -313,10 +266,7 @@ class TestLivePaymentSession:
                         "state": {"state": "one"},
                     }
                 if payment_requests == 2:
-                    raise SignerRefreshRequired(
-                        "refresh",
-                        orchestrator_url="https://orch.example.com",
-                    )
+                    raise SignerRefreshRequired("refresh")
                 return {
                     "payment": "payment-2",
                     "segCreds": "segment-2",
@@ -328,6 +278,8 @@ class TestLivePaymentSession:
                 return {
                     "payment_params": "new-payment-params",
                     "orchestrator": "https://orch.example.com",
+                    "manifest_id": "manifest-1",
+                    "payment_url": "https://orch.example.com/payment",
                 }
             raise AssertionError(f"unexpected POST {url}")
 
@@ -335,8 +287,7 @@ class TestLivePaymentSession:
             session = LivePaymentSession(
                 "https://signer.example.com",
                 type="lv2v",
-                payment_params="old-payment-params",
-                manifest_id="manifest-1",
+                challenge=_challenge(payment_params="old-payment-params"),
             )
             first_payment = await session.get_payment()
             payment = await session.get_payment()
@@ -350,37 +301,7 @@ class TestLivePaymentSession:
         )
         assert calls[4][1]["orchestrator"] == "new-payment-params"
 
-    async def test_480_without_orchestrator_header_fails(self) -> None:
-        payment_requests = 0
-
-        async def _post_json(
-            url: str,
-            payload: dict[str, object],
-            *,
-            headers: dict[str, str] | None = None,
-            timeout: float = 5.0,
-        ) -> dict[str, object]:
-            nonlocal payment_requests
-            del url, payload, headers, timeout
-            payment_requests += 1
-            if payment_requests == 1:
-                return {
-                    "payment": "payment-1",
-                    "segCreds": "segment-1",
-                    "state": {"state": "one"},
-                }
-            raise SignerRefreshRequired("refresh")
-
-        with mock.patch("livepeer_gateway.http.post_json", side_effect=_post_json):
-            session = LivePaymentSession(
-                "https://signer.example.com",
-                type="lv2v",
-                payment_params="old-payment-params",
-                manifest_id="manifest-1",
-            )
-            await session.get_payment()
-            with pytest.raises(PaymentError, match="missing Livepeer-Orchestrator-URL"):
-                await session.get_payment()
+        assert session._challenge.payment_url == _PAYMENT_URL
 
     async def test_get_signer_info_caches_result(self) -> None:
         calls: list[tuple[str, dict[str, object]]] = []
