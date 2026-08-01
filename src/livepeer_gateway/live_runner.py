@@ -154,11 +154,7 @@ class LiveRunnerSession:
         self._payment_task = None
 
     async def aclose(self) -> None:
-        # Stop funding first so a slow or failed remote stop cannot mint another
-        # payment while this session is being closed.
-        await self.stop_payments()
-        if not self.released:
-            await stop_runner_session(self)
+        await stop_runner_session(self)
 
     async def __aenter__(self) -> LiveRunnerSession:
         return self

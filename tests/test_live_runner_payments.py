@@ -145,28 +145,14 @@ class TestSessionPaymentLifecycle:
         assert session._payment_task is None
         assert payment_session.cancelled.is_set()
 
-    async def test_aclose_stops_funding_then_remote_session(self) -> None:
-        payment_session = _FundingSession()
+    async def test_aclose_delegates_to_stop_runner_session(self) -> None:
         session = _session()
-        session._start_payments(payment_session)  # type: ignore[arg-type]
-        await asyncio.wait_for(payment_session.started.wait(), timeout=1.0)
 
         stop = mock.AsyncMock()
         with mock.patch.object(live_runner, "stop_runner_session", stop):
             await session.aclose()
 
-        assert payment_session.cancelled.is_set()
         stop.assert_awaited_once_with(session)
-
-    async def test_aclose_skips_remote_stop_when_already_released(self) -> None:
-        session = _session()
-        session.released = True
-        stop = mock.AsyncMock()
-
-        with mock.patch.object(live_runner, "stop_runner_session", stop):
-            await session.aclose()
-
-        stop.assert_not_awaited()
 
     async def test_async_context_manager_closes_session(self) -> None:
         session = _session()
