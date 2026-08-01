@@ -109,19 +109,11 @@ class LiveRunnerInstance:
 
 @dataclass
 class LiveRunnerSession:
-    """A reserved live runner session.
-
-    A metered session is billed for as long as it is held, so on-chain
-    sessions fund themselves from the moment they are reserved until they are
-    closed. Use it as an async context manager (or call ``aclose()``) to
-    release the session's resources.
-    """
+    """A reserved live runner session."""
 
     session_id: str
     app_url: str
     runner_url: str
-    # Base URL for this session's control endpoints, as reported by the
-    # orchestrator when the session was reserved.
     control_url: str
     runner: LiveRunnerInstance | None = None
     # True once the orchestrator reported this session gone.
