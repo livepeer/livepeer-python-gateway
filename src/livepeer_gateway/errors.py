@@ -38,6 +38,13 @@ class NoOrchestratorAvailableError(LivepeerGatewayError):
         super().__init__(message)
         self.rejections: list[OrchestratorRejection] = rejections or []
 
+    def __str__(self) -> str:
+        message = super().__str__()
+        if not self.rejections:
+            return message
+        reasons = "; ".join(f"{r.url}: {r.reason}" for r in self.rejections)
+        return f"{message}: {reasons}"
+
 
 class NoRunnerAvailableError(LivepeerGatewayError):
     """Raised when no runner could be selected."""
