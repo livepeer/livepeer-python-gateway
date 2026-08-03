@@ -7,14 +7,26 @@ import pytest
 
 from livepeer_gateway import lp_rpc_pb2
 from livepeer_gateway.errors import (
-    PaymentError,
+    LivepeerHTTPError,
     SignerRefreshRequired,
 )
 from livepeer_gateway.remote_signer import (
+    LivePaymentChallenge,
     LivePaymentSession,
     PaymentSession,
     get_signer_info,
 )
+
+
+_PAYMENT_URL = "https://orch.example.com/apps/runner/session/manifest-1/payment"
+
+
+def _challenge(*, payment_params: str = "opaque") -> LivePaymentChallenge:
+    return LivePaymentChallenge(
+        payment_params=payment_params,
+        manifest_id="manifest-1",
+        payment_url=_PAYMENT_URL,
+    )
 
 
 class TestPaymentSession:
@@ -91,55 +103,23 @@ class TestLivePaymentSession:
         session = LivePaymentSession(
             None,
             type="lv2v",
-            payment_params="opaque",
-            manifest_id="manifest-1",
+            challenge=_challenge(),
         )
 
         payment = await session.get_payment()
-        await session.send_payment("https://orchestrator.example.com")
+        await session.send_payment()
 
         assert payment.payment == ""
         assert payment.seg_creds is None
 
-    async def test_send_payment_uses_default_tls_verification(self) -> None:
-        class _Response:
-            status = 204
-            headers: dict[str, str] = {}
-
-            async def __aenter__(self) -> _Response:
-                return self
-
-            async def __aexit__(self, *args: object) -> None:
-                return None
-
-            async def read(self) -> bytes:
-                return b""
-
-            async def text(self) -> str:
-                raise AssertionError(
-                    "successful payment responses must not be decoded as text"
-                )
-
-        class _Session:
-            def __init__(self, **kwargs: object) -> None:
-                self.kwargs = kwargs
-
-            async def __aenter__(self) -> _Session:
-                return self
-
-            async def __aexit__(self, *args: object) -> None:
-                return None
-
-            def post(self, *args: object, **kwargs: object) -> _Response:
-                return _Response()
-
+    async def test_send_payment_reuses_empty_post_helper(self) -> None:
         session = LivePaymentSession(
             "https://signer.example.com",
             type="lv2v",
-            payment_params="opaque",
-            manifest_id="manifest-1",
+            challenge=_challenge(),
         )
 
+        post_empty = mock.AsyncMock()
         with (
             mock.patch.object(
                 session,
@@ -148,118 +128,29 @@ class TestLivePaymentSession:
                     return_value=types.SimpleNamespace(payment="p", seg_creds="s")
                 ),
             ),
-            mock.patch(
-                "livepeer_gateway.remote_signer.aiohttp.TCPConnector"
-            ) as connector_mock,
-            mock.patch(
-                "livepeer_gateway.remote_signer.aiohttp.ClientSession",
-                side_effect=_Session,
-            ) as client_session_mock,
-        ):
-            await session.send_payment("https://orchestrator.example.com")
-
-        connector_mock.assert_not_called()
-        assert "connector" not in client_session_mock.call_args.kwargs
-
-    async def test_send_payment_uses_constructor_orchestrator_url(self) -> None:
-        posts: list[tuple[object, dict[str, object]]] = []
-
-        class _Response:
-            status = 204
-            headers: dict[str, str] = {}
-
-            async def __aenter__(self) -> _Response:
-                return self
-
-            async def __aexit__(self, *args: object) -> None:
-                return None
-
-            async def read(self) -> bytes:
-                return b""
-
-        class _Session:
-            def __init__(self, **kwargs: object) -> None:
-                del kwargs
-
-            async def __aenter__(self) -> _Session:
-                return self
-
-            async def __aexit__(self, *args: object) -> None:
-                return None
-
-            def post(self, url: object, **kwargs: object) -> _Response:
-                posts.append((url, kwargs))
-                return _Response()
-
-        session = LivePaymentSession(
-            "https://signer.example.com",
-            type="lv2v",
-            payment_params="opaque",
-            manifest_id="manifest-1",
-            orchestrator_url="https://orchestrator.example.com/base",
-        )
-
-        with (
-            mock.patch.object(
-                session,
-                "get_payment",
-                new=mock.AsyncMock(
-                    return_value=types.SimpleNamespace(payment="p", seg_creds="s")
-                ),
-            ),
-            mock.patch(
-                "livepeer_gateway.remote_signer.aiohttp.ClientSession",
-                side_effect=_Session,
-            ),
+            mock.patch("livepeer_gateway.http._post_empty", post_empty),
         ):
             await session.send_payment()
 
-        assert posts[0][0] == "https://orchestrator.example.com/payment"
-        assert posts[0][1]["headers"] == {
-            "Livepeer-Payment": "p",
-            "Livepeer-Segment": "s",
-        }
+        post_empty.assert_awaited_once_with(
+            _PAYMENT_URL,
+            headers={"Livepeer-Payment": "p", "Livepeer-Segment": "s"},
+            timeout=5.0,
+        )
 
-    async def test_send_payment_accepts_binary_payment_result_response(self) -> None:
-        class _Response:
-            status = 200
-            headers: dict[str, str] = {}
-
-            async def __aenter__(self) -> _Response:
-                return self
-
-            async def __aexit__(self, *args: object) -> None:
-                return None
-
-            async def read(self) -> bytes:
-                return b"\x82\x01protobuf-payment-result"
-
-            async def text(self) -> str:
-                raise AssertionError(
-                    "successful binary payment response decoded as text"
-                )
-
-        class _Session:
-            def __init__(self, **kwargs: object) -> None:
-                del kwargs
-
-            async def __aenter__(self) -> _Session:
-                return self
-
-            async def __aexit__(self, *args: object) -> None:
-                return None
-
-            def post(self, *args: object, **kwargs: object) -> _Response:
-                del args, kwargs
-                return _Response()
-
+    async def test_send_payment_preserves_typed_http_error(self) -> None:
         session = LivePaymentSession(
             "https://signer.example.com",
             type="lv2v",
-            payment_params="opaque",
-            manifest_id="manifest-1",
+            challenge=_challenge(),
         )
 
+        error = LivepeerHTTPError(
+            400,
+            "https://orchestrator.example.com/payment",
+            body='{"error":{"message":"payment rejected"}}',
+            message="payment rejected",
+        )
         with (
             mock.patch.object(
                 session,
@@ -269,67 +160,14 @@ class TestLivePaymentSession:
                 ),
             ),
             mock.patch(
-                "livepeer_gateway.remote_signer.aiohttp.ClientSession",
-                side_effect=_Session,
+                "livepeer_gateway.http._post_empty",
+                new=mock.AsyncMock(side_effect=error),
             ),
         ):
-            await session.send_payment("https://orchestrator.example.com")
+            with pytest.raises(LivepeerHTTPError) as raised:
+                await session.send_payment()
 
-    async def test_send_payment_error_decodes_body_for_message(self) -> None:
-        class _Response:
-            status = 400
-            headers: dict[str, str] = {}
-
-            async def __aenter__(self) -> _Response:
-                return self
-
-            async def __aexit__(self, *args: object) -> None:
-                return None
-
-            async def read(self) -> bytes:
-                raise AssertionError("error payment responses should use text decoding")
-
-            async def text(self) -> str:
-                return '{"error":{"message":"payment rejected"}}'
-
-        class _Session:
-            def __init__(self, **kwargs: object) -> None:
-                del kwargs
-
-            async def __aenter__(self) -> _Session:
-                return self
-
-            async def __aexit__(self, *args: object) -> None:
-                return None
-
-            def post(self, *args: object, **kwargs: object) -> _Response:
-                del args, kwargs
-                return _Response()
-
-        session = LivePaymentSession(
-            "https://signer.example.com",
-            type="lv2v",
-            payment_params="opaque",
-            manifest_id="manifest-1",
-        )
-
-        with (
-            mock.patch.object(
-                session,
-                "get_payment",
-                new=mock.AsyncMock(
-                    return_value=types.SimpleNamespace(payment="p", seg_creds="s")
-                ),
-            ),
-            mock.patch(
-                "livepeer_gateway.remote_signer.aiohttp.ClientSession",
-                side_effect=_Session,
-            ),
-        ):
-            with pytest.raises(PaymentError) as raised:
-                await session.send_payment("https://orchestrator.example.com")
-
-        assert "payment rejected" in str(raised.value)
+        assert raised.value is error
 
     async def test_get_payment_sends_opaque_payment_params_and_state(self) -> None:
         calls: list[tuple[str, dict[str, object], dict[str, str] | None]] = []
@@ -354,8 +192,7 @@ class TestLivePaymentSession:
                 "https://signer.example.com",
                 signer_headers={"Authorization": "token"},
                 type="lv2v",
-                payment_params="opaque-payment-params",
-                manifest_id="manifest-1",
+                challenge=_challenge(payment_params="opaque-payment-params"),
                 app="live-video-to-video/scope",
             )
             first = await session.get_payment()
@@ -395,8 +232,7 @@ class TestLivePaymentSession:
             session = LivePaymentSession(
                 "https://signer.example.com",
                 type="lv2v",
-                payment_params="old-payment-params",
-                manifest_id="manifest-1",
+                challenge=_challenge(payment_params="old-payment-params"),
             )
             with pytest.raises(SignerRefreshRequired):
                 await session.get_payment()
@@ -412,7 +248,7 @@ class TestLivePaymentSession:
             )
         ]
 
-    async def test_stateful_480_refreshes_payment_params_from_orchestrator_header(
+    async def test_stateful_480_refreshes_params_from_payment_url_origin(
         self,
     ) -> None:
         calls: list[tuple[str, dict[str, object]]] = []
@@ -437,10 +273,7 @@ class TestLivePaymentSession:
                         "state": {"state": "one"},
                     }
                 if payment_requests == 2:
-                    raise SignerRefreshRequired(
-                        "refresh",
-                        orchestrator_url="https://orch.example.com",
-                    )
+                    raise SignerRefreshRequired("refresh")
                 return {
                     "payment": "payment-2",
                     "segCreds": "segment-2",
@@ -452,6 +285,8 @@ class TestLivePaymentSession:
                 return {
                     "payment_params": "new-payment-params",
                     "orchestrator": "https://orch.example.com",
+                    "manifest_id": "manifest-1",
+                    "payment_url": "https://orch.example.com/payment",
                 }
             raise AssertionError(f"unexpected POST {url}")
 
@@ -459,8 +294,7 @@ class TestLivePaymentSession:
             session = LivePaymentSession(
                 "https://signer.example.com",
                 type="lv2v",
-                payment_params="old-payment-params",
-                manifest_id="manifest-1",
+                challenge=_challenge(payment_params="old-payment-params"),
             )
             first_payment = await session.get_payment()
             payment = await session.get_payment()
@@ -474,37 +308,7 @@ class TestLivePaymentSession:
         )
         assert calls[4][1]["orchestrator"] == "new-payment-params"
 
-    async def test_480_without_orchestrator_header_fails(self) -> None:
-        payment_requests = 0
-
-        async def _post_json(
-            url: str,
-            payload: dict[str, object],
-            *,
-            headers: dict[str, str] | None = None,
-            timeout: float = 5.0,
-        ) -> dict[str, object]:
-            nonlocal payment_requests
-            del url, payload, headers, timeout
-            payment_requests += 1
-            if payment_requests == 1:
-                return {
-                    "payment": "payment-1",
-                    "segCreds": "segment-1",
-                    "state": {"state": "one"},
-                }
-            raise SignerRefreshRequired("refresh")
-
-        with mock.patch("livepeer_gateway.http.post_json", side_effect=_post_json):
-            session = LivePaymentSession(
-                "https://signer.example.com",
-                type="lv2v",
-                payment_params="old-payment-params",
-                manifest_id="manifest-1",
-            )
-            await session.get_payment()
-            with pytest.raises(PaymentError, match="missing Livepeer-Orchestrator-URL"):
-                await session.get_payment()
+        assert session._challenge.payment_url == _PAYMENT_URL
 
     async def test_get_signer_info_caches_result(self) -> None:
         calls: list[tuple[str, dict[str, object]]] = []

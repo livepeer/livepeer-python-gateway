@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -26,9 +27,10 @@ from aiohttp.helpers import parse_mimetype
 
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
-from .http import _request_body, open_stream, post_json, request_json
+from .http import _post_empty, _request_body, open_stream, post_json, request_json
 from .remote_signer import (
     GetPaymentResponse,
+    LivePaymentChallenge,
     LivePaymentSession,
     _freeze_headers,
     get_signer_info,
@@ -46,6 +48,9 @@ _RUNNER_PAYMENT_TYPES_BY_UNIT = {
     "720p-pixel-seconds": "lv2v",
     "fixed": "fixed",
 }
+# Metered types are billed for as long as the work runs, so they need ongoing
+# payments. Fixed pricing is settled by the upfront payment alone.
+_METERED_PAYMENT_TYPES = frozenset({"live", "lv2v"})
 
 # golang format duration, eg "10s"
 _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u00b5s|ms|s|m|h)\s*$")
@@ -102,12 +107,52 @@ class LiveRunnerInstance:
     price_info: LiveRunnerPriceInfo | None = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class LiveRunnerSession:
+    """A reserved live runner session."""
+
     session_id: str
     app_url: str
     runner_url: str
+    control_url: str
     runner: LiveRunnerInstance | None = None
+    # True once the orchestrator reported this session gone.
+    released: bool = False
+    _payment_task: asyncio.Task[None] | None = field(
+        default=None, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.control_url, str) or not self.control_url.strip():
+            raise LivepeerGatewayError("Live runner session requires control_url")
+        self.control_url = self.control_url.strip()
+        _ = _join_endpoint(self.control_url, "stop")
+
+    def _start_payments(self, payment_session: LivePaymentSession) -> None:
+        if self._payment_task is not None:
+            return
+        self._payment_task = _start_funding(
+            payment_session,
+            lambda: setattr(self, "released", True),
+        )
+
+    async def stop_payments(self) -> None:
+        """Stop funding this session without releasing it.
+
+        Useful to hand funding to something else, or to let a session lapse
+        deliberately. Closing the session stops payments too.
+        """
+        await _stop_funding(self._payment_task)
+        self._payment_task = None
+
+    async def aclose(self) -> None:
+        await stop_runner_session(self)
+
+    async def __aenter__(self) -> LiveRunnerSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
 
 
 @dataclass(frozen=True)
@@ -128,7 +173,7 @@ class LiveRunnerCallResult:
         compare=False,
     )
     # Non-JSON responses (an image, say) arrive unparsed in `content`; `data` stays empty.
-    content: Optional[bytes] = field(default=None, repr=False)
+    content: bytes | None = field(default=None, repr=False)
     content_type: str = ""
 
 
@@ -148,6 +193,11 @@ class LiveRunnerCallStream:
     payment_session: LivePaymentSession | None
     _session: aiohttp.ClientSession = field(repr=False, compare=False)
     _response: aiohttp.ClientResponse = field(repr=False, compare=False)
+    # True once the orchestrator reported the backing session gone.
+    released: bool = False
+    _payment_task: asyncio.Task[None] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     @property
     def content_type(self) -> str:
@@ -161,7 +211,21 @@ class LiveRunnerCallStream:
         async for line in self._response.content:
             yield line.decode(errors="replace").rstrip("\n")
 
+    def _start_payments(
+        self,
+        payment_session: LivePaymentSession,
+    ) -> None:
+        if self._payment_task is not None:
+            return
+        self._payment_task = _start_funding(
+            payment_session,
+            lambda: setattr(self, "released", True),
+        )
+
     async def aclose(self) -> None:
+        # Stop funding first: don't pay for a stream we are about to drop.
+        await _stop_funding(self._payment_task)
+        self._payment_task = None
         self._response.release()
         await self._session.close()
 
@@ -299,8 +363,8 @@ class LiveRunnerRegistration:
             try:
                 await _post_empty(
                     _join_endpoint(self.orchestrator_url, f"/runners/{quote(self.runner_id, safe='')}/unregister"),
-                    {"Authorization": secret},
-                    self._timeout,
+                    headers={"Authorization": secret},
+                    timeout=self._timeout,
                 )
             except Exception:
                 _LOG.debug("Live runner unregister failed", exc_info=True)
@@ -757,12 +821,13 @@ async def call_runner(
     if signer_url:
         signer = await get_signer_info(signer_url, _freeze_headers(signer_headers))
         payer_address = cast(str, signer.address)
-    challenge: _RunnerPaymentChallenge | None = None
+    challenge: LivePaymentChallenge | None = None
     attempts = (max(0, int(max_payment_challenge_retries)) + 1) * 2
     for attempt in range(attempts):
         payment_session: LivePaymentSession | None = None
         payment_type = ""
         session_id = ""
+        needs_ongoing_funding = False
         # No preferred format: the app, or the upstream it fronts, picks. Only
         # control-plane calls ask for JSON.
         request_headers: dict[str, str] = {"Accept": "*/*"}
@@ -793,6 +858,9 @@ async def call_runner(
             request_headers["Livepeer-Segment"] = payment.seg_creds or ""
             session_id = challenge.manifest_id
 
+            # Metered pricing bills for as long as the work runs.
+            needs_ongoing_funding = payment_type in _METERED_PAYMENT_TYPES
+
         try:
             request_kwargs: dict[str, Any] = {"timeout": timeout}
             if request_headers:
@@ -807,16 +875,35 @@ async def call_runner(
                     payload=request_payload,
                     headers=request_headers or None,
                 )
-                return LiveRunnerCallStream(
-                    resp.status, resp.headers, runner_url, runner, payment_session, session, resp,
+                call_stream = LiveRunnerCallStream(
+                    resp.status,
+                    resp.headers,
+                    runner_url,
+                    runner,
+                    None if payment_type == "fixed" else payment_session,
+                    session,
+                    resp,
                 )
+                # The stream outlives this call, so it owns the funding.
+                if needs_ongoing_funding:
+                    call_stream._start_payments(cast(LivePaymentSession, payment_session))
+                return call_stream
 
-            body, content_type = await _request_body(
-                runner_url,
-                method=method,
-                payload=request_payload,
-                **request_kwargs,
+            # The request ends with this call, so the funding ends with it.
+            pay_task = (
+                _start_funding(cast(LivePaymentSession, payment_session))
+                if needs_ongoing_funding
+                else None
             )
+            try:
+                body, content_type = await _request_body(
+                    runner_url,
+                    method=method,
+                    payload=request_payload,
+                    **request_kwargs,
+                )
+            finally:
+                await _stop_funding(pay_task)
             # Non-JSON bodies (an image, ndjson) are handed back unparsed in `content`.
             is_json = _is_json_content_type(content_type)
             data: dict[str, Any] = {}
@@ -855,14 +942,7 @@ async def call_runner(
     raise LivepeerGatewayError("Live runner call exhausted payment challenge retries")
 
 
-@dataclass(frozen=True)
-class _RunnerPaymentChallenge:
-    payment_params: str
-    orchestrator_url: str
-    manifest_id: str
-
-
-def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentChallenge:
+def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> LivePaymentChallenge:
     try:
         data = json.loads(error.body)
     except json.JSONDecodeError as e:
@@ -871,24 +951,47 @@ def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> _RunnerPaymentC
         raise LivepeerGatewayError("Live runner payment challenge response must be a JSON object")
 
     payment_params = data.get("payment_params")
-    orchestrator_url = data.get("orchestrator")
     manifest_id = data.get("manifest_id")
+    payment_url = data.get("payment_url")
     if not isinstance(payment_params, str) or not payment_params:
         raise LivepeerGatewayError("Live runner payment challenge missing payment_params")
-    if not isinstance(orchestrator_url, str) or not orchestrator_url:
-        raise LivepeerGatewayError("Live runner payment challenge missing orchestrator")
     if not isinstance(manifest_id, str) or not manifest_id:
         raise LivepeerGatewayError("Live runner payment challenge missing manifest_id")
+    if not isinstance(payment_url, str) or not payment_url:
+        raise LivepeerGatewayError("Live runner payment challenge missing payment_url")
 
-    return _RunnerPaymentChallenge(
+    return LivePaymentChallenge(
         payment_params=payment_params,
-        orchestrator_url=orchestrator_url,
         manifest_id=manifest_id,
+        payment_url=payment_url,
     )
 
 
+def _start_funding(
+    payment_session: LivePaymentSession,
+    on_released: Callable[[], None] | None = None,
+) -> asyncio.Task[None]:
+    """Run payments in the background for as long as the caller keeps the task."""
+
+    async def _fund() -> None:
+        released = await payment_session.run_payments()
+        if released and on_released is not None:
+            on_released()
+
+    return asyncio.create_task(_fund())
+
+
+async def _stop_funding(task: asyncio.Task[None] | None) -> None:
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
 async def _get_runner_payment(
-    challenge: _RunnerPaymentChallenge,
+    challenge: LivePaymentChallenge,
     *,
     payment_type: str,
     signer_url: str,
@@ -899,10 +1002,8 @@ async def _get_runner_payment(
         signer_url=signer_url,
         signer_headers=signer_headers,
         type=payment_type,
-        payment_params=challenge.payment_params,
-        manifest_id=challenge.manifest_id,
+        challenge=challenge,
         app=app,
-        orchestrator_url=challenge.orchestrator_url,
     )
     payment = await session.get_payment()
     if not payment.payment:
@@ -960,25 +1061,6 @@ def _live_runner_price_info_from_json(value: object) -> LiveRunnerPriceInfo | No
     )
 
 
-def _live_runner_session_from_json(
-    data: dict[str, Any],
-    *,
-    runner_url: str,
-    runner: LiveRunnerInstance | None,
-) -> LiveRunnerSession:
-    session_id = data.get("session_id")
-    app_url = data.get("app_url")
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise LivepeerGatewayError("Live runner session reserve response missing session_id")
-    if not isinstance(app_url, str) or not app_url.strip():
-        raise LivepeerGatewayError("Live runner session reserve response missing app_url")
-    return LiveRunnerSession(
-        session_id=session_id.strip(),
-        app_url=app_url.strip(),
-        runner_url=runner_url,
-        runner=runner,
-    )
-
 async def stop_runner_session(
     session: LiveRunnerSession | LiveRunnerSessionRequest,
     *,
@@ -986,13 +1068,12 @@ async def stop_runner_session(
 ) -> None:
     request_headers: dict[str, str] = {}
     if isinstance(session, LiveRunnerSession):
-        runner_url = session.runner_url.strip()
-        session_id = session.session_id.strip()
-        if not runner_url:
-            raise LivepeerGatewayError("Live runner session stop requires runner_url")
-        if not session_id:
-            raise LivepeerGatewayError("Live runner session stop requires session_id")
-        url = _join_endpoint(runner_url, f"/{quote(session_id, safe='')}/stop")
+        # This helper is also the public cleanup path, so callers that do not
+        # use aclose() still stop local funding before the remote reservation.
+        await session.stop_payments()
+        if session.released:
+            return
+        url = _join_endpoint(session.control_url, "stop")
     else:
         headers = getattr(session, "headers", None)
         get = getattr(headers, "get", None)
@@ -1005,9 +1086,11 @@ async def stop_runner_session(
             request_headers = {"Livepeer-Session-Token": token}
     await _post_empty(
         url,
-        request_headers,
-        timeout,
+        headers=request_headers,
+        timeout=timeout,
     )
+    if isinstance(session, LiveRunnerSession):
+        session.released = True
 
 
 def detect_process_gpu() -> LiveRunnerGPU | None:
@@ -1175,25 +1258,6 @@ def _is_trickle_channel_response(value: object) -> bool:
         isinstance(value.get(key), str)
         for key in ("name", "channel_name", "url", "mime_type")
     ) and ("internal_url" not in value or isinstance(value.get("internal_url"), str))
-
-
-async def _post_empty(url: str, headers: dict[str, str], timeout: float) -> None:
-    try:
-        client_timeout = aiohttp.ClientTimeout(total=timeout)
-        connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(timeout=client_timeout, connector=connector) as session:
-            async with session.post(url, data=b"", headers=headers) as resp:
-                body = await resp.text()
-                if resp.status >= 400:
-                    raise LivepeerGatewayError(
-                        f"HTTP empty POST error: HTTP {resp.status}; body={body!r}"
-                    )
-    except LivepeerGatewayError:
-        raise
-    except getattr(aiohttp, "ClientConnectorError", ()) as e:
-        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
-    except (TimeoutError, aiohttp.ClientError) as e:
-        raise LivepeerGatewayError(f"HTTP empty POST error: {getattr(e, 'message', e)}") from e
 
 
 def _detect_gpu_pynvml() -> LiveRunnerGPU | None:

@@ -26,6 +26,7 @@ from livepeer_gateway.live_runner import (
     stop_runner_session,
     create_proxy,
 )
+from livepeer_gateway.remote_signer import LivePaymentChallenge
 
 
 class TestLiveRunnerHelpers:
@@ -42,6 +43,38 @@ class TestLiveRunnerHelpers:
             )
             == "https://orch.example.com:8935/base/runners/heartbeat"
         )
+
+    def test_payment_challenge_uses_server_supplied_url(self) -> None:
+        body = json.dumps(
+            {
+                "payment_params": "opaque-payment-params",
+                "manifest_id": "manifest-1",
+                "payment_url": _payment_url("manifest-1"),
+            }
+        )
+
+        challenge = live_runner._parse_runner_payment_challenge(
+            LivepeerHTTPError(402, "https://runner.example.com", body)
+        )
+
+        assert challenge == _payment_challenge("manifest-1")
+
+    @pytest.mark.parametrize("payment_url", [None, ""])
+    def test_payment_challenge_requires_payment_url(
+        self, payment_url: str | None
+    ) -> None:
+        body = json.dumps(
+            {
+                "payment_params": "opaque-payment-params",
+                "manifest_id": "manifest-1",
+                "payment_url": payment_url,
+            }
+        )
+
+        with pytest.raises(LivepeerGatewayError, match="missing payment_url"):
+            live_runner._parse_runner_payment_challenge(
+                LivepeerHTTPError(402, "https://runner.example.com", body)
+            )
 
     def test_parse_go_duration(self) -> None:
         assert live_runner._parse_go_duration_s("500ms", default=5.0) == 0.5
@@ -132,6 +165,7 @@ class TestLiveRunnerSession:
             session_id="session-1",
             app_url="https://service.example.com/app",
             runner_url="https://service.example.com/apps/runner-1/session",
+            control_url="https://service.example.com/apps/runner-1/session/session-1",
         )
 
         with mock.patch.object(live_runner, "_post_empty", side_effect=_post_empty):
@@ -288,10 +322,8 @@ class TestLiveRunnerSession:
                 "signer_url": "https://signer.example.com",
                 "signer_headers": {"Authorization": "token"},
                 "type": "live",
-                "payment_params": "opaque-payment-params",
-                "manifest_id": "manifest-1",
                 "app": None,
-                "orchestrator_url": "https://orchestrator.example.com",
+                "challenge": _payment_challenge("manifest-1"),
             }
         ]
         assert result.payment_session is payment_sessions[0]
@@ -360,10 +392,8 @@ class TestLiveRunnerSession:
                 "signer_url": "https://signer.example.com",
                 "signer_headers": None,
                 "type": "lv2v",
-                "payment_params": "opaque-payment-params",
-                "manifest_id": "manifest-scope",
                 "app": "live-video-to-video/scope",
-                "orchestrator_url": "https://orchestrator.example.com",
+                "challenge": _payment_challenge("manifest-scope"),
             }
         ]
 
@@ -440,8 +470,8 @@ class TestLiveRunnerSession:
         assert len(sessions) == 2
         assert sessions[0]["type"] == "fixed"
         assert sessions[1]["type"] == "fixed"
-        assert sessions[0]["manifest_id"] == "fixed-manifest"
-        assert sessions[1]["manifest_id"] == "fixed-manifest"
+        assert sessions[0]["challenge"] == _payment_challenge("fixed-manifest")
+        assert sessions[1]["challenge"] == _payment_challenge("fixed-manifest")
         assert result.payment_session is None
 
     async def test_paid_call_restarts_challenge_when_signer_requests_refresh(
@@ -534,19 +564,15 @@ class TestLiveRunnerSession:
                 "signer_url": "https://signer.example.com",
                 "signer_headers": None,
                 "type": "live",
-                "payment_params": "opaque-payment-params",
-                "manifest_id": "manifest-1",
                 "app": None,
-                "orchestrator_url": "https://orchestrator.example.com",
+                "challenge": _payment_challenge("manifest-1"),
             },
             {
                 "signer_url": "https://signer.example.com",
                 "signer_headers": None,
                 "type": "live",
-                "payment_params": "opaque-payment-params",
-                "manifest_id": "manifest-2",
                 "app": None,
-                "orchestrator_url": "https://orchestrator.example.com",
+                "challenge": _payment_challenge("manifest-2"),
             },
         ]
         assert sig_mock.call_count == 1
@@ -618,7 +644,23 @@ def _payment_challenge_body(manifest_id: str) -> str:
             "payment_params": "opaque-payment-params",
             "orchestrator": "https://orchestrator.example.com",
             "manifest_id": manifest_id,
+            "payment_url": _payment_url(manifest_id),
         }
+    )
+
+
+def _payment_challenge(manifest_id: str) -> LivePaymentChallenge:
+    return LivePaymentChallenge(
+        payment_params="opaque-payment-params",
+        manifest_id=manifest_id,
+        payment_url=_payment_url(manifest_id),
+    )
+
+
+def _payment_url(manifest_id: str) -> str:
+    return (
+        "https://orchestrator.example.com/apps/runner-1/session/"
+        f"{manifest_id}/payment"
     )
 
 
