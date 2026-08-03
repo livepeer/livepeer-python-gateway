@@ -61,7 +61,7 @@ from .live_runner import (
 )
 from .discovery import discover_orchestrators, discover_runners
 from .orch_info import get_orch_info
-from .remote_signer import LivePaymentSession, PaymentSession
+from .remote_signer import LivePaymentChallenge, LivePaymentSession, PaymentSession
 from .scope import start_scope
 from .selection import (
     RunnerSelectionCursor,
@@ -107,6 +107,7 @@ __all__ = [
     "LiveRunnerSession",
     "LiveRunnerSessionCallback",
     "LiveRunnerSessionEvent",
+    "LivePaymentChallenge",
     "LivePaymentSession",
     "LiveRunnerProxy",
     "LivepeerGatewayError",

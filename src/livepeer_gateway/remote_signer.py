@@ -1,27 +1,44 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import re
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-import aiohttp
-
 from . import lp_rpc_pb2
 from .async_cache import async_lru_cache
-from .errors import LivepeerGatewayError, PaymentError, SignerRefreshRequired
+from .errors import (
+    LivepeerGatewayError,
+    LivepeerHTTPError,
+    PaymentError,
+    SignerRefreshRequired,
+    SkipPaymentCycle,
+)
 _LOG = logging.getLogger(__name__)
+
+# Must stay under the signer's opening payment: 10s per-second, 60s pixel.
+PAYMENT_INTERVAL_S = 3.0
 
 @dataclass(frozen=True)
 class GetPaymentResponse:
     payment: str
     seg_creds: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class LivePaymentChallenge:
+    """The complete payment contract returned by a live-runner 402."""
+
+    payment_params: str
+    manifest_id: str
+    payment_url: str
 
 
 @dataclass(frozen=True)
@@ -202,19 +219,15 @@ class LivePaymentSession:
         *,
         signer_headers: dict[str, str] | None = None,
         type: str,
-        payment_params: str,
-        manifest_id: str,
-        orchestrator_url: str | None = None,
+        challenge: LivePaymentChallenge,
         max_refresh_retries: int = 3,
     ) -> None:
         self._signer_url = signer_url
         self._signer_headers = _freeze_headers(signer_headers)
         self._type = type
-        self._payment_params = payment_params
-        self._manifest_id = manifest_id
+        self._challenge = challenge
         self._max_refresh_retries = max(0, int(max_refresh_retries))
         self._state: dict[str, Any] | None = None
-        self._orchestrator_url = orchestrator_url
 
     async def get_payment(self) -> GetPaymentResponse:
         if not self._signer_url:
@@ -231,61 +244,63 @@ class LivePaymentSession:
                     ) from e
                 if self._state is None:
                     raise
-                orchestrator_url = e.orchestrator_url
-                if not orchestrator_url:
-                    raise PaymentError(
-                        "Signer refresh response missing Livepeer-Orchestrator-URL header"
-                    ) from e
-                await self._refresh_payment_params(orchestrator_url)
+                await self._refresh_payment_params()
                 attempts += 1
 
-    async def send_payment(self, orchestrator_url: str | None = None) -> None:
+    async def send_payment(self) -> None:
+        """Generate a payment and POST it to the challenge's endpoint.
+
+        Raises LivepeerHTTPError on error responses so callers can branch on
+        the status code, and SkipPaymentCycle when the signer gates the cycle.
+        """
         if not self._signer_url:
             return
 
-        target = orchestrator_url or self._orchestrator_url
-        if not target:
-            raise PaymentError("orchestrator_url is required before sending payment")
-
-        from .http import _extract_error_message_from_body, _http_origin
+        from .http import _post_empty
 
         payment = await self.get_payment()
-        url = f"{_http_origin(target)}/payment"
+        if not payment.seg_creds:
+            # An empty segment header fails the orchestrator's sig check and
+            # comes back 403, which reads as a dead session, not a bad signer.
+            raise PaymentError("Signer returned a payment with no segCreds")
         headers = {
             "Livepeer-Payment": payment.payment,
             "Livepeer-Segment": payment.seg_creds,
         }
-        try:
-            timeout = aiohttp.ClientTimeout(total=5.0)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, data=b"", headers=headers) as resp:
-                    if resp.status >= 400:
-                        body = await resp.text()
-                        message = _extract_error_message_from_body(body)
-                        body_part = f"; body={message!r}" if message else ""
-                        raise PaymentError(
-                            f"HTTP payment error: HTTP {resp.status} from endpoint (url={url}){body_part}"
-                        )
-                    await resp.read()
-        except PaymentError:
-            raise
-        except getattr(aiohttp, "ClientConnectorError", ()) as e:
-            raise PaymentError(
-                f"HTTP payment error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
-            ) from e
-        except (aiohttp.ClientError, TimeoutError) as e:
-            raise PaymentError(
-                f"HTTP payment error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
-            ) from e
+        await _post_empty(self._challenge.payment_url, headers=headers, timeout=5.0)
+
+    async def run_payments(self) -> bool:
+        """Keep a metered session funded until cancelled or the session ends.
+
+        Cancel the task to stop; the first payment waits one interval, since
+        the caller pays upfront. Returns True if the orchestrator reports that
+        the challenge's session-scoped endpoint is gone.
+        """
+        while True:
+            await asyncio.sleep(PAYMENT_INTERVAL_S)
+            try:
+                await self.send_payment()
+            except SkipPaymentCycle as e:
+                _LOG.debug("Payment loop skipped cycle: %s", e)
+            except LivepeerHTTPError as e:
+                # A 4xx will not change on a retry (404 gone, 409 fixed price,
+                # 403 mismatch), so stop rather than mint tickets nobody will
+                # honour. 408 and 429 are the two that do ask to be retried.
+                if 400 <= e.status_code < 500 and e.status_code not in (408, 429):
+                    _LOG.info("Payment loop stopping (HTTP %d): %s", e.status_code, e)
+                    return e.status_code == 404
+                _LOG.warning("Payment failed; retrying next cycle: %s", e)
+            except Exception as e:
+                _LOG.warning("Payment failed; retrying next cycle: %s", e)
 
     async def _payment_request(self) -> GetPaymentResponse:
         from .http import _http_origin, post_json
 
         url = f"{_http_origin(self._signer_url)}/generate-live-payment"
         payload: dict[str, Any] = {
-            "orchestrator": self._payment_params,
+            "orchestrator": self._challenge.payment_params,
             "type": self._type,
-            "ManifestID": self._manifest_id,
+            "ManifestID": self._challenge.manifest_id,
         }
         if self._state is not None:
             payload["state"] = self._state
@@ -313,19 +328,19 @@ class LivePaymentSession:
         self._state = state
         return GetPaymentResponse(payment=payment, seg_creds=seg_creds)
 
-    async def _refresh_payment_params(self, orchestrator_url: str) -> None:
+    async def _refresh_payment_params(self) -> None:
         from .http import _http_origin, post_json
 
         signer = await get_signer_info(self._signer_url or "", self._signer_headers)
         if not signer.address:
             raise PaymentError("Cannot refresh payment without signer address")
 
-        url = f"{_http_origin(orchestrator_url)}/refresh-payment"
+        url = f"{_http_origin(self._challenge.payment_url)}/refresh-payment"
         data = await post_json(
             url,
             {
                 "sender": signer.address,
-                "manifest_id": self._manifest_id,
+                "manifest_id": self._challenge.manifest_id,
             },
         )
         payment_params = data.get("payment_params")
@@ -333,12 +348,11 @@ class LivePaymentSession:
             raise PaymentError(
                 f"RefreshPayment error: missing/invalid 'payment_params' in response (url={url})"
             )
-        self._payment_params = payment_params
-        refreshed_orchestrator_url = data.get("orchestrator")
-        self._orchestrator_url = (
-            refreshed_orchestrator_url
-            if isinstance(refreshed_orchestrator_url, str) and refreshed_orchestrator_url.strip()
-            else orchestrator_url
+        # Refresh rotates the embedded payment material. The initial scoped
+        # endpoint remains authoritative for the lifetime of this session.
+        self._challenge = replace(
+            self._challenge,
+            payment_params=payment_params,
         )
 
 

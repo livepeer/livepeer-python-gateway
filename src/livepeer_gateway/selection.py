@@ -296,16 +296,25 @@ async def reserve_session(
     result = await cursor.next()
     session_id = result.data.get("session_id")
     app_url = result.data.get("app_url")
+    control_url = _string_value(result.data.get("control_url"))
     if not isinstance(session_id, str) or not session_id.strip():
         raise LivepeerGatewayError("runner session response missing session_id")
     if not isinstance(app_url, str) or not app_url.strip():
         raise LivepeerGatewayError("runner session response missing app_url")
-    return LiveRunnerSession(
+    if not control_url:
+        raise LivepeerGatewayError("runner session response missing control_url")
+    session = LiveRunnerSession(
         session_id=session_id.strip(),
         app_url=app_url.strip(),
         runner_url=result.runner_url,
+        control_url=control_url,
         runner=result.runner,
     )
+
+    # No payment session means fixed price or offchain: nothing to fund.
+    if result.payment_session is not None:
+        session._start_payments(result.payment_session)
+    return session
 
 
 def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list[LiveRunnerInstance]:

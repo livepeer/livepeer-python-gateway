@@ -305,9 +305,9 @@ async def _request_body(
 async def request_json(
     url: str,
     *,
-    method: Optional[str] = None,
-    payload: Optional[dict[str, Any]] = None,
-    headers: Optional[dict[str, str]] = None,
+    method: str | None = None,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
     timeout: float = 5.0,
 ) -> Any:
     """
@@ -401,6 +401,21 @@ async def get_json(
     GET JSON from `url` and parse the response.
     """
     return await request_json(url, headers=headers, timeout=timeout)
+
+
+async def _post_empty(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float = 5.0,
+) -> None:
+    """POST an empty body to ``url`` and discard the response."""
+    await _request_body(
+        url,
+        method="POST",
+        headers=headers,
+        timeout=timeout,
+    )
 
 
 def _parse_http_url(url: str, *, context: str = "URL") -> ParseResult:

@@ -86,7 +86,11 @@ class TestRunnerSelection:
         ) -> LiveRunnerCallResult:
             calls.append((runner.url, payload, method, timeout))
             return LiveRunnerCallResult(
-                {"session_id": "session-1", "app_url": "https://orch-a/apps/a/app"},
+                {
+                    "session_id": "session-1",
+                    "app_url": "https://orch-a/apps/a/app",
+                    "control_url": "https://orch-a/apps/a/session/session-1",
+                },
                 runner_url=runner.url,
                 runner=runner,
                 session_id="session-1",
@@ -336,7 +340,11 @@ class TestRunnerSelection:
         ) -> LiveRunnerCallResult:
             del payload, method, timeout
             return LiveRunnerCallResult(
-                {"session_id": "session-1", "app_url": "https://orch-a/apps/a/app"},
+                {
+                    "session_id": "session-1",
+                    "app_url": "https://orch-a/apps/a/app",
+                    "control_url": "https://orch-a/apps/a/session/session-1",
+                },
                 runner_url=runner.url,
                 runner=runner,
                 session_id="session-1",
