@@ -47,6 +47,7 @@ class TestPaymentSession:
             info,
             signer_headers={"Authorization": "token"},
             type="lv2v",
+            app="live-video-to-video/scope",
         )
         first_session.set_manifest_id("first")
         second_session = PaymentSession(
@@ -71,8 +72,11 @@ class TestPaymentSession:
             "https://signer.example.com/generate-live-payment"
         ] * 4
         assert all(call[2] == {"Authorization": "token"} for call in calls)
+        assert calls[0][1]["app"] == "live-video-to-video/scope"
+        assert "app" not in calls[1][1]
         assert "state" not in calls[0][1]
         assert "state" not in calls[1][1]
+        assert calls[2][1]["app"] == "live-video-to-video/scope"
         assert calls[2][1]["state"] == {"session": "first", "sequence": "1"}
         assert calls[3][1]["state"] == {"session": "second", "sequence": "1"}
 
@@ -352,6 +356,7 @@ class TestLivePaymentSession:
                 type="lv2v",
                 payment_params="opaque-payment-params",
                 manifest_id="manifest-1",
+                app="live-video-to-video/scope",
             )
             first = await session.get_payment()
             second = await session.get_payment()
@@ -363,8 +368,10 @@ class TestLivePaymentSession:
             "orchestrator": "opaque-payment-params",
             "type": "lv2v",
             "ManifestID": "manifest-1",
+            "app": "live-video-to-video/scope",
         }
         assert calls[0][2] == {"Authorization": "token"}
+        assert calls[1][1]["app"] == "live-video-to-video/scope"
         assert calls[1][1]["state"] == {"state": "one"}
 
     async def test_initial_480_restarts_challenge_without_refresh(self) -> None:

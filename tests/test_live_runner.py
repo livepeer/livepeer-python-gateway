@@ -290,6 +290,7 @@ class TestLiveRunnerSession:
                 "type": "live",
                 "payment_params": "opaque-payment-params",
                 "manifest_id": "manifest-1",
+                "app": None,
                 "orchestrator_url": "https://orchestrator.example.com",
             }
         ]
@@ -361,6 +362,7 @@ class TestLiveRunnerSession:
                 "type": "lv2v",
                 "payment_params": "opaque-payment-params",
                 "manifest_id": "manifest-scope",
+                "app": "live-video-to-video/scope",
                 "orchestrator_url": "https://orchestrator.example.com",
             }
         ]
@@ -534,6 +536,7 @@ class TestLiveRunnerSession:
                 "type": "live",
                 "payment_params": "opaque-payment-params",
                 "manifest_id": "manifest-1",
+                "app": None,
                 "orchestrator_url": "https://orchestrator.example.com",
             },
             {
@@ -542,6 +545,7 @@ class TestLiveRunnerSession:
                 "type": "live",
                 "payment_params": "opaque-payment-params",
                 "manifest_id": "manifest-2",
+                "app": None,
                 "orchestrator_url": "https://orchestrator.example.com",
             },
         ]

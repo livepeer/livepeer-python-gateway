@@ -204,6 +204,7 @@ class LivePaymentSession:
         type: str,
         payment_params: str,
         manifest_id: str,
+        app: str | None = None,
         orchestrator_url: str | None = None,
         max_refresh_retries: int = 3,
     ) -> None:
@@ -212,6 +213,7 @@ class LivePaymentSession:
         self._type = type
         self._payment_params = payment_params
         self._manifest_id = manifest_id
+        self._app = app
         self._max_refresh_retries = max(0, int(max_refresh_retries))
         self._state: dict[str, Any] | None = None
         self._orchestrator_url = orchestrator_url
@@ -287,6 +289,8 @@ class LivePaymentSession:
             "type": self._type,
             "ManifestID": self._manifest_id,
         }
+        if self._app:
+            payload["app"] = self._app
         if self._state is not None:
             payload["state"] = self._state
 
@@ -350,6 +354,7 @@ class PaymentSession:
         *,
         signer_headers: Optional[dict[str, str]] = None,
         type: str,
+        app: str | None = None,
         capabilities: Optional[lp_rpc_pb2.Capabilities] = None,
         use_tofu: bool = True,
         max_refresh_retries: int = 3,
@@ -358,6 +363,7 @@ class PaymentSession:
         self._signer_headers = signer_headers
         self._info = info
         self._type = type
+        self._app = app
         self._manifest_id: Optional[str] = None
         self._capabilities = capabilities
         self._use_tofu = use_tofu
@@ -402,6 +408,8 @@ class PaymentSession:
                 "orchestrator": orch_b64,
                 "type": self._type,
             }
+            if self._app:
+                payload["app"] = self._app
             if self._capabilities is not None:
                 payload["capabilities"] = base64.b64encode(
                     self._capabilities.SerializeToString()

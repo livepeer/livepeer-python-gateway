@@ -775,6 +775,7 @@ async def call_runner(
                 payment_session, payment = await _get_runner_payment(
                     challenge,
                     payment_type=payment_type,
+                    app=runner.app if runner is not None else None,
                     signer_url=signer_url or "",
                     signer_headers=signer_headers,
                 )
@@ -892,6 +893,7 @@ async def _get_runner_payment(
     payment_type: str,
     signer_url: str,
     signer_headers: dict[str, str] | None,
+    app: str | None = None,
 ) -> tuple[LivePaymentSession, GetPaymentResponse]:
     session = LivePaymentSession(
         signer_url=signer_url,
@@ -899,6 +901,7 @@ async def _get_runner_payment(
         type=payment_type,
         payment_params=challenge.payment_params,
         manifest_id=challenge.manifest_id,
+        app=app,
         orchestrator_url=challenge.orchestrator_url,
     )
     payment = await session.get_payment()
