@@ -194,6 +194,11 @@ class TestLivePaymentSession:
                 type="lv2v",
                 challenge=_challenge(payment_params="opaque-payment-params"),
                 app="live-video-to-video/scope",
+                max_price={
+                    "price": 10.12,
+                    "currency": "wei",
+                    "unit": "720p-pixel-seconds",
+                },
             )
             first = await session.get_payment()
             second = await session.get_payment()
@@ -206,9 +211,15 @@ class TestLivePaymentSession:
             "type": "lv2v",
             "ManifestID": "manifest-1",
             "app": "live-video-to-video/scope",
+            "maxPrice": {
+                "price": 10.12,
+                "currency": "wei",
+                "unit": "720p-pixel-seconds",
+            },
         }
         assert calls[0][2] == {"Authorization": "token"}
         assert calls[1][1]["app"] == "live-video-to-video/scope"
+        assert calls[1][1]["maxPrice"] == calls[0][1]["maxPrice"]
         assert calls[1][1]["state"] == {"state": "one"}
 
     async def test_initial_480_restarts_challenge_without_refresh(self) -> None:
@@ -295,12 +306,29 @@ class TestLivePaymentSession:
                 "https://signer.example.com",
                 type="lv2v",
                 challenge=_challenge(payment_params="old-payment-params"),
+                max_price={
+                    "price": 10.12,
+                    "currency": "wei",
+                    "unit": "720p-pixel-seconds",
+                },
             )
             first_payment = await session.get_payment()
             payment = await session.get_payment()
 
         assert first_payment.payment == "payment-1"
         assert payment.payment == "payment-2"
+        payment_calls = [
+            payload
+            for url, payload in calls
+            if url == "https://signer.example.com/generate-live-payment"
+        ]
+        assert [payload["maxPrice"] for payload in payment_calls] == [
+            {
+                "price": 10.12,
+                "currency": "wei",
+                "unit": "720p-pixel-seconds",
+            }
+        ] * 3
         assert calls[1][1]["state"] == {"state": "one"}
         assert calls[3] == (
             "https://orch.example.com/refresh-payment",

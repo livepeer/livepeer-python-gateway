@@ -9,7 +9,8 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from typing import (
     Any,
     Literal,
@@ -817,6 +818,10 @@ async def call_runner(
     if not runner_url:
         raise LivepeerGatewayError("Live runner call requires runner_url")
     request_payload = payload or {}
+    payment_type = _runner_payment_type(runner, payment_unit) if signer_url else ""
+    max_price: LiveRunnerPriceInfo | None = None
+    if signer_url and runner is not None and runner.price_info is not None:
+        max_price = _pad_runner_price(runner.price_info)
     payer_address = ""
     if signer_url:
         signer = await get_signer_info(signer_url, _freeze_headers(signer_headers))
@@ -825,7 +830,6 @@ async def call_runner(
     attempts = (max(0, int(max_payment_challenge_retries)) + 1) * 2
     for attempt in range(attempts):
         payment_session: LivePaymentSession | None = None
-        payment_type = ""
         session_id = ""
         needs_ongoing_funding = False
         # No preferred format: the app, or the upstream it fronts, picks. Only
@@ -836,13 +840,13 @@ async def call_runner(
         # Pending challenge means payment is needed.
         if challenge is not None:
             try:
-                payment_type = _runner_payment_type(runner, payment_unit)
                 payment_session, payment = await _get_runner_payment(
                     challenge,
                     payment_type=payment_type,
                     app=runner.app if runner is not None else None,
                     signer_url=signer_url or "",
                     signer_headers=signer_headers,
+                    max_price=max_price,
                 )
             except SignerRefreshRequired as e:
                 if attempt + 1 >= attempts:
@@ -996,6 +1000,7 @@ async def _get_runner_payment(
     payment_type: str,
     signer_url: str,
     signer_headers: dict[str, str] | None,
+    max_price: LiveRunnerPriceInfo | None,
     app: str | None = None,
 ) -> tuple[LivePaymentSession, GetPaymentResponse]:
     session = LivePaymentSession(
@@ -1004,6 +1009,7 @@ async def _get_runner_payment(
         type=payment_type,
         challenge=challenge,
         app=app,
+        max_price=max_price.to_json() if max_price is not None else None,
     )
     payment = await session.get_payment()
     if not payment.payment:
@@ -1044,6 +1050,16 @@ def _runner_payment_type(
     if runner is not None and runner.app == "live-video-to-video/scope":
         return "lv2v"
     return "live"
+
+
+def _pad_runner_price(
+    price_info: LiveRunnerPriceInfo,
+) -> LiveRunnerPriceInfo:
+    price = Decimal(str(price_info.price).strip())
+    # Signer is strict about discovery price being less than actual price. Handle
+    # fluctuations between discovery price and actual price; 1.2% should cover 95%
+    # of hourly ETH-USD price changes.
+    return replace(price_info, price=float(price * Decimal("1.012")))
 
 
 def _live_runner_price_info_from_json(value: object) -> LiveRunnerPriceInfo | None:

@@ -114,6 +114,33 @@ class TestLiveRunnerHelpers:
         ):
             live_runner._runner_payment_type(runner, "hour")
 
+    @pytest.mark.parametrize(
+        ("price", "unit", "expected_price"),
+        [
+            (100, "seconds", 101.2),
+            ("2.5", "720p-pixel-seconds", 2.53),
+            (250, "fixed", 253.0),
+        ],
+    )
+    def test_pad_runner_price_copies_discovery_metadata(
+        self,
+        price: int | str,
+        unit: str,
+        expected_price: int | float,
+    ) -> None:
+        price_info = LiveRunnerPriceInfo(price, " WEI ", f" {unit.upper()} ")
+
+        max_price = live_runner._pad_runner_price(price_info)
+
+        assert max_price is not price_info
+        assert max_price.price == expected_price
+        assert max_price.currency == price_info.currency
+        assert max_price.unit == price_info.unit
+        assert max_price.to_json() == {
+            "price": expected_price,
+            "currency": "wei",
+            "unit": unit,
+        }
 
 class TestLiveRunnerSession:
     async def test_call_runner_returns_json_and_metadata(self) -> None:
@@ -255,6 +282,15 @@ class TestLiveRunnerSession:
         sessions: list[dict[str, object]] = []
         payment_sessions: list[object] = []
         runner_url = "https://service.example.com/apps/runner-1/session"
+        runner = LiveRunnerInstance(
+            url=runner_url,
+            app="livepeer/app",
+            runner_id="runner-1",
+            mode="persistent",
+            orchestrator_url="https://service.example.com",
+            raw={},
+            price_info=LiveRunnerPriceInfo(100, "wei", "seconds"),
+        )
 
         class _PaymentSession:
             def __init__(self, signer_url: str, **kwargs: object) -> None:
@@ -296,7 +332,7 @@ class TestLiveRunnerSession:
             ) as sig_mock,
         ):
             result = await call_runner(
-                runner_url,
+                runner=runner,
                 payload={"prompt": "hi"},
                 method="PATCH",
                 signer_url="https://signer.example.com",
@@ -322,8 +358,13 @@ class TestLiveRunnerSession:
                 "signer_url": "https://signer.example.com",
                 "signer_headers": {"Authorization": "token"},
                 "type": "live",
-                "app": None,
+                "app": "livepeer/app",
                 "challenge": _payment_challenge("manifest-1"),
+                "max_price": {
+                    "price": 101.2,
+                    "currency": "wei",
+                    "unit": "seconds",
+                },
             }
         ]
         assert result.payment_session is payment_sessions[0]
@@ -345,6 +386,9 @@ class TestLiveRunnerSession:
             mode="single-shot",
             orchestrator_url="https://service.example.com",
             raw={},
+            price_info=LiveRunnerPriceInfo(
+                "2.5", "wei", "720p-pixel-seconds"
+            ),
         )
 
         class _PaymentSession:
@@ -394,6 +438,11 @@ class TestLiveRunnerSession:
                 "type": "lv2v",
                 "app": "live-video-to-video/scope",
                 "challenge": _payment_challenge("manifest-scope"),
+                "max_price": {
+                    "price": 2.53,
+                    "currency": "wei",
+                    "unit": "720p-pixel-seconds",
+                },
             }
         ]
 
@@ -470,6 +519,12 @@ class TestLiveRunnerSession:
         assert len(sessions) == 2
         assert sessions[0]["type"] == "fixed"
         assert sessions[1]["type"] == "fixed"
+        assert sessions[0]["max_price"] == {
+            "price": 10.12,
+            "currency": "wei",
+            "unit": "fixed",
+        }
+        assert sessions[1]["max_price"] == sessions[0]["max_price"]
         assert sessions[0]["challenge"] == _payment_challenge("fixed-manifest")
         assert sessions[1]["challenge"] == _payment_challenge("fixed-manifest")
         assert result.payment_session is None
@@ -566,6 +621,7 @@ class TestLiveRunnerSession:
                 "type": "live",
                 "app": None,
                 "challenge": _payment_challenge("manifest-1"),
+                "max_price": None,
             },
             {
                 "signer_url": "https://signer.example.com",
@@ -573,6 +629,7 @@ class TestLiveRunnerSession:
                 "type": "live",
                 "app": None,
                 "challenge": _payment_challenge("manifest-2"),
+                "max_price": None,
             },
         ]
         assert sig_mock.call_count == 1

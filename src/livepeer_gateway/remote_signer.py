@@ -221,6 +221,7 @@ class LivePaymentSession:
         type: str,
         challenge: LivePaymentChallenge,
         app: str | None = None,
+        max_price: dict[str, Any] | None = None,
         max_refresh_retries: int = 3,
     ) -> None:
         self._signer_url = signer_url
@@ -228,6 +229,7 @@ class LivePaymentSession:
         self._type = type
         self._challenge = challenge
         self._app = app
+        self._max_price = dict(max_price) if max_price is not None else None
         self._max_refresh_retries = max(0, int(max_refresh_retries))
         self._state: dict[str, Any] | None = None
 
@@ -306,6 +308,8 @@ class LivePaymentSession:
         }
         if self._app:
             payload["app"] = self._app
+        if self._max_price is not None:
+            payload["maxPrice"] = dict(self._max_price)
         if self._state is not None:
             payload["state"] = self._state
 
