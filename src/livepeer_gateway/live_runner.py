@@ -1155,9 +1155,19 @@ async def run_session_payments(
     while True:
         try:
             await payment_session.send_payment()
+            _LOG.info(
+                "Live runner session payment sent (session_id=%s orch=%s)",
+                session.session_id,
+                getattr(payment_session, "_orchestrator_url", None),
+            )
         except SkipPaymentCycle as exc:
-            # Orchestrator says the balance is current; this is a healthy gate, not an error.
-            _LOG.debug("Live runner session payment skipped (balance current): %s", exc)
+            # Signer returned HTTP 482 (often body "no tickets"): probabilistic
+            # ticket creation produced nothing this cycle. Nothing to POST.
+            _LOG.info(
+                "Live runner session payment skipped (no tickets this cycle; session_id=%s): %s",
+                session.session_id,
+                exc,
+            )
         except Exception as exc:  # noqa: BLE001 - keep the loop alive across transient failures
             _LOG.warning("Live runner session payment failed: %s", exc)
         await asyncio.sleep(interval)

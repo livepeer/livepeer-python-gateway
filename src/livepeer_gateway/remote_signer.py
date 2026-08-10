@@ -234,10 +234,13 @@ class LivePaymentSession:
                     ) from e
                 if self._state is None:
                     raise
-                orchestrator_url = e.orchestrator_url
+                # Prefer the header from the 480 response; fall back to the orch
+                # URL from the original 402 challenge (many signers omit the header).
+                orchestrator_url = e.orchestrator_url or self._orchestrator_url
                 if not orchestrator_url:
                     raise PaymentError(
-                        "Signer refresh response missing Livepeer-Orchestrator-URL header"
+                        "Signer refresh required but no orchestrator URL is available "
+                        "(missing Livepeer-Orchestrator-URL header and no challenge URL)"
                     ) from e
                 await self._refresh_payment_params(orchestrator_url)
                 attempts += 1
@@ -260,7 +263,9 @@ class LivePaymentSession:
         }
         try:
             timeout = aiohttp.ClientTimeout(total=5.0)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            # Match sync PaymentSession / request_json: orchs often use self-signed TLS.
+            connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                 async with session.post(url, data=b"", headers=headers) as resp:
                     if resp.status >= 400:
                         body = await resp.text()
