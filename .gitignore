@@ -6,6 +6,10 @@
 # Python cache
 __pycache__/
 *.pyc
+.coverage
+.pytest_cache/
+dist/
+htmlcov/
 
 # Generated files
 lp_rpc.proto
