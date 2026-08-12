@@ -41,7 +41,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from .orchestrator import _http_origin, _parse_http_url, discover_orchestrators
+from .orchestrator import _http_origin, discover_orchestrators
 from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, OrchestratorRejection
 
 _LOG = logging.getLogger(__name__)
@@ -163,8 +163,6 @@ def _create_byoc_payment(
 
     Returns dict with Livepeer-Payment and Livepeer-Segment headers.
     """
-    from .remote_signer import get_orch_info_sig, _freeze_headers, PaymentSession
-    from .orchestrator import _http_origin
     from .orch_info import get_orch_info
 
     # Step 1: Get OrchestratorInfo via gRPC (port 8935)

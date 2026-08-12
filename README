@@ -1,6 +1,39 @@
-Generate protobufs:
+# Livepeer Python SDK
 
+The official Python SDK for the Livepeer network. Submit AI and video compute
+jobs directly to orchestrators, use a remote signer for payment, and stream
+media and control data over Livepeer's trickle protocol.
+
+## Requirements
+
+- Python 3.12 or newer
+
+## Installation
+
+Install the stable release from PyPI:
+
+```bash
+python -m pip install livepeer-gateway
 ```
+
+The import package is named `livepeer_gateway`:
+
+```python
+from livepeer_gateway import StartJobRequest, start_lv2v
+```
+
+## Development
+
+Install the locked development dependencies with
+[uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync --locked --group test
+```
+
+Generate protobufs after installing the code-generation extra:
+
+```bash
 uv sync --extra dev
 uv run generate-lp-rpc
 ```
@@ -9,39 +42,39 @@ uv run generate-lp-rpc
 
 Install the locked test dependencies and run the complete pytest suite:
 
-```
+```bash
 uv sync --locked --group test
 uv run --group test pytest
 ```
 
 Pass a test file or node ID to pytest for a focused run:
 
-```
+```bash
 uv run --group test pytest tests/test_live_runner.py
 uv run --group test pytest tests/test_live_runner.py::TestLiveRunnerHelpers::test_parse_go_duration
 ```
 
 Run the suite with the configured line and branch coverage:
 
-```
+```bash
 uv run --group test pytest --cov=livepeer_gateway --cov-branch --cov-report=term-missing
 ```
 
 ## Usage Examples
 
 First install dependencies for example code
-```
+```bash
 uv sync --extra examples
 ```
 
 Get orchestrator info, offchain mode
-```
+```bash
 uv run examples/get_orchestrator_info.py localhost:8935
 ```
 
 On-chain mode with a remote signer
 
-```
+```bash
 uv run examples/get_orchestrator_info.py --signer "<signer-host:port>"
 
 # Use a custom discovery endpoint to filter orchestrators
@@ -50,22 +83,22 @@ uv run examples/get_orchestrator_info.py --signer "<signer-host:port>" '<discove
 ```
 
 Get orchestrator info using a token encoding signer / discovery parameters
-```
+```bash
 uv run examples/get_orchestrator_info.py --token "<base64-token>"
 ```
 
 Write raw frames to a LiveVideoToVideo job
-```
+```bash
 uv run examples/write_frames.py localhost:8935
 ```
 
 Capture MacOS camera frames and publish via write_frame
-```
+```bash
 uv run examples/camera_capture.py localhost:8935
 ```
 
 Capture MacOS camera frames and subscribe to media output (stdout or file)
-```
+```bash
 uv run examples/camera_capture.py localhost:8935 --output - | ffplay -fflags nobuffer -flags low_delay -probesize 32 -i -
 uv run examples/camera_capture.py localhost:8935 --output out.ts
 ```
@@ -78,13 +111,13 @@ async with job.media_output() as output:
 ```
 
 Composite camera input and decoded output side-by-side with PTS delta
-```
-uv sync --group examples
+```bash
+uv sync --extra examples
 uv run examples/in_out_composite.py localhost:8935
 ```
 
 Subscribe to a LiveVideoToVideo trickle events channel
-```
+```bash
 uv run examples/subscribe_events.py localhost:8935
 ```
 

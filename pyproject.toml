@@ -4,21 +4,44 @@ build-backend = "hatchling.build"
 
 [project]
 name = "livepeer-gateway"
-version = "0.1.0"
+version = "1.0.0"
+description = "Official Python SDK for submitting AI and video jobs to the Livepeer network"
+readme = { file = "README", content-type = "text/markdown" }
+license = { file = "LICENSE" }
+authors = [
+  { name = "Livepeer Foundation" },
+]
 requires-python = ">=3.12"
+keywords = ["livepeer", "video", "ai", "sdk"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Framework :: AsyncIO",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Video",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
-  "grpcio>=1.65.0",
-  "protobuf>=4.25.0",
+  "grpcio>=1.76.0",
+  "protobuf>=6.31.1",
   "aiohttp>=3.9.0",
   "av>=11.0.0",
 ]
+
+[project.urls]
+Homepage = "https://livepeer.org"
+Repository = "https://github.com/livepeer/livepeer-python-gateway"
+Issues = "https://github.com/livepeer/livepeer-python-gateway/issues"
+Changelog = "https://github.com/livepeer/livepeer-python-gateway/blob/main/CHANGELOG.md"
 
 [project.scripts]
 generate-lp-rpc = "livepeer_gateway.codegen:main"
 
 [project.optional-dependencies]
 dev = [
-  "grpcio-tools>=1.65.0",
+  "grpcio-tools>=1.76.0",
 ]
 
 examples = [
@@ -38,7 +61,19 @@ test = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/livepeer_gateway", "src/net"]
+packages = ["src/livepeer_gateway"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/CHANGELOG.md",
+  "/LICENSE",
+  "/README",
+  "/examples",
+  "/pyproject.toml",
+  "/src",
+  "/tests",
+  "/uv.lock",
+]
 
 [tool.pytest.ini_options]
 minversion = "8.3"
