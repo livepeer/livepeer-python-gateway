@@ -17,6 +17,8 @@ from .byoc import (
 )
 from .errors import LivepeerHTTPError, LivepeerGatewayError, NoOrchestratorAvailableError, NoRunnerAvailableError, PaymentError
 from .events import Events
+from .logging_config import configure_logging
+
 from .media_publish import (
     AudioOutputConfig,
     MediaPublish,
@@ -136,6 +138,7 @@ __all__ = [
     "ChannelReader",
     "JSONLReader",
     "JSONLWriter",
+    "configure_logging",
     "Events",
     "PaymentSession",
     "parse_token",
@@ -169,3 +172,7 @@ __all__ = [
     "wait_for_training",
     "list_capabilities",
 ]
+
+# Honor LOG_LEVEL; add a root handler only if the app has not configured logging.
+configure_logging()
+
