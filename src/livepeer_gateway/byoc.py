@@ -144,6 +144,36 @@ class ByocJobResponse:
 # Header building
 # ---------------------------------------------------------------------------
 
+# Keys, in priority order, under which a BYOC request conventionally carries
+# the specific provider model id (distinct from the coarse capability name).
+_MODEL_ID_KEYS = ("model_id", "model")
+
+
+def _extract_model_id(
+    payload: Optional[dict[str, Any]],
+    parameters: Optional[dict[str, Any]] = None,
+) -> str:
+    """Best-effort extraction of the provider model id from a BYOC request.
+
+    The *model id* is the specific provider model the worker runs (e.g. the
+    value billed/attributed per generation), as opposed to the *capability*
+    name (e.g. ``nano-banana``) which selects the orchestrator pipeline. It is
+    conventionally carried in the request ``payload`` under ``model_id`` or
+    ``model``; some capabilities place it in the job ``parameters`` instead.
+
+    Returns an empty string when no model id can be determined so callers can
+    fall back to today's behavior (the signer then derives/defaults it).
+    """
+    for source in (payload, parameters):
+        if not isinstance(source, dict):
+            continue
+        for key in _MODEL_ID_KEYS:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
 def _create_byoc_payment(
     *,
     orch_origin: str,
@@ -151,6 +181,7 @@ def _create_byoc_payment(
     livepeer_hdr: str,
     signer_url: str,
     signer_headers: Optional[dict[str, str]] = None,
+    model_id: str = "",
     timeout: float = 30.0,
 ) -> dict[str, str]:
     """
@@ -194,11 +225,27 @@ def _create_byoc_payment(
 
     signer_origin = _http_origin(signer_url)
     payment_url = f"{signer_origin}/generate-live-payment"
-    payment_body = json.dumps({
+    # `type` stays "lv2v" so the remote signer keeps reusing the live
+    # fee/pixel routing for BYOC jobs (BYOC has no per-job pixel count). The
+    # additive `capability` + `model_id` fields below carry the REAL usage
+    # attribution so the signer's `create_signed_ticket` metering event
+    # records the true pipeline + model instead of `live-video-to-video` /
+    # `unknown`. Both are backward-compatible: an older signer ignores the
+    # extra fields, and an empty `model_id` is simply omitted so behavior is
+    # byte-identical to today.
+    payment_payload: dict[str, Any] = {
         "orchestrator": orch_info_b64,
         "type": "lv2v",
         "capability": capability,
-    }).encode("utf-8")
+    }
+    # Defensively strip (and ignore non-strings): callers normally pass a value
+    # already cleaned by `_extract_model_id`, but a direct caller could pass a
+    # whitespace-only or non-string value, which must still be omitted so the
+    # wire body stays byte-identical to today and the signer falls back.
+    model_id = model_id.strip() if isinstance(model_id, str) else ""
+    if model_id:
+        payment_payload["model_id"] = model_id
+    payment_body = json.dumps(payment_payload).encode("utf-8")
     payment_headers = {
         "Content-Type": "application/json",
         "Livepeer-Capability": capability,
@@ -390,6 +437,7 @@ def submit_byoc_job(
                     livepeer_hdr=livepeer_hdr,
                     signer_url=signer_url,
                     signer_headers=signer_headers,
+                    model_id=_extract_model_id(req.payload, req.parameters),
                     timeout=http_timeout,
                 )
                 headers.update(payment_headers)
@@ -673,6 +721,11 @@ def submit_training_job(
                     livepeer_hdr=livepeer_hdr,
                     signer_url=signer_url,
                     signer_headers=signer_headers,
+                    # Attribute payment to the explicit top-level training
+                    # model_id (matching the orchestrator body above), not the
+                    # merged payload where a `model_id` inside req.params could
+                    # otherwise override it and diverge from the real model.
+                    model_id=_extract_model_id({"model_id": req.model_id}, req.params),
                     timeout=http_timeout,
                 )
                 headers.update(payment_headers)
