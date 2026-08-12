@@ -1,0 +1,14 @@
+{
+  "runners": [
+    {
+      "label": "story-runner",
+      "app": "livepeer/read-story",
+      "runner_url": "http://127.0.0.1:8990",
+      "health_url": "/healthz",
+      "routing": "label",
+      "capacity": 10,
+      "metadata":"{'title':'The Open Window', 'author': 'Saki'}",
+      "mode": "single-shot"
+    }
+  ]
+}

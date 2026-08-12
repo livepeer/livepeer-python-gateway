@@ -10,7 +10,8 @@ from livepeer_gateway.capabilities import (
     get_per_capability_map,
 )
 from livepeer_gateway import get_orch_info
-from livepeer_gateway.orchestrator import LivepeerGatewayError, discover_orchestrators
+from livepeer_gateway.discovery import discover_orchestrators
+from livepeer_gateway.errors import LivepeerGatewayError
 from livepeer_gateway.token import parse_token
 
 def _parse_args() -> argparse.Namespace:

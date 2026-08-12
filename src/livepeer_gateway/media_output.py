@@ -1,16 +1,18 @@
-from __future__ import annotations
-
 """
 Helpers for consuming trickle media outputs as segments, bytes, or frames.
 """
 
+from __future__ import annotations
+
 import asyncio
 from dataclasses import dataclass
+import inspect
 import logging
 import time
 from enum import Enum
 from contextlib import suppress
-from typing import AsyncIterator, Collection, Optional
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection
+from typing import Optional
 
 from .errors import LivepeerGatewayError
 from .media_decode import (
@@ -30,6 +32,14 @@ from .trickle_subscriber import TrickleSubscriber, TrickleSubscriberStats
 
 _LOG = logging.getLogger(__name__)
 _DEFAULT_ACCEPTED_CONTENT_TYPES = frozenset({"video/mp2t", "audio/mp2t"})
+
+MediaFrameCallback = Callable[
+    [AudioDecodedMediaFrame | VideoDecodedMediaFrame],
+    None | Awaitable[None],
+]
+MediaPacketCallback = Callable[[DemuxedMediaPacket], None | Awaitable[None]]
+MediaBytesCallback = Callable[[bytes], None | Awaitable[None]]
+
 
 class LagPolicy(Enum):
     """
@@ -136,6 +146,9 @@ class MediaOutput:
         max_segments: int = 5,
         on_lag: LagPolicy = LagPolicy.LATEST,
         accepted_content_types: Collection[str] = _DEFAULT_ACCEPTED_CONTENT_TYPES,
+        on_bytes: MediaBytesCallback | None = None,
+        on_frame: MediaFrameCallback | None = None,
+        on_packet: MediaPacketCallback | None = None,
     ) -> None:
         if max_segments < 1:
             raise ValueError("max_segments must be >= 1")
@@ -148,6 +161,9 @@ class MediaOutput:
         self.max_segments = max_segments
         self.on_lag = on_lag
         self.accepted_content_types = _normalize_accepted_content_types(accepted_content_types)
+        self.on_bytes = on_bytes
+        self.on_frame = on_frame
+        self.on_packet = on_packet
 
         self._sub: Optional[TrickleSubscriber] = None
         self._segments: list[SegmentReader] = []
@@ -158,6 +174,10 @@ class MediaOutput:
         self._started_at = time.time()
         self._processor: Optional[MpegTsDecoder | MpegTsPacketDemuxer] = None
         self._last_decoder_stats: Optional[DecoderQueueStats] = None
+        self._bytes_callback_task: asyncio.Task[None] | None = None
+        self._frame_callback_task: asyncio.Task[None] | None = None
+        self._packet_callback_task: asyncio.Task[None] | None = None
+        self._callback_errors: list[BaseException] = []
         self._stats: dict[str, int] = {
             "segments_consumed": 0,
             "bytes_read": 0,
@@ -176,6 +196,114 @@ class MediaOutput:
             "packet_errors": 0,
             "decode_errors": 0,
         }
+        if self.on_bytes is not None or self.on_frame is not None or self.on_packet is not None:
+            self.start_callbacks()
+
+    def start_callbacks(self) -> list[asyncio.Task[None]]:
+        """
+        Start configured frame/packet callback consumers.
+
+        This is idempotent. If called without a running event loop, no tasks are
+        started and callers may retry later from async code.
+        """
+        if self.on_bytes is None and self.on_frame is None and self.on_packet is None:
+            return []
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _LOG.warning(
+                "No running event loop; MediaOutput callbacks not started. "
+                "Call start_callbacks() from async code or use async with MediaOutput(...)."
+            )
+            return []
+
+        started: list[asyncio.Task[None]] = []
+        if self.on_bytes is not None and self._bytes_callback_task is None:
+            task = loop.create_task(
+                self._run_bytes_callback_loop(self.on_bytes),
+                name="MediaOutput.on_bytes",
+            )
+            task.add_done_callback(self._record_callback_task_result)
+            self._bytes_callback_task = task
+            started.append(task)
+        if self.on_frame is not None and self._frame_callback_task is None:
+            task = loop.create_task(
+                self._run_frame_callback_loop(self.on_frame),
+                name="MediaOutput.on_frame",
+            )
+            task.add_done_callback(self._record_callback_task_result)
+            self._frame_callback_task = task
+            started.append(task)
+        if self.on_packet is not None and self._packet_callback_task is None:
+            task = loop.create_task(
+                self._run_packet_callback_loop(self.on_packet),
+                name="MediaOutput.on_packet",
+            )
+            task.add_done_callback(self._record_callback_task_result)
+            self._packet_callback_task = task
+            started.append(task)
+        return started
+
+    def callback_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        tasks = []
+        if self._bytes_callback_task is not None:
+            tasks.append(self._bytes_callback_task)
+        if self._frame_callback_task is not None:
+            tasks.append(self._frame_callback_task)
+        if self._packet_callback_task is not None:
+            tasks.append(self._packet_callback_task)
+        return tuple(tasks)
+
+    async def wait_callbacks(self, timeout: float | None = None) -> tuple[object, ...]:
+        """
+        Wait for configured callback consumers to finish.
+
+        Raises the first callback error, matching close().
+        """
+        callback_tasks = self.callback_tasks()
+        if not callback_tasks:
+            return ()
+        results = await asyncio.wait_for(
+            asyncio.gather(*callback_tasks, return_exceptions=True),
+            timeout=timeout,
+        )
+        self._collect_callback_errors(results)
+        if self._callback_errors:
+            raise self._callback_errors[0]
+        return tuple(results)
+
+    def _collect_callback_errors(self, results: Collection[object]) -> None:
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(
+                result, asyncio.CancelledError
+            ):
+                if not any(error is result for error in self._callback_errors):
+                    self._callback_errors.append(result)
+
+    async def _run_bytes_callback_loop(self, callback: MediaBytesCallback) -> None:
+        async for chunk in self.bytes():
+            await _maybe_await(callback(chunk))
+
+    async def _run_frame_callback_loop(self, callback: MediaFrameCallback) -> None:
+        async for frame in self.frames():
+            await _maybe_await(callback(frame))
+
+    async def _run_packet_callback_loop(self, callback: MediaPacketCallback) -> None:
+        async for packet in self.packets():
+            await _maybe_await(callback(packet))
+
+    def _record_callback_task_result(self, task: asyncio.Task[None]) -> None:
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is None:
+            return
+        self._callback_errors.append(exc)
+        _LOG.error(
+            "MediaOutput callback task failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
 
     def segments(
         self,
@@ -419,13 +547,30 @@ class MediaOutput:
                 return self._segments[relative]
             return None
 
-    async def close(self) -> None:
+    async def close(self, *, wait_callbacks: bool = True, timeout: float | None = 10.0) -> None:
+        callback_tasks = self.callback_tasks()
+        if callback_tasks:
+            if wait_callbacks and (timeout is None or timeout > 0):
+                try:
+                    await self.wait_callbacks(timeout=timeout)
+                except TimeoutError:
+                    _LOG.debug(
+                        "Media output callbacks did not finish before shutdown timeout; cancelling"
+                    )
+            for task in callback_tasks:
+                if not task.done():
+                    task.cancel()
+            results = await asyncio.gather(*callback_tasks, return_exceptions=True)
+            self._collect_callback_errors(results)
         for segment in self._segments:
             await segment.close()
         if self._sub is not None:
             await self._sub.close()
+        if self._callback_errors:
+            raise self._callback_errors[0]
 
     async def __aenter__(self) -> "MediaOutput":
+        self.start_callbacks()
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> None:
@@ -483,3 +628,9 @@ def _require_content_type(value: Optional[str], accepted: frozenset[str]) -> Non
         raise LivepeerGatewayError(
             f"Expected Content-Type in {sorted(accepted)!r}, got {value!r}"
         )
+
+
+async def _maybe_await(value: None | Awaitable[None]) -> None:
+    if inspect.isawaitable(value):
+        _ = await value
+    return None

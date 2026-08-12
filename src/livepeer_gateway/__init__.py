@@ -1,5 +1,5 @@
 from .capabilities import CapabilityId, build_capabilities
-from .channel_reader import ChannelReader, JSONLReader
+from .channel_reader import ChannelEventCallback, ChannelReader, JSONLReader
 from .channel_writer import ChannelWriter, JSONLWriter
 from .control import Control, ControlConfig, ControlMode
 from .byoc import (
@@ -15,7 +15,7 @@ from .byoc import (
     wait_for_training,
     list_capabilities,
 )
-from .errors import LivepeerGatewayError, NoOrchestratorAvailableError, PaymentError
+from .errors import LivepeerHTTPError, LivepeerGatewayError, NoOrchestratorAvailableError, NoRunnerAvailableError, PaymentError
 from .events import Events
 from .media_publish import (
     AudioOutputConfig,
@@ -32,14 +32,44 @@ from .media_decode import (
     DemuxedMediaPacket,
     VideoDecodedMediaFrame,
 )
-from .media_output import MediaOutput, MediaOutputStats
-from .errors import OrchestratorRejection
+from .media_output import (
+    MediaBytesCallback,
+    MediaFrameCallback,
+    MediaOutput,
+    MediaOutputStats,
+    MediaPacketCallback,
+)
+from .errors import OrchestratorRejection, RunnerRejection
 from .lv2v import LiveVideoToVideo, StartJobRequest, start_lv2v
+from .live_runner import (
+    LiveRunnerCallResult,
+    LiveRunnerCallStream,
+    LiveRunnerGPU,
+    LiveRunnerInstance,
+    LiveRunnerPriceInfo,
+    LiveRunnerRegistration,
+    LiveRunnerSession,
+    LiveRunnerSessionCallback,
+    LiveRunnerSessionEvent,
+    LiveRunnerProxy,
+    call_runner,
+    create_proxy,
+    create_trickle_channels,
+    register_runner,
+    remove_trickle_channels,
+    stop_runner_session,
+)
+from .discovery import discover_orchestrators, discover_runners
 from .orch_info import get_orch_info
-from .orchestrator import discover_orchestrators
-from .remote_signer import PaymentSession
+from .remote_signer import LivePaymentChallenge, LivePaymentSession, PaymentSession
 from .scope import start_scope
-from .selection import SelectionCursor, orchestrator_selector
+from .selection import (
+    RunnerSelectionCursor,
+    SelectionCursor,
+    orchestrator_selector,
+    runner_selector,
+    reserve_session,
+)
 from .token import parse_token
 from .trickle_publisher import (
     TricklePublishError,
@@ -55,15 +85,37 @@ __all__ = [
     "Control",
     "ControlConfig",
     "ControlMode",
+    "ByocJobRequest",
+    "ByocJobResponse",
+    "ByocTrainingRequest",
+    "ByocTrainingResponse",
+    "ByocTrainingStatus",
     "ChannelWriter",
     "CapabilityId",
     "build_capabilities",
     "discover_orchestrators",
+    "discover_runners",
+    "get_training_status",
     "get_orch_info",
     "LiveVideoToVideo",
+    "LiveRunnerCallResult",
+    "LiveRunnerCallStream",
+    "LiveRunnerGPU",
+    "LiveRunnerInstance",
+    "LiveRunnerPriceInfo",
+    "LiveRunnerRegistration",
+    "LiveRunnerSession",
+    "LiveRunnerSessionCallback",
+    "LiveRunnerSessionEvent",
+    "LivePaymentChallenge",
+    "LivePaymentSession",
+    "LiveRunnerProxy",
     "LivepeerGatewayError",
+    "LivepeerHTTPError",
     "NoOrchestratorAvailableError",
+    "NoRunnerAvailableError",
     "OrchestratorRejection",
+    "RunnerRejection",
     "PaymentError",
     "MediaPublish",
     "MediaPublishConfig",
@@ -74,20 +126,36 @@ __all__ = [
     "AudioOutputConfig",
     "MediaOutput",
     "MediaOutputStats",
+    "MediaBytesCallback",
+    "MediaFrameCallback",
+    "MediaPacketCallback",
     "AudioDecodedMediaFrame",
     "DecodedMediaFrame",
     "DemuxedMediaPacket",
+    "ChannelEventCallback",
     "ChannelReader",
     "JSONLReader",
     "JSONLWriter",
     "Events",
     "PaymentSession",
     "parse_token",
+    "RunnerSelectionCursor",
     "SelectionCursor",
     "orchestrator_selector",
+    "runner_selector",
+    "reserve_session",
     "StartJobRequest",
+    "call_runner",
+    "create_proxy",
+    "create_trickle_channels",
+    "register_runner",
+    "remove_trickle_channels",
+    "refresh_training_payment",
     "start_lv2v",
     "start_scope",
+    "stop_runner_session",
+    "submit_byoc_job",
+    "submit_training_job",
     "TricklePublishError",
     "TricklePublisher",
     "TricklePublisherStats",
@@ -98,4 +166,6 @@ __all__ = [
     "TrickleSubscriber",
     "TrickleSubscriberStats",
     "VideoDecodedMediaFrame",
+    "wait_for_training",
+    "list_capabilities",
 ]
