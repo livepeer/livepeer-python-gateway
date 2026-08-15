@@ -14,6 +14,8 @@ from contextlib import suppress
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection
 from typing import Optional
 
+import aiohttp
+
 from .errors import LivepeerGatewayError
 from .media_decode import (
     AudioDecodedMediaFrame,
@@ -434,7 +436,7 @@ class MediaOutput:
                 decoder.stop()
                 if not producer_task.done():
                     producer_task.cancel()
-                with suppress(asyncio.CancelledError):
+                with suppress(asyncio.CancelledError, aiohttp.ClientConnectionError):
                     await producer_task
                 await asyncio.to_thread(decoder.join)
                 self._last_decoder_stats = decoder.get_stats()
