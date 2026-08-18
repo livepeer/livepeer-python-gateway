@@ -256,11 +256,12 @@ class LivePaymentSession:
 
         Raises LivepeerHTTPError on error responses so callers can branch on
         the status code, and SkipPaymentCycle when the signer gates the cycle.
+        Malformed success responses are ignored without changing the challenge.
         """
         if not self._signer_url:
             return
 
-        from .http import _post_empty
+        from .http import request_json
 
         payment = await self.get_payment()
         if not payment.seg_creds:
@@ -271,7 +272,27 @@ class LivePaymentSession:
             "Livepeer-Payment": payment.payment,
             "Livepeer-Segment": payment.seg_creds,
         }
-        await _post_empty(self._challenge.payment_url, headers=headers, timeout=5.0)
+        try:
+            data = await request_json(
+                self._challenge.payment_url,
+                method="POST",
+                headers=headers,
+                timeout=5.0,
+            )
+        except LivepeerGatewayError as e:
+            if isinstance(e.__cause__, (UnicodeDecodeError, json.JSONDecodeError)):
+                return
+            raise
+        if not isinstance(data, dict):
+            return
+
+        payment_params = data.get("payment_params")
+        if not isinstance(payment_params, str) or not payment_params:
+            return
+        self._challenge = replace(
+            self._challenge,
+            payment_params=payment_params,
+        )
 
     async def run_payments(self) -> bool:
         """Keep a metered session funded until cancelled or the session ends.

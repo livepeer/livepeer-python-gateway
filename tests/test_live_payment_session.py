@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import types
 from unittest import mock
 
@@ -112,14 +113,107 @@ class TestLivePaymentSession:
         assert payment.payment == ""
         assert payment.seg_creds is None
 
-    async def test_send_payment_reuses_empty_post_helper(self) -> None:
+    async def test_send_payment_rotates_payment_params_for_next_payment(self) -> None:
+        signer_calls: list[dict[str, object]] = []
+        payment_posts: list[tuple[str, str, dict[str, str]]] = []
+        refreshed_params = iter(("fresh-payment-params-1", "fresh-payment-params-2"))
+
+        async def _post_json(
+            url: str,
+            payload: dict[str, object],
+            *,
+            headers: dict[str, str] | None = None,
+            timeout: float = 5.0,
+        ) -> dict[str, object]:
+            del url, headers, timeout
+            signer_calls.append(dict(payload))
+            sequence = len(signer_calls)
+            return {
+                "payment": f"payment-{sequence}",
+                "segCreds": f"segment-{sequence}",
+                "state": {"sequence": sequence},
+            }
+
+        async def _request_body(
+            url: str,
+            *,
+            method: str,
+            payload: dict[str, object] | None,
+            headers: dict[str, str],
+            timeout: float,
+        ) -> tuple[bytes, str]:
+            del payload, timeout
+            payment_posts.append((url, method, dict(headers)))
+            payment_params = next(refreshed_params)
+            return (
+                json.dumps(
+                    {
+                        "payment_params": payment_params,
+                        "orchestrator": "https://orch.example.com",
+                        "manifest_id": "manifest-1",
+                        "payment_url": _PAYMENT_URL,
+                    }
+                ).encode(),
+                "application/json",
+            )
+
         session = LivePaymentSession(
             "https://signer.example.com",
             type="lv2v",
-            challenge=_challenge(),
+            challenge=_challenge(payment_params="initial-payment-params"),
+            app="live-video-to-video/scope",
+            max_price={"price": 10.12, "currency": "wei", "unit": "pixels"},
         )
 
-        post_empty = mock.AsyncMock()
+        with (
+            mock.patch("livepeer_gateway.http.post_json", side_effect=_post_json),
+            mock.patch("livepeer_gateway.http._request_body", side_effect=_request_body),
+        ):
+            await session.send_payment()
+            await session.send_payment()
+
+        assert [call["orchestrator"] for call in signer_calls] == [
+            "initial-payment-params",
+            "fresh-payment-params-1",
+        ]
+        assert signer_calls[1]["state"] == {"sequence": 1}
+        assert [call["app"] for call in signer_calls] == [
+            "live-video-to-video/scope",
+            "live-video-to-video/scope",
+        ]
+        assert [call["maxPrice"] for call in signer_calls] == [
+            {"price": 10.12, "currency": "wei", "unit": "pixels"},
+            {"price": 10.12, "currency": "wei", "unit": "pixels"},
+        ]
+        assert payment_posts == [
+            (
+                _PAYMENT_URL,
+                "POST",
+                {
+                    "Livepeer-Payment": "payment-1",
+                    "Livepeer-Segment": "segment-1",
+                },
+            ),
+            (
+                _PAYMENT_URL,
+                "POST",
+                {
+                    "Livepeer-Payment": "payment-2",
+                    "Livepeer-Segment": "segment-2",
+                },
+            ),
+        ]
+        assert session._challenge == _challenge(
+            payment_params="fresh-payment-params-2"
+        )
+
+    async def test_send_payment_accepts_legacy_non_json_response(self) -> None:
+        session = LivePaymentSession(
+            "https://signer.example.com",
+            type="lv2v",
+            challenge=_challenge(payment_params="legacy-payment-params"),
+        )
+
         with (
             mock.patch.object(
                 session,
@@ -128,15 +222,62 @@ class TestLivePaymentSession:
                     return_value=types.SimpleNamespace(payment="p", seg_creds="s")
                 ),
             ),
-            mock.patch("livepeer_gateway.http._post_empty", post_empty),
+            mock.patch(
+                "livepeer_gateway.http._request_body",
+                new=mock.AsyncMock(
+                    return_value=(b"legacy-protobuf", "application/octet-stream")
+                ),
+            ) as request_body,
         ):
             await session.send_payment()
 
-        post_empty.assert_awaited_once_with(
+        request_body.assert_awaited_once_with(
             _PAYMENT_URL,
+            method="POST",
+            payload=None,
             headers={"Livepeer-Payment": "p", "Livepeer-Segment": "s"},
             timeout=5.0,
         )
+        assert session._challenge == _challenge(
+            payment_params="legacy-payment-params"
+        )
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"not-json",
+            b"[]",
+            b"{}",
+            b'{"payment_params":""}',
+        ],
+    )
+    async def test_send_payment_ignores_invalid_json_response_without_mutation(
+        self,
+        body: bytes,
+    ) -> None:
+        initial_challenge = _challenge(payment_params="initial-payment-params")
+        session = LivePaymentSession(
+            "https://signer.example.com",
+            type="lv2v",
+            challenge=initial_challenge,
+        )
+
+        with (
+            mock.patch.object(
+                session,
+                "get_payment",
+                new=mock.AsyncMock(
+                    return_value=types.SimpleNamespace(payment="p", seg_creds="s")
+                ),
+            ),
+            mock.patch(
+                "livepeer_gateway.http._request_body",
+                new=mock.AsyncMock(return_value=(body, "application/json")),
+            ),
+        ):
+            await session.send_payment()
+
+        assert session._challenge is initial_challenge
 
     async def test_send_payment_preserves_typed_http_error(self) -> None:
         session = LivePaymentSession(
@@ -160,7 +301,7 @@ class TestLivePaymentSession:
                 ),
             ),
             mock.patch(
-                "livepeer_gateway.http._post_empty",
+                "livepeer_gateway.http._request_body",
                 new=mock.AsyncMock(side_effect=error),
             ),
         ):
