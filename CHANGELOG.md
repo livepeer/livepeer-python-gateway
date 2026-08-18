@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- `call_runner` no longer raises on a response that is valid JSON but not an
+  object. A top-level array (or scalar) is handed back unparsed in
+  `result.content` with `result.content_type` intact, as an image or ndjson
+  already is, so a runner can pass through an API that answers with one.
+
 ## [1.0.0] - 2026-08-11
 
 The first stable release of the Livepeer Python SDK.

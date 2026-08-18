@@ -173,7 +173,8 @@ class LiveRunnerCallResult:
         repr=False,
         compare=False,
     )
-    # Non-JSON responses (an image, say) arrive unparsed in `content`; `data` stays empty.
+    # Responses that are not a JSON object (an image, a JSON array) arrive unparsed
+    # in `content`; `data` stays empty.
     content: bytes | None = field(default=None, repr=False)
     content_type: str = ""
 
@@ -809,8 +810,8 @@ async def call_runner(
     paid via the signer and retried (up to ``max_payment_challenge_retries``), one job,
     one upfront payment. Raises ``LivepeerHTTPError`` on non-402 errors.
 
-    ``application/json`` and ``+json`` types parse into ``result.data``; anything else
-    (an image, ndjson) comes back unparsed in ``result.content`` + ``result.content_type``.
+    A JSON *object* parses into ``result.data``; anything else (an image, ndjson, a
+    top-level JSON array) comes back unparsed in ``result.content`` + ``result.content_type``.
 
     The request asks for no particular format, so the app picks what it returns.
     """
@@ -913,16 +914,21 @@ async def call_runner(
             data: dict[str, Any] = {}
             if is_json:
                 try:
-                    data = json.loads(body)
+                    parsed = json.loads(body)
                 except (UnicodeDecodeError, json.JSONDecodeError) as e:
                     raise LivepeerGatewayError(
                         f"HTTP JSON error: endpoint did not return valid JSON: {e} "
                         f"(url={runner_url}, content_type={content_type})"
                     ) from e
-                if not isinstance(data, dict):
-                    raise LivepeerGatewayError(
-                        f"Live runner call expected JSON object, got {type(data).__name__}"
-                    )
+                # Only an object can carry the protocol fields read below, so
+                # anything else is payload rather than a reply this call speaks:
+                # hand it back unparsed, as ndjson and binary already are. A
+                # runner proxying somebody else's API does not choose its
+                # response shape, and a top-level array is a common one.
+                if isinstance(parsed, dict):
+                    data = parsed
+                else:
+                    is_json = False
             return LiveRunnerCallResult(
                 data,
                 runner_url=runner_url,

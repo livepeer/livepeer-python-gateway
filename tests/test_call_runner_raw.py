@@ -1,9 +1,9 @@
 """Tests for non-JSON (raw byte) responses in call_runner.
 
-Single-document JSON responses (``application/json`` or an RFC 6839 ``+json``
-suffix) keep today's behavior: parsed into ``result.data``, strict about being an
-object. Anything else — binary, or a multi-document format like ndjson — returns
-the body unparsed in ``result.content`` with ``result.content_type`` set.
+A JSON *object* (``application/json`` or an RFC 6839 ``+json`` suffix) parses into
+``result.data``. Anything else — binary, a multi-document format like ndjson, or a
+top-level JSON array — returns the body unparsed in ``result.content`` with
+``result.content_type`` set.
 """
 
 from __future__ import annotations
@@ -154,9 +154,11 @@ def test_invalid_json_encoding_raises_gateway_error():
     assert all("did not return valid JSON" in str(error) for error in errors)
 
 
-def test_json_array_still_rejected():
+def test_json_array_returns_raw():
+    """A top-level array is data, not a reply this call speaks: hand it back whole."""
+
     async def handler(request):
-        return web.json_response([1, 2, 3])
+        return web.json_response([{"label": "llama", "score": 0.99}])
 
     app = web.Application()
     app.router.add_post("/arr", handler)
@@ -164,8 +166,26 @@ def test_json_array_still_rejected():
     async def scenario(base):
         return await call_runner(f"{base}/arr", payload={})
 
-    with pytest.raises(LivepeerGatewayError, match="expected JSON object"):
-        _run(app, scenario)
+    result = _run(app, scenario)
+    assert result.data == {}
+    assert result.content == b'[{"label": "llama", "score": 0.99}]'
+    assert result.content_type == "application/json"  # still says what it is
+    assert result.session_id == ""
+
+
+def test_json_scalar_returns_raw():
+    async def handler(request):
+        return web.json_response("just a string")
+
+    app = web.Application()
+    app.router.add_post("/scalar", handler)
+
+    async def scenario(base):
+        return await call_runner(f"{base}/scalar", payload={})
+
+    result = _run(app, scenario)
+    assert result.data == {}
+    assert result.content == b'"just a string"'
 
 
 def test_http_error_still_raises_with_binary_endpoint():
