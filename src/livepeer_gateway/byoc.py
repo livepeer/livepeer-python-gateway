@@ -31,6 +31,7 @@ Offchain usage (no payment, for testing):
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import logging
 import ssl
@@ -208,8 +209,27 @@ def _create_byoc_payment(
     try:
         with urlopen(payment_req, timeout=timeout) as resp:
             payment_data = json.loads(resp.read())
+    except http.client.IncompleteRead as e:
+        # The signer advertises a Content-Length but closes the connection
+        # early, so urllib raises IncompleteRead and discards the partial
+        # body — which usually contains the real signer error
+        # (e.g. {"error":{"message":"..."}}). Surface the partial bytes so
+        # the underlying signer failure is legible instead of an opaque
+        # "IncompleteRead(85 bytes read, 108 more expected)".
+        partial = e.partial.decode("utf-8", errors="replace")
+        expected = len(e.partial) + e.expected
+        raise LivepeerGatewayError(
+            f"BYOC payment: signer truncated response "
+            f"({len(e.partial)} of {expected} bytes); "
+            f"partial body: {partial!r}"
+        ) from e
     except HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:200]
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:200]
+        except http.client.IncompleteRead as ie:
+            # Error responses can be truncated too — keep whatever bytes the
+            # signer managed to send rather than losing the message entirely.
+            body = ie.partial.decode("utf-8", errors="replace")
         raise LivepeerGatewayError(f"BYOC payment generation failed: HTTP {e.code}: {body}") from e
 
     result = {}
