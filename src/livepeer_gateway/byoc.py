@@ -144,6 +144,29 @@ class ByocJobResponse:
 # Header building
 # ---------------------------------------------------------------------------
 
+def _read_http_error_body(e: HTTPError, limit: int = 200) -> str:
+    """
+    Read an HTTPError body without letting the read itself raise.
+
+    When a server rejects a request early (the signer answering 401 before
+    consuming a multi-KB POST body) and closes the connection, the client's
+    buffered response can be truncated: `e.read()` then raises
+    http.client.IncompleteRead *inside* the except-handler, the status code
+    never reaches the error message, and callers see only
+    "payment failed: IncompleteRead(84 bytes read, 109 more expected)"
+    (live incident 2026-08-21 — a dead key misreported as a transient GPU
+    outage). Salvage whatever bytes arrived (IncompleteRead.partial) so the
+    caller can always report "HTTP <code>: <best-effort body>".
+    """
+    try:
+        return e.read().decode("utf-8", errors="replace")[:limit]
+    except Exception as read_err:
+        partial = getattr(read_err, "partial", b"")
+        if partial:
+            return partial.decode("utf-8", errors="replace")[:limit]
+        return f"<error body unreadable: {read_err.__class__.__name__}>"
+
+
 def _create_byoc_payment(
     *,
     orch_origin: str,
@@ -209,7 +232,15 @@ def _create_byoc_payment(
         with urlopen(payment_req, timeout=timeout) as resp:
             payment_data = json.loads(resp.read())
     except HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:200]
+        body = _read_http_error_body(e)
+        # 401 = the signer rejected this API key outright (invalid/revoked).
+        # Name it explicitly so downstream error classifiers can tell it
+        # apart from a transient outage. 403 (out of credits) keeps the
+        # generic shape below — classifiers already match on that.
+        if e.code == 401:
+            raise LivepeerGatewayError(
+                f"signer rejected key: HTTP 401: {body}"
+            ) from e
         raise LivepeerGatewayError(f"BYOC payment generation failed: HTTP {e.code}: {body}") from e
 
     result = {}
@@ -262,7 +293,11 @@ def _sign_byoc_job(
         with urlopen(req, timeout=30.0) as resp:
             return json.loads(resp.read())
     except HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:200]
+        body = _read_http_error_body(e)
+        if e.code == 401:
+            raise LivepeerGatewayError(
+                f"sign-byoc-job: signer rejected key: HTTP 401: {body}"
+            ) from e
         raise LivepeerGatewayError(f"sign-byoc-job failed: HTTP {e.code}: {body}") from e
 
 
@@ -420,11 +455,7 @@ def submit_byoc_job(
                 )
 
         except HTTPError as e:
-            err_body = ""
-            try:
-                err_body = e.read().decode("utf-8", errors="replace")[:500]
-            except Exception:
-                pass
+            err_body = _read_http_error_body(e, limit=500)
             reason = f"HTTP {e.code}: {err_body}"
             _LOG.warning("BYOC job %s: orchestrator %s rejected: %s", job_id, orch_origin, reason)
 
@@ -701,11 +732,7 @@ def submit_training_job(
                 )
 
         except HTTPError as e:
-            err_body = ""
-            try:
-                err_body = e.read().decode("utf-8", errors="replace")[:500]
-            except Exception:
-                pass
+            err_body = _read_http_error_body(e, limit=500)
             reason = f"HTTP {e.code}: {err_body}"
             _LOG.warning("Training job %s: orchestrator %s rejected: %s", job_id, orch_origin, reason)
 
@@ -836,11 +863,7 @@ def refresh_training_payment(
             last_err = e
             # HTTP 4xx (other than 408/429) are not transient — fail fast
             if isinstance(e, HTTPError) and e.code not in (408, 429, 502, 503, 504):
-                err_body = ""
-                try:
-                    err_body = e.read().decode("utf-8", errors="replace")[:200]
-                except Exception:
-                    pass
+                err_body = _read_http_error_body(e)
                 raise LivepeerGatewayError(
                     f"Training refresh permanent failure for {job_id}: "
                     f"HTTP {e.code}: {err_body}"
