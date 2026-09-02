@@ -57,6 +57,18 @@ _METERED_PAYMENT_TYPES = frozenset({"live", "lv2v"})
 _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u00b5s|ms|s|m|h)\s*$")
 
 
+def aiohttp_connector(*, insecure: bool = False) -> aiohttp.TCPConnector | None:
+    """Optional aiohttp connector for live-runner clients.
+
+    ``insecure=True`` skips TLS certificate verification (self-signed localhost).
+    """
+    if not insecure:
+        return None
+    return aiohttp.TCPConnector(
+        ssl=False,
+    )
+
+
 class LiveRunnerTrickleChannelRequest(TypedDict):
     name: str
     mime_type: str

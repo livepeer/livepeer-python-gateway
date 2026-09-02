@@ -30,6 +30,15 @@ from livepeer_gateway.remote_signer import LivePaymentChallenge
 
 
 class TestLiveRunnerHelpers:
+    async def test_aiohttp_connector_insecure_skips_tls_verify(self) -> None:
+        connector = live_runner.aiohttp_connector(insecure=True)
+        assert connector is not None
+        assert connector._ssl is False
+        await connector.close()
+
+    def test_aiohttp_connector_secure_uses_default_session(self) -> None:
+        assert live_runner.aiohttp_connector(insecure=False) is None
+
     def test_join_endpoint_preserves_base_path(self) -> None:
         assert (
             live_runner._join_endpoint(

@@ -36,3 +36,10 @@ To send a fixed number of pings:
 ```sh
 uv run client.py --count 10
 ```
+
+Against a local orchestrator with a self-signed HTTPS certificate, skip TLS
+verification:
+
+```sh
+uv run client.py --discovery https://localhost:8935/discovery --insecure
+```

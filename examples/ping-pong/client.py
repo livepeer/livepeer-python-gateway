@@ -10,6 +10,7 @@ import time
 import aiohttp
 
 from livepeer_gateway.errors import LivepeerGatewayError
+from livepeer_gateway.live_runner import aiohttp_connector
 from livepeer_gateway.selection import runner_selector
 
 DEFAULT_DISCOVERY = "http://localhost:8935/discovery"
@@ -24,6 +25,11 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the websocket ping/pong Live Runner demo.")
     parser.add_argument("--discovery", default=DEFAULT_DISCOVERY)
     parser.add_argument("--count", type=int, default=10, help="Stop after this many pings (0 = until closed).")
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Skip TLS certificate verification (self-signed localhost).",
+    )
     return parser.parse_args()
 
 async def _select_runner(discovery_url: str) -> str:
@@ -33,8 +39,10 @@ async def _select_runner(discovery_url: str) -> str:
     raise LivepeerGatewayError(f"no websocket runner discovered for app {APP_ID!r}")
 
 
-async def _run_client(url: str, *, count: int) -> None:
-    async with aiohttp.ClientSession() as session:
+async def _run_client(url: str, *, count: int, insecure: bool) -> None:
+    async with aiohttp.ClientSession(
+        connector=aiohttp_connector(insecure=insecure),
+    ) as session:
         async with session.ws_connect(url) as ws:
             _log("connected:", url)
             sent = 0
@@ -58,7 +66,7 @@ async def _run_client(url: str, *, count: int) -> None:
 async def main() -> None:
     args = _parse_args()
     app_url = await _select_runner(args.discovery)
-    await _run_client(app_url + "/ws", count=max(0, args.count))
+    await _run_client(app_url + "/ws", count=max(0, args.count), insecure=args.insecure)
 
 
 if __name__ == "__main__":
