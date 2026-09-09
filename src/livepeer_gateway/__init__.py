@@ -2,19 +2,6 @@ from .capabilities import CapabilityId, build_capabilities
 from .channel_reader import ChannelEventCallback, ChannelReader, JSONLReader
 from .channel_writer import ChannelWriter, JSONLWriter
 from .control import Control, ControlConfig, ControlMode
-from .byoc import (
-    ByocJobRequest,
-    ByocJobResponse,
-    ByocTrainingRequest,
-    ByocTrainingResponse,
-    ByocTrainingStatus,
-    submit_byoc_job,
-    submit_training_job,
-    refresh_training_payment,
-    get_training_status,
-    wait_for_training,
-    list_capabilities,
-)
 from .errors import LivepeerHTTPError, LivepeerGatewayError, NoOrchestratorAvailableError, NoRunnerAvailableError, PaymentError
 from .events import Events
 from .media_publish import (
@@ -85,17 +72,11 @@ __all__ = [
     "Control",
     "ControlConfig",
     "ControlMode",
-    "ByocJobRequest",
-    "ByocJobResponse",
-    "ByocTrainingRequest",
-    "ByocTrainingResponse",
-    "ByocTrainingStatus",
     "ChannelWriter",
     "CapabilityId",
     "build_capabilities",
     "discover_orchestrators",
     "discover_runners",
-    "get_training_status",
     "get_orch_info",
     "LiveVideoToVideo",
     "LiveRunnerCallResult",
@@ -150,12 +131,9 @@ __all__ = [
     "create_trickle_channels",
     "register_runner",
     "remove_trickle_channels",
-    "refresh_training_payment",
     "start_lv2v",
     "start_scope",
     "stop_runner_session",
-    "submit_byoc_job",
-    "submit_training_job",
     "TricklePublishError",
     "TricklePublisher",
     "TricklePublisherStats",
@@ -166,6 +144,4 @@ __all__ = [
     "TrickleSubscriber",
     "TrickleSubscriberStats",
     "VideoDecodedMediaFrame",
-    "wait_for_training",
-    "list_capabilities",
 ]

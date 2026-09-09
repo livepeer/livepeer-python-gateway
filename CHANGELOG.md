@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+
+- BYOC (bring your own container) inference and training jobs: the
+  `submit_byoc_job`, `submit_training_job`, `refresh_training_payment`,
+  `get_training_status`, `wait_for_training`, and `list_capabilities`
+  functions, and the `ByocJobRequest`, `ByocJobResponse`,
+  `ByocTrainingRequest`, `ByocTrainingResponse`, and `ByocTrainingStatus`
+  types. BYOC is being removed from go-livepeer in
+  [livepeer/go-livepeer#4064](https://github.com/livepeer/go-livepeer/pull/4064).
+
 ## [1.0.0] - 2026-08-11
 
 The first stable release of the Livepeer Python SDK.
@@ -31,4 +43,5 @@ The first stable release of the Livepeer Python SDK.
   `grpcio>=1.76.0` and `protobuf>=6.31.1`.
 - Completed the package metadata and documented installation from PyPI.
 
+[Unreleased]: https://github.com/livepeer/livepeer-python-gateway/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/livepeer/livepeer-python-gateway/releases/tag/v1.0.0
