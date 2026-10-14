@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Optional
 
 from .trickle_publisher import (
@@ -14,18 +12,6 @@ from .trickle_publisher import (
 )
 
 _LOG = logging.getLogger(__name__)
-
-
-class ControlMode(str, Enum):
-    MESSAGE = "message"
-    TIME = "time"
-    DISABLED = "disabled"
-
-
-@dataclass(frozen=True)
-class ControlConfig:
-    mode: ControlMode = ControlMode.MESSAGE
-    segment_interval: float = 10.0
 
 
 class Control:
@@ -101,4 +87,3 @@ class Control:
             except TricklePublisherTerminalError:
                 _LOG.error("Control keepalive stopped due to terminal publisher failure", exc_info=True)
                 return
-

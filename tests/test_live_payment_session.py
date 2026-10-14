@@ -5,7 +5,6 @@ from unittest import mock
 
 import pytest
 
-from livepeer_gateway import lp_rpc_pb2
 from livepeer_gateway.errors import (
     LivepeerHTTPError,
     SignerRefreshRequired,
@@ -13,7 +12,6 @@ from livepeer_gateway.errors import (
 from livepeer_gateway.remote_signer import (
     LivePaymentChallenge,
     LivePaymentSession,
-    PaymentSession,
     get_signer_info,
 )
 
@@ -29,70 +27,6 @@ def _challenge(*, payment_params: str = "opaque") -> LivePaymentChallenge:
     )
 
 
-class TestPaymentSession:
-    def test_get_payment_round_trips_state_without_cross_session_leak(self) -> None:
-        calls: list[tuple[str, dict[str, object], dict[str, str] | None]] = []
-        request_counts: dict[str, int] = {}
-
-        def _post_json(
-            url: str,
-            payload: dict[str, object],
-            *,
-            headers: dict[str, str] | None = None,
-            timeout: float = 5.0,
-        ) -> dict[str, object]:
-            del timeout
-            calls.append((url, dict(payload), headers))
-            manifest_id = payload["ManifestID"]
-            assert isinstance(manifest_id, str)
-            request_counts[manifest_id] = request_counts.get(manifest_id, 0) + 1
-            sequence = request_counts[manifest_id]
-            return {
-                "payment": f"payment-{manifest_id}-{sequence}",
-                "segCreds": f"segment-{manifest_id}-{sequence}",
-                "state": {"session": manifest_id, "sequence": str(sequence)},
-            }
-
-        info = lp_rpc_pb2.OrchestratorInfo(transcoder="https://orch.example.com")
-        first_session = PaymentSession(
-            "https://signer.example.com",
-            info,
-            signer_headers={"Authorization": "token"},
-            type="lv2v",
-            app="live-video-to-video/scope",
-        )
-        first_session.set_manifest_id("first")
-        second_session = PaymentSession(
-            "https://signer.example.com",
-            info,
-            signer_headers={"Authorization": "token"},
-            type="lv2v",
-        )
-        second_session.set_manifest_id("second")
-
-        with mock.patch(
-            "livepeer_gateway.http.post_json_sync", side_effect=_post_json
-        ):
-            first_payment = first_session.get_payment()
-            second_payment = second_session.get_payment()
-            first_session.get_payment()
-            second_session.get_payment()
-
-        assert first_payment.payment == "payment-first-1"
-        assert second_payment.seg_creds == "segment-second-1"
-        assert [call[0] for call in calls] == [
-            "https://signer.example.com/generate-live-payment"
-        ] * 4
-        assert all(call[2] == {"Authorization": "token"} for call in calls)
-        assert calls[0][1]["app"] == "live-video-to-video/scope"
-        assert "app" not in calls[1][1]
-        assert "state" not in calls[0][1]
-        assert "state" not in calls[1][1]
-        assert calls[2][1]["app"] == "live-video-to-video/scope"
-        assert calls[2][1]["state"] == {"session": "first", "sequence": "1"}
-        assert calls[3][1]["state"] == {"session": "second", "sequence": "1"}
-
-
 class TestLivePaymentSession:
     @pytest.fixture(autouse=True)
     def clear_signer_info_cache(self):
@@ -102,7 +36,7 @@ class TestLivePaymentSession:
     async def test_none_signer_exits_early(self) -> None:
         session = LivePaymentSession(
             None,
-            type="lv2v",
+            type="live",
             challenge=_challenge(),
         )
 
@@ -115,7 +49,7 @@ class TestLivePaymentSession:
     async def test_send_payment_reuses_empty_post_helper(self) -> None:
         session = LivePaymentSession(
             "https://signer.example.com",
-            type="lv2v",
+            type="live",
             challenge=_challenge(),
         )
 
@@ -141,7 +75,7 @@ class TestLivePaymentSession:
     async def test_send_payment_preserves_typed_http_error(self) -> None:
         session = LivePaymentSession(
             "https://signer.example.com",
-            type="lv2v",
+            type="live",
             challenge=_challenge(),
         )
 
@@ -191,13 +125,13 @@ class TestLivePaymentSession:
             session = LivePaymentSession(
                 "https://signer.example.com",
                 signer_headers={"Authorization": "token"},
-                type="lv2v",
+                type="live",
                 challenge=_challenge(payment_params="opaque-payment-params"),
-                app="live-video-to-video/scope",
+                app="livepeer/app",
                 max_price={
                     "price": 10.12,
                     "currency": "wei",
-                    "unit": "720p-pixel-seconds",
+                    "unit": "seconds",
                 },
             )
             first = await session.get_payment()
@@ -208,17 +142,17 @@ class TestLivePaymentSession:
         assert calls[0][0] == "https://signer.example.com/generate-live-payment"
         assert calls[0][1] == {
             "orchestrator": "opaque-payment-params",
-            "type": "lv2v",
+            "type": "live",
             "ManifestID": "manifest-1",
-            "app": "live-video-to-video/scope",
+            "app": "livepeer/app",
             "maxPrice": {
                 "price": 10.12,
                 "currency": "wei",
-                "unit": "720p-pixel-seconds",
+                "unit": "seconds",
             },
         }
         assert calls[0][2] == {"Authorization": "token"}
-        assert calls[1][1]["app"] == "live-video-to-video/scope"
+        assert calls[1][1]["app"] == "livepeer/app"
         assert calls[1][1]["maxPrice"] == calls[0][1]["maxPrice"]
         assert calls[1][1]["state"] == {"state": "one"}
 
@@ -234,15 +168,12 @@ class TestLivePaymentSession:
         ) -> dict[str, object]:
             del headers, timeout
             calls.append((url, payload))
-            raise SignerRefreshRequired(
-                "refresh",
-                orchestrator_url="https://orch.example.com",
-            )
+            raise SignerRefreshRequired("refresh")
 
         with mock.patch("livepeer_gateway.http.post_json", side_effect=_post_json):
             session = LivePaymentSession(
                 "https://signer.example.com",
-                type="lv2v",
+                type="live",
                 challenge=_challenge(payment_params="old-payment-params"),
             )
             with pytest.raises(SignerRefreshRequired):
@@ -253,7 +184,7 @@ class TestLivePaymentSession:
                 "https://signer.example.com/generate-live-payment",
                 {
                     "orchestrator": "old-payment-params",
-                    "type": "lv2v",
+                    "type": "live",
                     "ManifestID": "manifest-1",
                 },
             )
@@ -304,12 +235,12 @@ class TestLivePaymentSession:
         with mock.patch("livepeer_gateway.http.post_json", side_effect=_post_json):
             session = LivePaymentSession(
                 "https://signer.example.com",
-                type="lv2v",
+                type="live",
                 challenge=_challenge(payment_params="old-payment-params"),
                 max_price={
                     "price": 10.12,
                     "currency": "wei",
-                    "unit": "720p-pixel-seconds",
+                    "unit": "seconds",
                 },
             )
             first_payment = await session.get_payment()
@@ -326,7 +257,7 @@ class TestLivePaymentSession:
             {
                 "price": 10.12,
                 "currency": "wei",
-                "unit": "720p-pixel-seconds",
+                "unit": "seconds",
             }
         ] * 3
         assert calls[1][1]["state"] == {"state": "one"}

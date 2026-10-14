@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from aiohttp import web
 
@@ -18,7 +19,7 @@ async def _handle_sse(request: web.Request) -> web.StreamResponse:
     )
     await response.prepare(request)
 
-    with open("story.txt", encoding="utf-8", errors="replace") as lines:
+    with Path(__file__).with_name("story.txt").open(encoding="utf-8", errors="replace") as lines:
         for line in lines:
             await response.write(f"data: {line.rstrip('\n')}\n\n".encode())
             await asyncio.sleep(0.5)
@@ -38,7 +39,7 @@ async def _handle_text(request: web.Request) -> web.StreamResponse:
     )
     await response.prepare(request)
 
-    with open("story.txt", encoding="utf-8", errors="replace") as story:
+    with Path(__file__).with_name("story.txt").open(encoding="utf-8", errors="replace") as story:
         while char := story.read(1):
             await response.write(char.encode("utf-8"))
             await asyncio.sleep(0.02)

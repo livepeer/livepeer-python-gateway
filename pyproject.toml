@@ -24,8 +24,6 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-  "grpcio>=1.76.0",
-  "protobuf>=6.31.1",
   "aiohttp>=3.9.0",
   "av>=11.0.0",
 ]
@@ -36,17 +34,10 @@ Repository = "https://github.com/livepeer/livepeer-python-gateway"
 Issues = "https://github.com/livepeer/livepeer-python-gateway/issues"
 Changelog = "https://github.com/livepeer/livepeer-python-gateway/blob/main/CHANGELOG.md"
 
-[project.scripts]
-generate-lp-rpc = "livepeer_gateway.codegen:main"
-
 [project.optional-dependencies]
-dev = [
-  "grpcio-tools>=1.76.0",
-]
-
 examples = [
   "numpy>=2.2.6",
-  "opencv-python-headless>=4.13.0.90",
+  "opencv-python>=4.13.0.90",
 ]
 
 [dependency-groups]
@@ -98,6 +89,3 @@ target-version = "py312"
 [tool.ruff.lint]
 # Baseline defaults from #56; CI scopes UP diagnostics to changed lines.
 select = ["E4", "E7", "E9", "F", "UP"]
-
-[tool.ruff.lint.per-file-ignores]
-"src/livepeer_gateway/lp_rpc_pb2_grpc.py" = ["F401"]

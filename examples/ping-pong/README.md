@@ -9,22 +9,24 @@ runner. The runner exposes a websocket endpoint:
 When the websocket closes, the single-shot workload is over and the runner
 handler releases its per-connection state.
 
-Start go-livepeer:
+Install [Livepeer Node](https://github.com/livepeer/node), put its executables on
+your `PATH`, and start its local orchestrator:
 
 ```sh
-./livepeer -orchestrator -useLiveRunners -serviceAddr localhost:8935 -v 99 -orchSecret abcdef
+LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET=abcdef livepeer orchestrator \
+  --config="" --listen 127.0.0.1:8935 --runner-grants 127.0.0.1:8991
 ```
 
 Start the runner:
 
 ```sh
-uv run runner.py --orchestrator http://localhost:8935 --orchSecret abcdef
+uv run examples/ping-pong/runner.py --orchestrator http://localhost:8935 --orchSecret abcdef
 ```
 
 Run the client:
 
 ```sh
-uv run client.py
+uv run examples/ping-pong/client.py
 ```
 
 The client discovers the `livepeer-sample/ping-pong` runner, connects
@@ -34,5 +36,5 @@ receiver-side delta and the client round-trip time.
 To send a fixed number of pings:
 
 ```sh
-uv run client.py --count 10
+uv run examples/ping-pong/client.py --count 10
 ```

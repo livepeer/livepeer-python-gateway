@@ -1,7 +1,7 @@
 # Livepeer Python SDK
 
-The official Python SDK for the Livepeer network. Submit AI and video compute
-jobs directly to orchestrators, use a remote signer for payment, and stream
+The official Python SDK for the Livepeer network. Discover and call Live Runner
+apps through orchestrators, use a remote signer for payment, and stream
 media and control data over Livepeer's trickle protocol.
 
 ## Requirements
@@ -19,157 +19,92 @@ python -m pip install livepeer-gateway
 The import package is named `livepeer_gateway`:
 
 ```python
-from livepeer_gateway import StartJobRequest, start_lv2v
+from livepeer_gateway import call_runner, reserve_session, runner_selector
 ```
 
 ## Development
 
-Install the locked development dependencies with
-[uv](https://docs.astral.sh/uv/):
-
-```bash
-uv sync --locked --group test
-```
-
-Generate protobufs after installing the code-generation extra:
-
-```bash
-uv sync --extra dev
-uv run generate-lp-rpc
-```
-
-## Tests
-
-Install the locked test dependencies and run the complete pytest suite:
+Install dependencies and run the tests with [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv sync --locked --group test
 uv run --group test pytest
 ```
 
-Pass a test file or node ID to pytest for a focused run:
-
-```bash
-uv run --group test pytest tests/test_live_runner.py
-uv run --group test pytest tests/test_live_runner.py::TestLiveRunnerHelpers::test_parse_go_duration
-```
-
-Run the suite with the configured line and branch coverage:
-
-```bash
-uv run --group test pytest --cov=livepeer_gateway --cov-branch --cov-report=term-missing
-```
-
 ## Usage Examples
 
-First install dependencies for example code
+Install the example dependencies:
+
 ```bash
 uv sync --extra examples
 ```
 
-Get orchestrator info, offchain mode
+- [Echo video runner](examples/echo/README.md): view input, loopback, and output,
+  publish video, and update app parameters.
+- [Ping/pong websocket runner](examples/ping-pong/README.md): discover a runner
+  and exchange websocket messages.
+- [Text streaming runner](examples/text/README.md): stream text and SSE through
+  a statically configured runner.
+
+Inspect a matching runner's discovery metadata:
+
 ```bash
-uv run examples/get_orchestrator_info.py localhost:8935
+uv run examples/select_runner.py http://localhost:8935 --app livepeer-sample/echo
 ```
 
-On-chain mode with a remote signer
+Runner discovery uses explicit `orchestrators` (their `/discovery` endpoints),
+then `discovery_url`, then the endpoint derived from `signer_url`.
 
-```bash
-uv run examples/get_orchestrator_info.py --signer "<signer-host:port>"
+Reserve a persistent session using a gateway token and release it on exit:
 
-# Use a custom discovery endpoint to filter orchestrators
-uv run examples/get_orchestrator_info.py --signer "<signer-host:port>" '<discovery-host>/discover-orchestrators?cap=streamdiffusion-sdxl-v2v'
-
-```
-
-Get orchestrator info using a token encoding signer / discovery parameters
-```bash
-uv run examples/get_orchestrator_info.py --token "<base64-token>"
-```
-
-Write raw frames to a LiveVideoToVideo job
-```bash
-uv run examples/write_frames.py localhost:8935
-```
-
-Capture MacOS camera frames and publish via write_frame
-```bash
-uv run examples/camera_capture.py localhost:8935
-```
-
-Capture MacOS camera frames and subscribe to media output (stdout or file)
-```bash
-uv run examples/camera_capture.py localhost:8935 --output - | ffplay -fflags nobuffer -flags low_delay -probesize 32 -i -
-uv run examples/camera_capture.py localhost:8935 --output out.ts
-```
-
-Read demuxed media output packets without decoding
 ```python
-async with job.media_output() as output:
-    async for packet in output.packets():
-        print(packet.kind, packet.stream_index, packet.pts_time, packet.size)
+import asyncio
+
+from livepeer_gateway import parse_token, reserve_session
+
+
+async def main(token):
+    config = parse_token(token)
+    async with await reserve_session(
+        app="livepeer-sample/echo",
+        orchestrators=config.get("orchestrators"),
+        signer_url=config.get("signer"),
+        signer_headers=config.get("signer_headers"),
+        discovery_url=config.get("discovery"),
+        discovery_headers=config.get("discovery_headers"),
+    ) as session:
+        print(session.app_url)
+
+
+asyncio.run(main("<base64-token>"))
 ```
 
-Composite camera input and decoded output side-by-side with PTS delta
-```bash
-uv sync --extra examples
-uv run examples/in_out_composite.py localhost:8935
-```
+For single-shot apps, use `runner_selector()` and `await cursor.next()`, or
+`call_runner()` for a known runner URL. Paid runners support `hour`, `seconds`,
+and `fixed` pricing through a remote signer.
 
-Subscribe to a LiveVideoToVideo trickle events channel
-```bash
-uv run examples/subscribe_events.py localhost:8935
-```
+Read demuxed packets without decoding, using the output channel URL returned
+by the app:
 
-Start a LiveVideoToVideo job using a token (base64 JSON)
 ```python
-import base64
-import json
+from livepeer_gateway import MediaOutput
 
-from livepeer_gateway.lv2v import StartJobRequest, start_lv2v
 
-payload = {
-    "orchestrators": [
-        "https://orch-1.example.com:8935",
-        "https://orch-2.example.com:8935",
-    ],
-    "signer": "https://signer.example.com",
-    "signer_headers": {"Authorization": "Bearer abcdef"},
-    "discovery": "https://discovery.example.com",
-    "discovery_headers": {"Authorization": "Bearer qwerty"},
-}
-token = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
-
-job = start_lv2v(
-    orch_url=None,
-    req=StartJobRequest(model_id="noop"),
-    token=token,
-    timeout=5.0,  # timeout for the initial /live-video-to-video request
-    # signer_url="https://fallback-signer.example.com",  # used only if token omits signer
-)
+async def read_packets(output_url):
+    async with MediaOutput(output_url) as output:
+        async for packet in output.packets():
+            print(packet.kind, packet.stream_index, packet.pts_time, packet.size)
 ```
 
 ## Token schema (base64-encoded JSON object)
 
 | Field | Type | Description |
 |---|---|---|
-| `orchestrators` | `string[]` (optional) | Ordered orchestrator addresses to try before discovery |
+| `orchestrators` | `string[]` (optional) | Ordered, non-empty orchestrator addresses used instead of discovery |
 | `signer` | `string` (optional) | Signer base URL |
 | `signer_headers` | `{"key": "value"}` (optional) | Extra HTTP headers sent to all signer endpoints |
 | `discovery` | `string` (optional) | Discovery endpoint URL |
-| `discovery_headers` | `{"key": "value"}` (optional) | Extra HTTP headers sent to the discovery endpoint |
+| `discovery_headers` | `{"key": "value"}` (optional) | Extra HTTP headers sent to an explicit discovery endpoint |
 
-Token values take precedence over explicit keyword arguments.
-Explicit keyword arguments are used only for fields missing in the token.
-
-For token payloads, `orchestrators` must be a JSON array of non-empty strings.
-Comma-delimited string format is not supported in the token.
-
-Selection/discovery precedence (highest -> lowest):
-1) token `orchestrators`
-2) explicit `orch_url`
-3) token `discovery`
-4) explicit `discovery_url`
-5) signer-derived discovery endpoint
-
-`signer_headers` are sent with requests to the signer service. `discovery_headers` are only used when an explicit `discovery_url` is provided (and not when using the signer service as a discovery fallback).
+Parse tokens with `parse_token()` and pass the resulting fields explicitly to
+runner APIs, as shown above.

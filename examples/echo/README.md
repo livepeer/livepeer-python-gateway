@@ -1,40 +1,44 @@
 # Echo Live Runner Demo
 
-This example demonstrates:
+Registers `livepeer-sample/echo` and shows input, loopback, and output in a
+2×2 composite with FPS and latency overlays.
 
-* Runner registration
-* Video input - taken from a local file
-* Video output - echoed to output with blur applied
-* Parameter updates - adjust the amount of blur
-
-Start go-livepeer:
+Install [Livepeer Node](https://github.com/livepeer/node), put its executables on
+your `PATH`, then run from the repository root:
 
 ```sh
-./livepeer -orchestrator -useLiveRunners -serviceAddr localhost:8935 -v 99 -orchSecret abcdef
+uv sync --extra examples
+LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET=abcdef livepeer orchestrator \
+  --config="" --listen 127.0.0.1:8935 --runner-grants 127.0.0.1:8989
 ```
 
-Start the runner:
+Start the runner in another terminal:
 
 ```sh
-uv run examples/echo/runner.py --orchestrator https://localhost:8935 --orchSecret abcdef
+uv run examples/echo/runner.py --orchestrator http://localhost:8935 --orchSecret abcdef
 ```
 
-Run the client with a local sample input (`~/samples/bbb_720p.mp4`):
+Run the client with the macOS camera, or supply a video file on any platform:
 
 ```sh
-uv run examples/echo/client.py --blur ~/samples/bbb_720p.mp4
+uv run examples/echo/client.py --blur
+uv run examples/echo/client.py --blur "<input-video>"
 ```
 
-The resulting file is stored at echo-out.ts. To use a different file
-or redirect to stdout for live playback:
+`--blur` sweeps the runner's blur radius; without it, frames return unchanged.
+Press `q`, close the window, or press Ctrl-C to stop. Files play at their source
+rate and the client exits after the output drains.
+
+The latency overlays show input minus loopback (RTT), input minus output (Total Delta),
+and loopback minus output (Processing). These are differences between the
+latest frame timestamps, not measurements of individual frame processing.
+
+Use `--output` to save raw MPEG-TS or pipe it to a player instead of opening
+the composite. Diagnostics go to stderr:
 
 ```sh
-uv run client.py --blur --output - ~/samples/bbb_720p.mp4 | ffplay -
+uv run examples/echo/client.py --blur --output echo-out.ts "<input-video>"
+uv run examples/echo/client.py --blur --output - "<input-video>" | ffplay -fflags nobuffer -flags low_delay -probesize 32 -i -
 ```
 
-The client discovers the `livepeer-sample/echo` runner automatically. To use a
-different orchestrator or discovery endpoint:
-
-```sh
-uv run examples/echo/client.py --discovery http://localhost:8935/discovery --blur ~/samples/bbb_720p.mp4
-```
+See `uv run examples/echo/client.py --help` for camera and runner selection options.

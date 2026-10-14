@@ -1,8 +1,7 @@
-from .capabilities import CapabilityId, build_capabilities
 from .channel_reader import ChannelEventCallback, ChannelReader, JSONLReader
 from .channel_writer import ChannelWriter, JSONLWriter
-from .control import Control, ControlConfig, ControlMode
-from .errors import LivepeerHTTPError, LivepeerGatewayError, NoOrchestratorAvailableError, NoRunnerAvailableError, PaymentError
+from .control import Control
+from .errors import LivepeerHTTPError, LivepeerGatewayError, NoRunnerAvailableError, PaymentError
 from .events import Events
 from .media_publish import (
     AudioOutputConfig,
@@ -26,8 +25,7 @@ from .media_output import (
     MediaOutputStats,
     MediaPacketCallback,
 )
-from .errors import OrchestratorRejection, RunnerRejection
-from .lv2v import LiveVideoToVideo, StartJobRequest, start_lv2v
+from .errors import RunnerRejection
 from .live_runner import (
     LiveRunnerCallResult,
     LiveRunnerCallStream,
@@ -47,13 +45,9 @@ from .live_runner import (
     stop_runner_session,
 )
 from .discovery import discover_orchestrators, discover_runners
-from .orch_info import get_orch_info
-from .remote_signer import LivePaymentChallenge, LivePaymentSession, PaymentSession
-from .scope import start_scope
+from .remote_signer import LivePaymentChallenge, LivePaymentSession
 from .selection import (
     RunnerSelectionCursor,
-    SelectionCursor,
-    orchestrator_selector,
     runner_selector,
     reserve_session,
 )
@@ -70,15 +64,9 @@ from .trickle_subscriber import TrickleSubscriber, TrickleSubscriberStats
 
 __all__ = [
     "Control",
-    "ControlConfig",
-    "ControlMode",
     "ChannelWriter",
-    "CapabilityId",
-    "build_capabilities",
     "discover_orchestrators",
     "discover_runners",
-    "get_orch_info",
-    "LiveVideoToVideo",
     "LiveRunnerCallResult",
     "LiveRunnerCallStream",
     "LiveRunnerGPU",
@@ -93,9 +81,7 @@ __all__ = [
     "LiveRunnerProxy",
     "LivepeerGatewayError",
     "LivepeerHTTPError",
-    "NoOrchestratorAvailableError",
     "NoRunnerAvailableError",
-    "OrchestratorRejection",
     "RunnerRejection",
     "PaymentError",
     "MediaPublish",
@@ -118,21 +104,15 @@ __all__ = [
     "JSONLReader",
     "JSONLWriter",
     "Events",
-    "PaymentSession",
     "parse_token",
     "RunnerSelectionCursor",
-    "SelectionCursor",
-    "orchestrator_selector",
     "runner_selector",
     "reserve_session",
-    "StartJobRequest",
     "call_runner",
     "create_proxy",
     "create_trickle_channels",
     "register_runner",
     "remove_trickle_channels",
-    "start_lv2v",
-    "start_scope",
     "stop_runner_session",
     "TricklePublishError",
     "TricklePublisher",

@@ -6,8 +6,6 @@ from typing import Any
 from collections.abc import Sequence
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
-from . import lp_rpc_pb2
-from .capabilities import capabilities_to_query
 from .errors import LivepeerGatewayError
 from .remote_signer import RemoteSignerError
 from .http import _http_origin, _parse_http_url, get_json, get_json_sync
@@ -39,17 +37,6 @@ def _append_query_values(url: str, values: Sequence[tuple[str, str]]) -> str:
     return urlunparse(parsed._replace(query=query))
 
 
-def _append_caps(url: str, capabilities: lp_rpc_pb2.Capabilities | None) -> str:
-    """
-    Append repeated `caps` query parameters to a URL.
-
-    Existing query params are preserved. Capability values keep `/` unescaped.
-    """
-    if capabilities is None:
-        return url
-    return _append_query_values(url, [("caps", cap) for cap in capabilities_to_query(capabilities)])
-
-
 def _append_runner_filters(
     url: str,
     *,
@@ -69,7 +56,6 @@ def discover_orchestrators(
     signer_headers: dict[str, str] | None = None,
     discovery_url: str | None = None,
     discovery_headers: dict[str, str] | None = None,
-    capabilities: lp_rpc_pb2.Capabilities | None = None,
 ) -> list[str]:
     """
     Discover orchestrators and return a list of addresses.
@@ -103,9 +89,6 @@ def discover_orchestrators(
     else:
         _LOG.debug("discover_orchestrators failed: no discovery inputs")
         raise LivepeerGatewayError("discover_orchestrators requires discovery_url or signer_url")
-
-    if capabilities is not None:
-        discovery_endpoint = _append_caps(discovery_endpoint, capabilities)
 
     try:
         _LOG.debug("discover_orchestrators running discovery: %s", discovery_endpoint)

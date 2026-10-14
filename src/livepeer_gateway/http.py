@@ -16,8 +16,6 @@ from .errors import (
     SkipPaymentCycle,
 )
 
-_REFRESH_SESSION_ORCHESTRATOR_URL_HEADER = "Livepeer-Orchestrator-URL"
-
 
 def _truncate(s: str, max_len: int = 2000) -> str:
     if len(s) <= max_len:
@@ -75,14 +73,6 @@ def _extract_error_message(e: HTTPError) -> str:
     return _extract_error_message_from_body(_http_error_body(e))
 
 
-def _header_value(headers: dict[str, str], name: str) -> str | None:
-    needle = name.lower()
-    for key, value in headers.items():
-        if key.lower() == needle and isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
-
-
 def _json_request_parts(
     url: str,
     *,
@@ -109,14 +99,12 @@ def _raise_http_json_error(
     status: int,
     url: str,
     body: str = "",
-    headers: dict[str, str] | None = None,
 ) -> None:
     message = _extract_error_message_from_body(body)
     body_part = f"; body={message!r}" if message else ""
     if status == 480:
         raise SignerRefreshRequired(
-            f"Signer returned HTTP 480 (refresh session required) (url={url}){body_part}",
-            orchestrator_url=_header_value(headers or {}, _REFRESH_SESSION_ORCHESTRATOR_URL_HEADER),
+            f"Signer returned HTTP 480 (refresh session required) (url={url}){body_part}"
         )
     if status == 482:
         raise SkipPaymentCycle(
@@ -161,7 +149,7 @@ def request_json_sync(
     )
     req = Request(url, data=body, headers=req_headers, method=resolved_method)
 
-    # Always ignore HTTPS certificate validation (matches our gRPC behavior).
+    # Always ignore HTTPS certificate validation.
     ssl_ctx = ssl._create_unverified_context()
 
     try:
@@ -174,11 +162,7 @@ def request_json_sync(
         body_part = f"; body={body_text!r}" if body_text else ""
         if e.code == 480:
             raise SignerRefreshRequired(
-                f"Signer returned HTTP 480 (refresh session required) (url={url}){body_part}",
-                orchestrator_url=_header_value(
-                    dict(e.headers.items()),
-                    _REFRESH_SESSION_ORCHESTRATOR_URL_HEADER,
-                ),
+                f"Signer returned HTTP 480 (refresh session required) (url={url}){body_part}"
             ) from e
         if e.code == 482:
             raise SkipPaymentCycle(
@@ -273,7 +257,7 @@ async def _request_body(
                 content_type = resp.content_type or ""
                 if resp.status >= 400:
                     _raise_http_json_error(
-                        resp.status, url, raw.decode(errors="replace"), dict(resp.headers.items())
+                        resp.status, url, raw.decode(errors="replace")
                     )
     except (SignerRefreshRequired, SkipPaymentCycle, LivepeerGatewayError):
         raise
@@ -368,7 +352,7 @@ async def open_stream(
         raw = await resp.text()
         resp.release()
         await session.close()
-        _raise_http_json_error(resp.status, url, raw, dict(resp.headers.items()))
+        _raise_http_json_error(resp.status, url, raw)
     return session, resp
 
 

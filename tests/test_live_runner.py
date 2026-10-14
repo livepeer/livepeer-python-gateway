@@ -88,8 +88,6 @@ class TestLiveRunnerHelpers:
         [
             ("hour", "live"),
             ("seconds", "live"),
-            ("720p", "lv2v"),
-            ("720p-pixel-seconds", "lv2v"),
             ("fixed", "fixed"),
         ],
     )
@@ -105,20 +103,28 @@ class TestLiveRunnerHelpers:
             mode="single-shot",
             orchestrator_url="https://service.example.com",
             raw={},
-            price_info=LiveRunnerPriceInfo(10, "usd", "fixed"),
+            price_info=LiveRunnerPriceInfo(10, "usd", f" {unit.upper()} "),
         )
-        assert live_runner._runner_payment_type(runner, " FIXED ") == "fixed"
+        assert live_runner._runner_payment_type(runner) == expected
+        assert live_runner._runner_payment_type(runner, unit) == expected
         with pytest.raises(
             LivepeerGatewayError,
             match="payment_unit conflicts with runner price metadata",
         ):
-            live_runner._runner_payment_type(runner, "hour")
+            live_runner._runner_payment_type(
+                runner, "hour" if unit == "fixed" else "fixed"
+            )
+
+    def test_runner_payment_type_defaults_to_live(self) -> None:
+        assert live_runner._runner_payment_type(None) == "live"
+        with pytest.raises(LivepeerGatewayError):
+            live_runner._runner_payment_type(None, "bogus")
 
     @pytest.mark.parametrize(
         ("price", "unit", "expected_price"),
         [
             (100, "seconds", 101.2),
-            ("2.5", "720p-pixel-seconds", 2.53),
+            ("2.5", "seconds", 2.53),
             (250, "fixed", 253.0),
         ],
     )
@@ -375,76 +381,6 @@ class TestLiveRunnerSession:
             "Livepeer-Segment": "seg-b64",
         }
         assert sig_mock.call_count == 1
-
-    async def test_paid_scope_runner_uses_lv2v_payment_type(self) -> None:
-        sessions: list[dict[str, object]] = []
-        runner_url = "https://service.example.com/apps/scope/session"
-        runner = LiveRunnerInstance(
-            url=runner_url,
-            app="live-video-to-video/scope",
-            runner_id="scope-runner",
-            mode="single-shot",
-            orchestrator_url="https://service.example.com",
-            raw={},
-            price_info=LiveRunnerPriceInfo(
-                "2.5", "wei", "720p-pixel-seconds"
-            ),
-        )
-
-        class _PaymentSession:
-            def __init__(self, signer_url: str, **kwargs: object) -> None:
-                sessions.append({"signer_url": signer_url, **kwargs})
-
-            async def get_payment(self) -> object:
-                return SimpleNamespace(payment="payment-b64", seg_creds="seg-b64")
-
-        def _request_body(
-            url: str,
-            *,
-            method: str | None = None,
-            payload: dict[str, object] | None = None,
-            headers: dict[str, str] | None = None,
-            timeout: float,
-        ) -> tuple[bytes, str]:
-            del method, payload, timeout
-            if headers and "Livepeer-Payment" in headers:
-                return _json_data({"session_id": "session-1"})
-            raise LivepeerHTTPError(
-                402, url, _payment_challenge_body("manifest-scope"), "payment required"
-            )
-
-        with (
-            mock.patch.object(live_runner, "_request_body", side_effect=_request_body),
-            mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
-            mock.patch.object(
-                live_runner,
-                "get_signer_info",
-                new_callable=mock.AsyncMock,
-                return_value=SimpleNamespace(
-                    address="opaque-payer", sig="opaque-signature"
-                ),
-            ),
-        ):
-            result = await call_runner(
-                runner=runner,
-                signer_url="https://signer.example.com",
-            )
-
-        assert result.session_id == "manifest-scope"
-        assert sessions == [
-            {
-                "signer_url": "https://signer.example.com",
-                "signer_headers": None,
-                "type": "lv2v",
-                "app": "live-video-to-video/scope",
-                "challenge": _payment_challenge("manifest-scope"),
-                "max_price": {
-                    "price": 2.53,
-                    "currency": "wei",
-                    "unit": "720p-pixel-seconds",
-                },
-            }
-        ]
 
     async def test_paid_fixed_runner_retries_with_fresh_payment_and_no_renewal_session(
         self,

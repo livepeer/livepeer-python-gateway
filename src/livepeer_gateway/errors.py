@@ -18,32 +18,10 @@ class LivepeerHTTPError(LivepeerGatewayError):
 
 
 @dataclass
-class OrchestratorRejection:
-    """Records a single orchestrator that was tried and rejected."""
-    url: str
-    reason: str
-
-
-@dataclass
 class RunnerRejection:
     """Records a single runner that was tried and rejected."""
     url: str
     reason: str
-
-
-class NoOrchestratorAvailableError(LivepeerGatewayError):
-    """Raised when no orchestrator could be selected."""
-
-    def __init__(self, message: str, rejections: list[OrchestratorRejection] | None = None) -> None:
-        super().__init__(message)
-        self.rejections: list[OrchestratorRejection] = rejections or []
-
-    def __str__(self) -> str:
-        message = super().__str__()
-        if not self.rejections:
-            return message
-        reasons = "; ".join(f"{r.url}: {r.reason}" for r in self.rejections)
-        return f"{message}: {reasons}"
 
 
 class NoRunnerAvailableError(LivepeerGatewayError):
@@ -64,19 +42,10 @@ class NoRunnerAvailableError(LivepeerGatewayError):
 class SignerRefreshRequired(LivepeerGatewayError):
     """Raised when the remote signer returns HTTP 480 and a refresh is required."""
 
-    def __init__(
-        self,
-        message: str,
-        *,
-        orchestrator_url: str | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.orchestrator_url = orchestrator_url
-
 
 class SkipPaymentCycle(LivepeerGatewayError):
     """Raised when the signer returns HTTP 482 to skip a payment cycle."""
 
 
 class PaymentError(LivepeerGatewayError):
-    """Raised when a PaymentSession operation fails."""
+    """Raised when a payment operation fails."""

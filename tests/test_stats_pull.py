@@ -14,11 +14,9 @@ segment_reader_mod = importlib.import_module("livepeer_gateway.segment_reader")
 trickle_publisher_mod = importlib.import_module("livepeer_gateway.trickle_publisher")
 trickle_subscriber_mod = importlib.import_module("livepeer_gateway.trickle_subscriber")
 media_decode_mod = importlib.import_module("livepeer_gateway.media_decode")
-lv2v_mod = importlib.import_module("livepeer_gateway.lv2v")
 
 MediaOutput = media_output_mod.MediaOutput
 MediaOutputStats = media_output_mod.MediaOutputStats
-LiveVideoToVideo = lv2v_mod.LiveVideoToVideo
 MediaPublish = media_publish_mod.MediaPublish
 MediaPublishConfig = media_publish_mod.MediaPublishConfig
 MediaPublishStats = media_publish_mod.MediaPublishStats
@@ -373,20 +371,6 @@ class TestStatsPull:
         assert "decode_errors" in payload
         assert "decoder" in payload
         assert "subscriber" in payload
-
-    def test_live_video_to_video_media_output_passes_callbacks_through(self) -> None:
-        def _on_frame(_frame) -> None:
-            return None
-
-        def _on_packet(_packet) -> None:
-            return None
-
-        job = LiveVideoToVideo(raw={}, subscribe_url="http://example.test/trickle")
-
-        media_output = job.media_output(on_frame=_on_frame, on_packet=_on_packet)
-
-        assert media_output.on_frame is _on_frame
-        assert media_output.on_packet is _on_packet
 
     def test_media_output_bytes_accepts_video_mpegts_content_type(self) -> None:
         media_output = self._make_media_output_for_segments(
@@ -804,7 +788,8 @@ class TestStatsPull:
 
         assert asyncio.run(_run()) == [b"payload"]
 
-    def test_media_output_close_timeout_zero_cancels_callback_immediately(self) -> None:
+    @pytest.mark.parametrize("timeout", [0, 0.01])
+    def test_media_output_close_timeout_cancels_callback(self, timeout: float) -> None:
         async def _run() -> tuple[bool, bool]:
             started = asyncio.Event()
             release = asyncio.Event()
@@ -819,7 +804,7 @@ class TestStatsPull:
             )
             await asyncio.wait_for(started.wait(), timeout=1.0)
             task = media_output.callback_tasks()[0]
-            await media_output.close(timeout=0)
+            await media_output.close(timeout=timeout)
             return task.cancelled(), release.is_set()
 
         cancelled, released = asyncio.run(_run())
@@ -845,15 +830,20 @@ class TestStatsPull:
                 callback_called.set()
                 raise RuntimeError("bytes callback boom")
 
-            media_output = self._make_media_output_for_segments(
-                _FakeSegment("video/mp2t", [b"payload"]),
-                on_bytes=_on_bytes,
+            segment = _FakeSegment("video/mp2t", [b"payload"])
+            segment.close = mock.AsyncMock()
+            subscriber = mock.Mock(
+                next=mock.AsyncMock(return_value=segment), close=mock.AsyncMock()
             )
+            media_output = MediaOutput("http://example.test/trickle", on_bytes=_on_bytes)
+            media_output._sub = subscriber
             await asyncio.wait_for(callback_called.wait(), timeout=1.0)
             with pytest.raises(RuntimeError, match="bytes callback boom"):
                 await media_output.wait_callbacks(timeout=1.0)
             with pytest.raises(RuntimeError, match="bytes callback boom"):
                 await media_output.close()
+            segment.close.assert_awaited_once()
+            subscriber.close.assert_awaited_once()
 
         asyncio.run(_run())
 

@@ -45,14 +45,8 @@ _LIVE_RUNNER_MODES = frozenset({"persistent", "single-shot"})
 _RUNNER_PAYMENT_TYPES_BY_UNIT = {
     "hour": "live",
     "seconds": "live",
-    "720p": "lv2v",
-    "720p-pixel-seconds": "lv2v",
     "fixed": "fixed",
 }
-# Metered types are billed for as long as the work runs, so they need ongoing
-# payments. Fixed pricing is settled by the upfront payment alone.
-_METERED_PAYMENT_TYPES = frozenset({"live", "lv2v"})
-
 # golang format duration, eg "10s"
 _DURATION_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ns|us|\u00b5s|ms|s|m|h)\s*$")
 
@@ -863,7 +857,7 @@ async def call_runner(
             session_id = challenge.manifest_id
 
             # Metered pricing bills for as long as the work runs.
-            needs_ongoing_funding = payment_type in _METERED_PAYMENT_TYPES
+            needs_ongoing_funding = payment_type == "live"
 
         try:
             request_kwargs: dict[str, Any] = {"timeout": timeout}
@@ -1045,10 +1039,6 @@ def _runner_payment_type(
             )
         return payment_type
 
-    # Compatibility for callers constructing instances without discovery
-    # price metadata. Discovery price_info.unit is authoritative when present.
-    if runner is not None and runner.app == "live-video-to-video/scope":
-        return "lv2v"
     return "live"
 
 

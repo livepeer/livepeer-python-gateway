@@ -11,9 +11,6 @@ __pycache__/
 dist/
 htmlcov/
 
-# Generated files
-lp_rpc.proto
-
 # environment file
 env
 .DS_Store

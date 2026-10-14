@@ -404,9 +404,11 @@ class MediaOutput:
             decoder.start()
 
             async def _feed() -> None:
-                async for chunk in self._iter_bytes():
-                    decoder.feed(chunk)
-                decoder.close()
+                try:
+                    async for chunk in self._iter_bytes():
+                        decoder.feed(chunk)
+                finally:
+                    decoder.close()
 
             producer_task = asyncio.create_task(_feed())
             try:
@@ -551,9 +553,9 @@ class MediaOutput:
         callback_tasks = self.callback_tasks()
         if callback_tasks:
             if wait_callbacks and (timeout is None or timeout > 0):
-                try:
-                    await self.wait_callbacks(timeout=timeout)
-                except TimeoutError:
+                # Defer callback errors until after resource cleanup.
+                _, pending = await asyncio.wait(callback_tasks, timeout=timeout)
+                if pending:
                     _LOG.debug(
                         "Media output callbacks did not finish before shutdown timeout; cancelling"
                     )

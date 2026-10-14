@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- gRPC orchestrator information and selection including protobuf bindings
+- LV2V and Scope startup APIs, including 720p pricing
 - BYOC (bring your own container) inference and training jobs: the
   `submit_byoc_job`, `submit_training_job`, `refresh_training_payment`,
   `get_training_status`, `wait_for_training`, and `list_capabilities`
