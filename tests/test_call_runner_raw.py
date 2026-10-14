@@ -70,6 +70,22 @@ def test_binary_response_returns_raw():
     assert result.data == {}
 
 
+def test_streaming_response_returns_raw():
+    body = b'{"ok":true}'
+
+    async def handler(request):
+        return web.Response(body=body, content_type="application/json")
+
+    app = web.Application()
+    app.router.add_post("/call", handler)
+
+    async def scenario(base):
+        async with await call_runner(f"{base}/call", stream=True) as result:
+            return b"".join([chunk async for chunk in result.aiter_bytes()])
+
+    assert _run(app, scenario) == body
+
+
 def test_json_suffix_content_type_is_parsed():
     """RFC 6839 ``+json`` types are single JSON documents, so they parse."""
 

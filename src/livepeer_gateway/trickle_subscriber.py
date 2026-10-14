@@ -104,8 +104,7 @@ class TrickleSubscriber:
         if self._lock is None:
             self._lock = asyncio.Lock()
         if self._session is None:
-            connector = aiohttp.TCPConnector(ssl=False)
-            self._session = aiohttp.ClientSession(connector=connector)
+            self._session = aiohttp.ClientSession()
 
     def _segment_url(self, seq: int) -> str:
         return f"{self.base_url}/{seq}"

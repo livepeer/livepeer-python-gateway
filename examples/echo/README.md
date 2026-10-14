@@ -9,7 +9,7 @@ your `PATH`, then run from the repository root:
 ```sh
 uv sync --extra examples
 LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET=abcdef livepeer orchestrator \
-  --config="" --listen 127.0.0.1:8935 --runner-grants 127.0.0.1:8989
+  --runner-grants 127.0.0.1
 ```
 
 Start the runner in another terminal:

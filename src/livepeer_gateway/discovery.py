@@ -8,7 +8,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from .errors import LivepeerGatewayError
 from .remote_signer import RemoteSignerError
-from .http import _http_origin, _parse_http_url, get_json, get_json_sync
+from .http import _http_origin, _parse_http_url, get_json
 
 _LOG = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def _append_runner_filters(
     return _append_query_values(url, values)
 
 
-def discover_orchestrators(
+async def discover_orchestrators(
     orchestrators: Sequence[str] | str | None = None,
     *,
     signer_url: str | None = None,
@@ -92,7 +92,7 @@ def discover_orchestrators(
 
     try:
         _LOG.debug("discover_orchestrators running discovery: %s", discovery_endpoint)
-        data = get_json_sync(discovery_endpoint, headers=request_headers)
+        data = await get_json(discovery_endpoint, headers=request_headers)
     except LivepeerGatewayError as e:
         _LOG.debug("discover_orchestrators discovery failed: %s", e)
         raise RemoteSignerError(

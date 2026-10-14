@@ -6,8 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `discover_orchestrators` is now asynchronous and must be awaited, including
+  when given explicit orchestrator addresses.
+
 ### Removed
 
+- Synchronous HTTP helpers `request_json_sync`, `get_json_sync`, and
+  `post_json_sync`. All HTTP requests now use the asynchronous transport.
+- TLS certificate-verification bypasses in HTTP requests, streaming responses,
+  and trickle transports. HTTPS now verifies certificates and hostnames using
+  the standard trust configuration; explicit HTTP URLs remain supported.
 - gRPC orchestrator information and selection including protobuf bindings
 - LV2V and Scope startup APIs, including 720p pricing
 - BYOC (bring your own container) inference and training jobs: the

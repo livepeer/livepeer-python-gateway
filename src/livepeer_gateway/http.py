@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import json
-import ssl
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import ParseResult, urlparse
-from urllib.request import Request, urlopen
 
 import aiohttp
 
@@ -21,21 +18,6 @@ def _truncate(s: str, max_len: int = 2000) -> str:
     if len(s) <= max_len:
         return s
     return s[:max_len] + f"...(+{len(s) - max_len} chars)"
-
-
-def _http_error_body(e: HTTPError) -> str:
-    """
-    Best-effort read of an HTTPError response body for debugging.
-    """
-    try:
-        b = e.read()
-        if not b:
-            return ""
-        if isinstance(b, bytes):
-            return b.decode("utf-8", errors="replace")
-        return str(b)
-    except Exception:
-        return ""
 
 
 def _extract_error_message_from_body(body: str) -> str:
@@ -64,13 +46,6 @@ def _extract_error_message_from_body(body: str) -> str:
                 return _truncate(msg)
 
     return _truncate(body)
-
-
-def _extract_error_message(e: HTTPError) -> str:
-    """
-    Best-effort extraction of a useful error message from an HTTPError body.
-    """
-    return _extract_error_message_from_body(_http_error_body(e))
 
 
 def _json_request_parts(
@@ -126,103 +101,6 @@ def _ensure_json_object(data: Any, *, url: str) -> dict[str, Any]:
     return data
 
 
-def request_json_sync(
-    url: str,
-    *,
-    method: str | None = None,
-    payload: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
-    timeout: float = 5.0,
-) -> Any:
-    """
-    Make a JSON HTTP request and parse the JSON response.
-
-    If method is None, defaults to POST when payload is provided, otherwise GET.
-
-    Raises LivepeerGatewayError on HTTP/network/JSON parsing errors.
-    """
-    resolved_method, req_headers, body = _json_request_parts(
-        url,
-        method=method,
-        payload=payload,
-        headers=headers,
-    )
-    req = Request(url, data=body, headers=req_headers, method=resolved_method)
-
-    # Always ignore HTTPS certificate validation.
-    ssl_ctx = ssl._create_unverified_context()
-
-    try:
-        with urlopen(req, timeout=timeout, context=ssl_ctx) as resp:
-            raw = resp.read().decode("utf-8")
-        data: Any = json.loads(raw)
-    except HTTPError as e:
-        raw_body = _http_error_body(e)
-        body_text = _extract_error_message_from_body(raw_body)
-        body_part = f"; body={body_text!r}" if body_text else ""
-        if e.code == 480:
-            raise SignerRefreshRequired(
-                f"Signer returned HTTP 480 (refresh session required) (url={url}){body_part}"
-            ) from e
-        if e.code == 482:
-            raise SkipPaymentCycle(
-                f"Signer returned HTTP 482 (skip payment cycle) (url={url}){body_part}"
-            ) from e
-        raise LivepeerHTTPError(
-            e.code,
-            url,
-            raw_body,
-            f"HTTP {e.code} from endpoint (url={url}){body_part}",
-        ) from e
-    except ConnectionRefusedError as e:
-        raise LivepeerGatewayError(
-            f"HTTP JSON error: connection refused (is the server running? is the host/port correct?) (url={url})"
-        ) from e
-    except URLError as e:
-        raise LivepeerGatewayError(
-            f"HTTP JSON error: failed to reach endpoint: {getattr(e, 'reason', e)} (url={url})"
-        ) from e
-    except json.JSONDecodeError as e:
-        raise LivepeerGatewayError(f"HTTP JSON error: endpoint did not return valid JSON: {e} (url={url})") from e
-    except Exception as e:
-        raise LivepeerGatewayError(
-            f"HTTP JSON error: unexpected error: {e.__class__.__name__}: {e} (url={url})"
-        ) from e
-
-    return data
-
-
-def post_json_sync(
-    url: str,
-    payload: dict[str, Any],
-    *,
-    headers: dict[str, str] | None = None,
-    timeout: float = 5.0,
-) -> dict[str, Any]:
-    """
-    POST JSON to `url` and parse a JSON object response.
-    """
-    data = request_json_sync(
-        url,
-        payload=payload,
-        headers=headers,
-        timeout=timeout,
-    )
-    return _ensure_json_object(data, url=url)
-
-
-def get_json_sync(
-    url: str,
-    *,
-    headers: dict[str, str] | None = None,
-    timeout: float = 5.0,
-) -> Any:
-    """
-    GET JSON from `url` and parse the response.
-    """
-    return request_json_sync(url, headers=headers, timeout=timeout)
-
-
 async def _request_body(
     url: str,
     *,
@@ -250,8 +128,7 @@ async def _request_body(
 
     try:
         client_timeout = aiohttp.ClientTimeout(total=timeout)
-        connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(timeout=client_timeout, connector=connector) as session:
+        async with aiohttp.ClientSession(timeout=client_timeout) as session:
             async with session.request(resolved_method, url, data=body, headers=req_headers) as resp:
                 raw = await resp.read()
                 content_type = resp.content_type or ""
@@ -340,7 +217,7 @@ async def open_stream(
     )
 
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=connect_timeout, sock_read=None)
-    session = aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(ssl=False))
+    session = aiohttp.ClientSession(timeout=timeout)
     try:
         resp = await session.request(resolved_method, url, data=body, headers=req_headers)
     except (TimeoutError, aiohttp.ClientError) as e:

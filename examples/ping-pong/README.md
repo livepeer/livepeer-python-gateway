@@ -14,7 +14,7 @@ your `PATH`, and start its local orchestrator:
 
 ```sh
 LIVEPEER_ORCHESTRATOR_BOOTSTRAP_SECRET=abcdef livepeer orchestrator \
-  --config="" --listen 127.0.0.1:8935 --runner-grants 127.0.0.1:8991
+  --runner-grants 127.0.0.1
 ```
 
 Start the runner:

@@ -5,8 +5,57 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from livepeer_gateway import discovery
+from livepeer_gateway import discovery, discover_orchestrators
 from livepeer_gateway.remote_signer import RemoteSignerError
+
+
+class TestOrchestratorDiscovery:
+    @pytest.mark.parametrize(
+        "orchestrators",
+        [
+            [" https://orch-a.example.com ", "", "http://orch-b.example.com"],
+            " https://orch-a.example.com, , http://orch-b.example.com ",
+        ],
+    )
+    async def test_explicit_orchestrators_are_awaited_and_skip_discovery(
+        self, orchestrators: list[str] | str
+    ) -> None:
+        with mock.patch.object(discovery, "get_json") as request:
+            result = await discover_orchestrators(
+                orchestrators, discovery_url="https://discovery.example.com"
+            )
+
+        assert result == ["https://orch-a.example.com", "http://orch-b.example.com"]
+        request.assert_not_called()
+
+    @pytest.mark.parametrize("discovery_url", [None, "https://discovery.example.com/base"])
+    async def test_discovers_addresses_with_selected_endpoint_and_headers(
+        self, discovery_url: str | None
+    ) -> None:
+        signer_headers = {"Authorization": "signer-token"}
+        discovery_headers = {"Authorization": "discovery-token"}
+        with mock.patch.object(
+            discovery,
+            "get_json",
+            return_value=[
+                {"address": " https://orch.example.com "},
+                {"address": " "},
+                {},
+                "invalid",
+            ],
+        ) as request:
+            result = await discover_orchestrators(
+                signer_url="https://signer.example.com/base",
+                signer_headers=signer_headers,
+                discovery_url=discovery_url,
+                discovery_headers=discovery_headers,
+            )
+
+        assert result == ["https://orch.example.com"]
+        request.assert_awaited_once_with(
+            discovery_url or "https://signer.example.com/discover-orchestrators",
+            headers=discovery_headers if discovery_url else signer_headers,
+        )
 
 
 class TestRunnerDiscoveryQuery:

@@ -164,9 +164,7 @@ class TricklePublisher:
         if self._lock is None:
             self._lock = asyncio.Lock()
         if self._session is None:
-            # Ignore TLS validation (matches the rest of this repo).
-            connector = aiohttp.TCPConnector(ssl=False)
-            self._session = aiohttp.ClientSession(connector=connector)
+            self._session = aiohttp.ClientSession()
 
     def _stream_url(self, seq: int) -> str:
         return f"{self.url}/{seq}"
