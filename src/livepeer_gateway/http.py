@@ -78,8 +78,12 @@ def _json_request_parts(
     *,
     method: str | None = None,
     payload: dict[str, Any] | None = None,
+    content: bytes | None = None,
+    content_type: str | None = None,
     headers: dict[str, str] | None = None,
 ) -> tuple[str, dict[str, str], bytes | None]:
+    if payload is not None and content is not None:
+        raise ValueError("pass either payload (JSON) or content (raw bytes), not both")
     req_headers: dict[str, str] = {
         "Accept": "application/json",
         "User-Agent": "livepeer-python-gateway/0.1",
@@ -88,10 +92,13 @@ def _json_request_parts(
     if payload is not None:
         req_headers["Content-Type"] = "application/json"
         body = json.dumps(payload).encode("utf-8")
+    elif content is not None:
+        req_headers["Content-Type"] = content_type or "application/octet-stream"
+        body = bytes(content)
     if headers:
         req_headers.update(headers)
 
-    resolved_method = method.upper() if method else ("POST" if payload is not None else "GET")
+    resolved_method = method.upper() if method else ("POST" if body is not None else "GET")
     return resolved_method, req_headers, body
 
 
@@ -228,6 +235,8 @@ async def _request_body(
     *,
     method: str | None = None,
     payload: dict[str, Any] | None = None,
+    content: bytes | None = None,
+    content_type: str | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 5.0,
 ) -> tuple[bytes, str]:
@@ -245,6 +254,8 @@ async def _request_body(
         url,
         method=method,
         payload=payload,
+        content=content,
+        content_type=content_type,
         headers=headers,
     )
 
@@ -254,7 +265,7 @@ async def _request_body(
         async with aiohttp.ClientSession(timeout=client_timeout, connector=connector) as session:
             async with session.request(resolved_method, url, data=body, headers=req_headers) as resp:
                 raw = await resp.read()
-                content_type = resp.content_type or ""
+                response_content_type = resp.content_type or ""
                 if resp.status >= 400:
                     _raise_http_json_error(
                         resp.status, url, raw.decode(errors="replace")
@@ -283,7 +294,7 @@ async def _request_body(
             f"HTTP JSON error: unexpected error: {e.__class__.__name__}: {e} (url={url})"
         ) from e
 
-    return raw, content_type
+    return raw, response_content_type
 
 
 async def request_json(
@@ -321,6 +332,8 @@ async def open_stream(
     *,
     method: str | None = None,
     payload: dict[str, Any] | None = None,
+    content: bytes | None = None,
+    content_type: str | None = None,
     headers: dict[str, str] | None = None,
     connect_timeout: float = 10.0,
 ) -> tuple[aiohttp.ClientSession, aiohttp.ClientResponse]:
@@ -336,8 +349,11 @@ async def open_stream(
         url,
         method=method,
         payload=payload,
+        content=content,
+        content_type=content_type,
         headers=headers,
     )
+
 
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=connect_timeout, sock_read=None)
     session = aiohttp.ClientSession(timeout=timeout, connector=aiohttp.TCPConnector(ssl=False))

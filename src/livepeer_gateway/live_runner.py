@@ -756,6 +756,8 @@ async def call_runner(
     *,
     runner: LiveRunnerInstance | None = ...,
     payload: dict[str, Any] | None = ...,
+    content: bytes | None = ...,
+    content_type: str | None = ...,
     method: str = ...,
     signer_url: str | None = ...,
     signer_headers: dict[str, str] | None = ...,
@@ -773,6 +775,8 @@ async def call_runner(
     *,
     runner: LiveRunnerInstance | None = ...,
     payload: dict[str, Any] | None = ...,
+    content: bytes | None = ...,
+    content_type: str | None = ...,
     method: str = ...,
     signer_url: str | None = ...,
     signer_headers: dict[str, str] | None = ...,
@@ -789,6 +793,8 @@ async def call_runner(
     *,
     runner: LiveRunnerInstance | None = None,
     payload: dict[str, Any] | None = None,
+    content: bytes | None = None,
+    content_type: str | None = None,
     method: str = "POST",
     signer_url: str | None = None,
     signer_headers: dict[str, str] | None = None,
@@ -806,12 +812,26 @@ async def call_runner(
     ``application/json`` and ``+json`` types parse into ``result.data``; anything else
     (an image, ndjson) comes back unparsed in ``result.content`` + ``result.content_type``.
 
+    The request body is JSON (``payload``) or raw bytes (``content``), not both. ``content``
+    is sent as is with ``Content-Type: content_type`` (default ``application/octet-stream``),
+    for apps that take an image, audio or any other binary body.
+
+    ``timeout`` is the total time allowed for each buffered request attempt, so raise it
+    for large bodies. It restarts on every payment retry, so it does not bound the whole
+    call, and it is not applied when ``stream=True``.
+
     The request asks for no particular format, so the app picks what it returns.
     """
     runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
     if not runner_url:
         raise LivepeerGatewayError("Live runner call requires runner_url")
-    request_payload = payload or {}
+    if payload is not None and content is not None:
+        raise LivepeerGatewayError("Live runner call takes payload (JSON) or content (bytes), not both")
+    request_payload = None if content is not None else (payload or {})
+    # Only a raw body needs these; JSON calls keep their existing request arguments.
+    body_kwargs: dict[str, Any] = (
+        {"content": content, "content_type": content_type} if content is not None else {}
+    )
     payment_type = _runner_payment_type(runner, payment_unit) if signer_url else ""
     max_price: LiveRunnerPriceInfo | None = None
     if signer_url and runner is not None and runner.price_info is not None:
@@ -872,6 +892,7 @@ async def call_runner(
                     method=method,
                     payload=request_payload,
                     headers=request_headers or None,
+                    **body_kwargs,
                 )
                 call_stream = LiveRunnerCallStream(
                     resp.status,
@@ -894,16 +915,17 @@ async def call_runner(
                 else None
             )
             try:
-                body, content_type = await _request_body(
+                body, response_content_type = await _request_body(
                     runner_url,
                     method=method,
                     payload=request_payload,
+                    **body_kwargs,
                     **request_kwargs,
                 )
             finally:
                 await _stop_funding(pay_task)
             # Non-JSON bodies (an image, ndjson) are handed back unparsed in `content`.
-            is_json = _is_json_content_type(content_type)
+            is_json = _is_json_content_type(response_content_type)
             data: dict[str, Any] = {}
             if is_json:
                 try:
@@ -911,7 +933,7 @@ async def call_runner(
                 except (UnicodeDecodeError, json.JSONDecodeError) as e:
                     raise LivepeerGatewayError(
                         f"HTTP JSON error: endpoint did not return valid JSON: {e} "
-                        f"(url={runner_url}, content_type={content_type})"
+                        f"(url={runner_url}, content_type={response_content_type})"
                     ) from e
                 if not isinstance(data, dict):
                     raise LivepeerGatewayError(
@@ -927,7 +949,7 @@ async def call_runner(
                 ),
                 payment_session=None if payment_type == "fixed" else payment_session,
                 content=None if is_json else body,
-                content_type=content_type,
+                content_type=response_content_type,
             )
         except LivepeerHTTPError as e:
             if e.status_code != 402:

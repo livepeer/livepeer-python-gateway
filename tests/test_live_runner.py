@@ -279,6 +279,77 @@ class TestLiveRunnerSession:
 
         assert result.runner is runner
 
+    async def test_paid_call_resends_raw_content_on_retry(self) -> None:
+        calls: list[dict[str, object]] = []
+        runner_url = "https://service.example.com/apps/runner-1/session"
+        runner = LiveRunnerInstance(
+            url=runner_url,
+            app="livepeer/app",
+            runner_id="runner-1",
+            mode="persistent",
+            orchestrator_url="https://service.example.com",
+            raw={},
+            price_info=LiveRunnerPriceInfo(100, "wei", "seconds"),
+        )
+
+        class _PaymentSession:
+            def __init__(self, signer_url: str, **kwargs: object) -> None:
+                pass
+
+            async def get_payment(self) -> object:
+                return SimpleNamespace(payment="payment-b64", seg_creds="seg-b64")
+
+        def _request_body(
+            url: str,
+            *,
+            method: str | None = None,
+            payload: dict[str, object] | None = None,
+            content: bytes | None = None,
+            content_type: str | None = None,
+            headers: dict[str, str] | None = None,
+            timeout: float,
+        ) -> tuple[bytes, str]:
+            calls.append(
+                {
+                    "payload": payload,
+                    "content": content,
+                    "content_type": content_type,
+                    "headers": headers,
+                }
+            )
+            if len(calls) == 1:
+                raise LivepeerHTTPError(
+                    402, url, _payment_challenge_body("manifest-1"), "payment required"
+                )
+            return _json_data({"ok": True})
+
+        with (
+            mock.patch.object(live_runner, "_request_body", side_effect=_request_body),
+            mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
+            mock.patch.object(
+                live_runner,
+                "get_signer_info",
+                new_callable=mock.AsyncMock,
+                return_value=SimpleNamespace(address="opaque-payer", sig="opaque-signature"),
+            ),
+        ):
+            result = await call_runner(
+                runner=runner,
+                content=b"\x89PNG-bytes",
+                content_type="image/png",
+                signer_url="https://signer.example.com",
+            )
+
+        assert result.data == {"ok": True}
+        assert len(calls) == 2
+        # The raw body is sent unchanged on the first attempt and again on the paid retry.
+        for call in calls:
+            assert call["payload"] is None
+            assert call["content"] == b"\x89PNG-bytes"
+            assert call["content_type"] == "image/png"
+        assert "Livepeer-Payment" not in calls[0]["headers"]  # type: ignore[operator]
+        assert calls[1]["headers"]["Livepeer-Payment"] == "payment-b64"  # type: ignore[index]
+
     async def test_paid_call_retries_with_payment_headers(self) -> None:
         calls: list[
             tuple[

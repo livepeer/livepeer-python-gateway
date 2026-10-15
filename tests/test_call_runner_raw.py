@@ -1,9 +1,13 @@
-"""Tests for non-JSON (raw byte) responses in call_runner.
+"""Tests for raw bytes in call_runner, in both directions.
 
-Single-document JSON responses (``application/json`` or an RFC 6839 ``+json``
-suffix) keep today's behavior: parsed into ``result.data``, strict about being an
+Responses: single-document JSON (``application/json`` or an RFC 6839 ``+json``
+suffix) keeps today's behavior: parsed into ``result.data``, strict about being an
 object. Anything else — binary, or a multi-document format like ndjson — returns
 the body unparsed in ``result.content`` with ``result.content_type`` set.
+
+Requests: ``payload`` keeps sending JSON. ``content`` sends the bytes as is with
+``content_type`` (default ``application/octet-stream``), and the two are mutually
+exclusive.
 """
 
 from __future__ import annotations
@@ -35,6 +39,9 @@ def _run(app: web.Application, scenario):
             await runner.cleanup()
 
     return asyncio.run(main())
+
+
+# --- Responses: what the runner sends back --------------------------------------
 
 
 def test_json_response_unchanged():
@@ -180,3 +187,89 @@ def test_http_error_still_raises_with_binary_endpoint():
 
     with pytest.raises(LivepeerHTTPError):
         _run(app, scenario)
+
+
+# --- Requests: what the client sends ---------------------------------------------
+
+
+def _echo_app(seen: dict) -> web.Application:
+    """Record the request body, method and content type the server receives."""
+
+    async def handler(request):
+        seen["body"] = await request.read()
+        seen["content_type"] = request.headers.get("Content-Type", "")
+        seen["method"] = request.method
+        return web.json_response({"received": len(seen["body"])})
+
+    app = web.Application()
+    app.router.add_route("*", "/in", handler)
+    return app
+
+
+def test_binary_request_sent_raw():
+    seen: dict = {}
+
+    async def scenario(base):
+        return await call_runner(f"{base}/in", content=FAKE_JPEG, content_type="image/jpeg")
+
+    result = _run(_echo_app(seen), scenario)
+    assert seen["body"] == FAKE_JPEG
+    assert seen["content_type"] == "image/jpeg"
+    assert seen["method"] == "POST"
+    assert result.data == {"received": len(FAKE_JPEG)}
+
+
+def test_binary_request_defaults_to_octet_stream():
+    seen: dict = {}
+
+    async def scenario(base):
+        return await call_runner(f"{base}/in", content=b"\x00\x01\x02")
+
+    _run(_echo_app(seen), scenario)
+    assert seen["body"] == b"\x00\x01\x02"
+    assert seen["content_type"] == "application/octet-stream"
+
+
+def test_empty_binary_request_is_posted():
+    seen: dict = {}
+
+    async def scenario(base):
+        return await call_runner(f"{base}/in", content=b"")
+
+    _run(_echo_app(seen), scenario)
+    assert seen["method"] == "POST"
+    assert seen["body"] == b""
+
+
+def test_json_request_unchanged():
+    seen: dict = {}
+
+    async def scenario(base):
+        return await call_runner(f"{base}/in", payload={"x": 1})
+
+    _run(_echo_app(seen), scenario)
+    assert seen["content_type"] == "application/json"
+    assert seen["body"] == b'{"x": 1}'
+
+
+def test_binary_request_with_stream():
+    seen: dict = {}
+
+    async def scenario(base):
+        async with await call_runner(
+            f"{base}/in", content=FAKE_JPEG, content_type="image/jpeg", stream=True
+        ) as stream:
+            return b"".join([chunk async for chunk in stream.aiter_bytes()])
+
+    body = _run(_echo_app(seen), scenario)
+    assert seen["body"] == FAKE_JPEG
+    assert seen["content_type"] == "image/jpeg"
+    assert b"received" in body
+
+
+def test_payload_and_content_are_mutually_exclusive():
+    async def scenario(base):
+        return await call_runner(f"{base}/in", payload={"x": 1}, content=b"y")
+
+    with pytest.raises(LivepeerGatewayError):
+        _run(_echo_app({}), scenario)

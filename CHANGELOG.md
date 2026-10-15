@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `call_runner` accepts a raw request body: `content` (bytes) with an optional
+  `content_type` (default `application/octet-stream`), as an alternative to the JSON
+  `payload`. Use it for apps that take an image, audio or other binary input.
+
 ### Removed
 
 - gRPC orchestrator information and selection including protobuf bindings
