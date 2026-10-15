@@ -3,6 +3,8 @@ from .channel_writer import ChannelWriter, JSONLWriter
 from .control import Control
 from .errors import LivepeerHTTPError, LivepeerGatewayError, NoRunnerAvailableError, PaymentError
 from .events import Events
+from .logging_config import configure_logging
+
 from .media_publish import (
     AudioOutputConfig,
     MediaPublish,
@@ -103,6 +105,7 @@ __all__ = [
     "ChannelReader",
     "JSONLReader",
     "JSONLWriter",
+    "configure_logging",
     "Events",
     "parse_token",
     "RunnerSelectionCursor",
@@ -125,3 +128,7 @@ __all__ = [
     "TrickleSubscriberStats",
     "VideoDecodedMediaFrame",
 ]
+
+# Honor LOG_LEVEL; add a root handler only if the app has not configured logging.
+configure_logging()
+
