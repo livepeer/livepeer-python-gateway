@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
+from collections.abc import Iterator
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
+from livepeer_gateway import http as gateway_http
 from livepeer_gateway import live_runner
 from livepeer_gateway.errors import (
     LivepeerGatewayError,
     LivepeerHTTPError,
+    PaymentError,
     SignerRefreshRequired,
 )
 from livepeer_gateway.live_runner import (
     call_runner,
+    LivePaymentSessionCallback,
+    LiveRunnerCallResult,
     LiveRunnerGPU,
     LiveRunnerInstance,
     LiveRunnerPriceInfo,
@@ -659,6 +665,334 @@ def _payment_url(manifest_id: str) -> str:
 
 def _json_data(data: dict[str, object]) -> tuple[bytes, str]:
     return json.dumps(data).encode("utf-8"), "application/json"
+
+
+_RUNNER_URL = "https://service.example.com/apps/runner-1/session"
+
+
+@contextlib.contextmanager
+def _paid_runner(
+    replies: list[object],
+    signs: list[object] | None = None,
+) -> Iterator[tuple[list[dict[str, str]], list[object]]]:
+    """Fake the runner and signer behind ``call_runner``.
+
+    The runner answers each request with the next of ``replies``: 402 is a
+    payment challenge, "hang" never answers, an exception is raised, and a dict
+    is returned as JSON. Each payment session signs with the next of ``signs``,
+    raising it if it is an exception; by default every session signs. Yields
+    each request's headers and every session created.
+    """
+    requests: list[dict[str, str]] = []
+    sessions: list[object] = []
+    pending_signs = list(signs or [])
+
+    class _PaymentSession:
+        def __init__(self, signer_url: str, **kwargs: object) -> None:
+            del signer_url
+            challenge = kwargs["challenge"]
+            assert isinstance(challenge, LivePaymentChallenge)
+            self._challenge = challenge
+            self._on_payment = kwargs.get("_on_payment")
+            sessions.append(self)
+
+        @property
+        def manifest_id(self) -> str:
+            return self._challenge.manifest_id
+
+        async def get_payment(self) -> object:
+            sign = pending_signs.pop(0) if pending_signs else None
+            if isinstance(sign, Exception):
+                raise sign
+            payment = sign or SimpleNamespace(
+                payment="payment-b64",
+                seg_creds="seg-b64",
+            )
+            if self._on_payment is not None:
+                await self._on_payment()
+            return payment
+
+        async def run_payments(self) -> bool:
+            await asyncio.Event().wait()
+            return False
+
+    async def _request_body(
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        **kwargs: object,
+    ) -> tuple[bytes, str]:
+        del kwargs
+        requests.append(dict(headers or {}))
+        reply = replies.pop(0)
+        if reply == 402:
+            raise LivepeerHTTPError(
+                402, url, _payment_challenge_body("manifest-1"), "payment required"
+            )
+        if reply == "hang":
+            await asyncio.Event().wait()
+        if isinstance(reply, Exception):
+            raise reply
+        assert isinstance(reply, dict)
+        return _json_data(reply)
+
+    with (
+        mock.patch.object(live_runner, "_request_body", _request_body),
+        mock.patch.object(live_runner, "LivePaymentSession", _PaymentSession),
+        mock.patch.object(
+            live_runner,
+            "get_signer_info",
+            new_callable=mock.AsyncMock,
+            return_value=SimpleNamespace(address="opaque-payer", sig="opaque-signature"),
+        ),
+    ):
+        yield requests, sessions
+
+
+async def _paid_call(
+    on_payment_session: LivePaymentSessionCallback,
+    *,
+    payment_unit: str = "fixed",
+) -> LiveRunnerCallResult:
+    return await call_runner(
+        _RUNNER_URL,
+        signer_url="https://signer.example.com",
+        payment_unit=payment_unit,
+        on_payment_session=on_payment_session,
+    )
+
+
+class TestCallRunnerPaymentSessions:
+    @pytest.mark.parametrize("is_async", [False, True])
+    async def test_reports_the_signed_session_before_the_paid_request(
+        self,
+        is_async: bool,
+    ) -> None:
+        reported: list[tuple[object, int]] = []
+        with _paid_runner([402, {"ok": True}]) as (requests, _):
+
+            def _report(session: object) -> None:
+                reported.append((session, len(requests)))
+
+            async def _report_async(session: object) -> None:
+                await asyncio.sleep(0)
+                _report(session)
+
+            result = await _paid_call(
+                _report_async if is_async else _report,
+                payment_unit="seconds",
+            )
+
+        # Reported after the unpaid request, before the paid one.
+        assert result.payment_session is not None
+        assert reported == [(result.payment_session, 1)]
+        assert result.payment_session.manifest_id == "manifest-1"
+        assert requests[1]["Livepeer-Payment"] == "payment-b64"
+
+    async def test_reports_every_session_of_a_fixed_price_call(self) -> None:
+        reported: list[object] = []
+        with _paid_runner([402, 402, {"ok": True}]) as (_, sessions):
+            result = await _paid_call(reported.append)
+
+        assert len(sessions) == 2
+        assert reported == sessions
+        assert result.payment_session is None
+
+    async def test_reports_nothing_when_the_runner_asks_no_payment(self) -> None:
+        reported: list[object] = []
+        with _paid_runner([{"ok": True}]) as (_, sessions):
+            await _paid_call(reported.append)
+
+        assert sessions == []
+        assert reported == []
+
+    async def test_runner_error_after_payment_is_raised_unchanged(self) -> None:
+        reported: list[object] = []
+        failure = LivepeerHTTPError(500, _RUNNER_URL, "boom", "server error")
+        with _paid_runner([402, failure]) as (_, sessions):
+            with pytest.raises(LivepeerHTTPError) as info:
+                await _paid_call(reported.append)
+
+        assert info.value is failure
+        assert reported == sessions
+
+    async def test_skips_a_session_the_signer_refused(self) -> None:
+        reported: list[object] = []
+        with _paid_runner([402, 402], [None, PaymentError("signer down")]) as (
+            requests,
+            sessions,
+        ):
+            with pytest.raises(PaymentError):
+                await _paid_call(reported.append)
+
+        assert len(sessions) == 2
+        assert reported == sessions[:1]
+        assert len(requests) == 2
+
+    async def test_reports_a_signed_session_whose_payment_is_unusable(self) -> None:
+        reported: list[object] = []
+        unusable = SimpleNamespace(payment="payment-b64", seg_creds="")
+        with _paid_runner([402], [unusable]) as (requests, sessions):
+            with pytest.raises(LivepeerGatewayError, match="missing segCreds"):
+                await _paid_call(reported.append)
+
+        assert reported == sessions
+        assert len(requests) == 1
+
+    @pytest.mark.parametrize(
+        ("signer_response", "error"),
+        [
+            (
+                {"payment": "payment-b64", "segCreds": 123, "state": {}},
+                "invalid 'segCreds'",
+            ),
+            (
+                {"payment": "payment-b64", "segCreds": "seg-b64"},
+                "missing 'state' object",
+            ),
+        ],
+    )
+    async def test_real_session_reports_before_signer_response_validation(
+        self,
+        signer_response: dict[str, object],
+        error: str,
+    ) -> None:
+        requests: list[dict[str, str]] = []
+        reported: list[object] = []
+
+        async def _request_body(
+            url: str,
+            *,
+            headers: dict[str, str] | None = None,
+            **kwargs: object,
+        ) -> tuple[bytes, str]:
+            del kwargs
+            requests.append(dict(headers or {}))
+            raise LivepeerHTTPError(
+                402,
+                url,
+                _payment_challenge_body("manifest-1"),
+                "payment required",
+            )
+
+        with (
+            mock.patch.object(live_runner, "_request_body", _request_body),
+            mock.patch.object(
+                live_runner,
+                "get_signer_info",
+                new_callable=mock.AsyncMock,
+                return_value=SimpleNamespace(
+                    address="opaque-payer",
+                    sig="opaque-signature",
+                ),
+            ),
+            mock.patch.object(
+                gateway_http,
+                "post_json",
+                new_callable=mock.AsyncMock,
+                return_value=signer_response,
+            ),
+        ):
+            with pytest.raises(PaymentError, match=error):
+                await _paid_call(reported.append)
+
+        assert len(requests) == 1
+        assert len(reported) == 1
+        assert reported[0].manifest_id == "manifest-1"
+
+    async def test_failing_callback_stops_the_paid_request(self) -> None:
+        def _report(session: object) -> None:
+            del session
+            raise RuntimeError("ledger unavailable")
+
+        with _paid_runner([402]) as (requests, _):
+            with pytest.raises(RuntimeError, match="ledger unavailable"):
+                await _paid_call(_report)
+
+        assert len(requests) == 1
+
+    async def test_callback_refresh_error_does_not_restart_the_challenge(self) -> None:
+        def _report(session: object) -> None:
+            del session
+            raise SignerRefreshRequired("ledger asked to refresh")
+
+        with _paid_runner([402, 402, 402]) as (requests, sessions):
+            with pytest.raises(SignerRefreshRequired, match="ledger asked to refresh"):
+                await _paid_call(_report)
+
+        assert len(requests) == 1
+        assert len(sessions) == 1
+
+    async def test_reported_sessions_outlive_a_cancelled_call(self) -> None:
+        reported: list[object] = []
+        with _paid_runner([402, "hang"]) as (requests, sessions):
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(_paid_call(reported.append), 0.1)
+
+        assert len(requests) == 2
+        assert reported == sessions
+
+    async def test_cancellation_drains_a_signed_payment_response_before_returning(
+        self,
+    ) -> None:
+        requests: list[dict[str, str]] = []
+        reported: list[object] = []
+        signer_charged = asyncio.Event()
+        release_response = asyncio.Event()
+
+        async def _request_body(
+            url: str,
+            *,
+            headers: dict[str, str] | None = None,
+            **kwargs: object,
+        ) -> tuple[bytes, str]:
+            del kwargs
+            requests.append(dict(headers or {}))
+            if len(requests) == 1:
+                raise LivepeerHTTPError(
+                    402,
+                    url,
+                    _payment_challenge_body("manifest-1"),
+                    "payment required",
+                )
+            pytest.fail("cancelled call sent a paid runner request")
+
+        async def _sign_payment(*args: object, **kwargs: object) -> dict[str, object]:
+            del args, kwargs
+            signer_charged.set()
+            await release_response.wait()
+            return {
+                "payment": "payment-b64",
+                "segCreds": "seg-b64",
+                "state": {},
+            }
+
+        with (
+            mock.patch.object(live_runner, "_request_body", _request_body),
+            mock.patch.object(
+                live_runner,
+                "get_signer_info",
+                new_callable=mock.AsyncMock,
+                return_value=SimpleNamespace(
+                    address="opaque-payer",
+                    sig="opaque-signature",
+                ),
+            ),
+            mock.patch.object(gateway_http, "post_json", _sign_payment),
+        ):
+            call = asyncio.create_task(_paid_call(reported.append))
+            await asyncio.wait_for(signer_charged.wait(), 1.0)
+            call.cancel()
+            await asyncio.sleep(0)
+            assert not call.done()
+
+            release_response.set()
+            with pytest.raises(asyncio.CancelledError):
+                await call
+
+        assert len(requests) == 1
+        assert len(reported) == 1
+        assert reported[0].manifest_id == "manifest-1"
 
 
 class _FakeO2RReader:

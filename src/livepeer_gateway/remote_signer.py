@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any, Optional
 
@@ -121,6 +123,7 @@ class LivePaymentSession:
         app: str | None = None,
         max_price: dict[str, Any] | None = None,
         max_refresh_retries: int = 3,
+        _on_payment: Callable[[], None | Awaitable[None]] | None = None,
     ) -> None:
         self._signer_url = signer_url
         self._signer_headers = _freeze_headers(signer_headers)
@@ -130,6 +133,12 @@ class LivePaymentSession:
         self._max_price = dict(max_price) if max_price is not None else None
         self._max_refresh_retries = max(0, int(max_refresh_retries))
         self._state: dict[str, Any] | None = None
+        self._on_payment = _on_payment
+
+    @property
+    def manifest_id(self) -> str:
+        """The manifest ID from the 402 challenge this session pays for."""
+        return self._challenge.manifest_id
 
     async def get_payment(self) -> GetPaymentResponse:
         if not self._signer_url:
@@ -218,6 +227,12 @@ class LivePaymentSession:
             raise PaymentError(
                 f"GetPayment error: missing/invalid 'payment' in response (url={url})"
             )
+        on_payment = self._on_payment
+        self._on_payment = None
+        if on_payment is not None:
+            result = on_payment()
+            if inspect.isawaitable(result):
+                await result
 
         seg_creds = data.get("segCreds")
         if seg_creds is not None and not isinstance(seg_creds, str):
