@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from functools import partial
 from typing import Any
 from urllib.parse import ParseResult, urlparse
 
 import aiohttp
 
+from ._http_continue import _ContinueResponse, _close_response
+from .runner_payload import RunnerPayload, _StreamState, _UploadBody
 from .errors import (
     LivepeerHTTPError,
     LivepeerGatewayError,
@@ -48,26 +51,61 @@ def _extract_error_message_from_body(body: str) -> str:
     return _truncate(body)
 
 
-def _json_request_parts(
+def _request_parts(
     url: str,
     *,
     method: str | None = None,
-    payload: dict[str, Any] | None = None,
+    payload: RunnerPayload | _StreamState = None,
     headers: dict[str, str] | None = None,
-) -> tuple[str, dict[str, str], bytes | None]:
+) -> tuple[str, dict[str, str], bytes | _UploadBody | None]:
     req_headers: dict[str, str] = {
         "Accept": "application/json",
         "User-Agent": "livepeer-python-gateway/0.1",
     }
-    body: bytes | None = None
+    body: bytes | _UploadBody | None = None
     if payload is not None:
-        req_headers["Content-Type"] = "application/json"
+        req_headers["Content-Type"] = "application/json" if isinstance(payload, dict) else "application/octet-stream"
+    if isinstance(payload, dict):
         body = json.dumps(payload).encode("utf-8")
+    elif isinstance(payload, _StreamState):
+        payload.require_replayable()
+        body = _UploadBody(payload)
+    elif payload is not None:
+        if isinstance(payload, str):
+            body = payload.encode("utf-8")
+        elif isinstance(payload, (bytes, bytearray, memoryview)):
+            body = bytes(payload)
+        else:
+            raise TypeError(f"Unsupported runner payload: {type(payload).__name__}")
     if headers:
         req_headers.update(headers)
 
     resolved_method = method.upper() if method else ("POST" if payload is not None else "GET")
     return resolved_method, req_headers, body
+
+
+def _request_session(
+    payload: RunnerPayload | _StreamState,
+    timeout: aiohttp.ClientTimeout,
+    handshake_timeout: float,
+) -> tuple[aiohttp.ClientSession, dict[str, Any]]:
+    if not isinstance(payload, _StreamState):
+        return aiohttp.ClientSession(timeout=timeout), {}
+    session = aiohttp.ClientSession(
+        timeout=timeout,
+        response_class=partial(_ContinueResponse, continue_timeout=handshake_timeout),
+    )
+    # aiohttp >= 3.10 may silently retry idempotent requests after disconnect.
+    # Stream resends are controlled by the SDK's replay state instead.
+    if hasattr(session, "_retry_connection"):
+        session._retry_connection = False
+    return session, {"expect100": payload.config.expect100, "allow_redirects": False}
+
+
+def _request_failed(status: int, payload: RunnerPayload | _StreamState) -> bool:
+    return status >= 400 or (
+        isinstance(payload, _StreamState) and status in (301, 302, 303, 307, 308)
+    )
 
 
 def _raise_http_json_error(
@@ -105,12 +143,12 @@ async def _request_body(
     url: str,
     *,
     method: str | None = None,
-    payload: dict[str, Any] | None = None,
+    payload: RunnerPayload | _StreamState = None,
     headers: dict[str, str] | None = None,
     timeout: float = 5.0,
 ) -> tuple[bytes, str]:
     """
-    Make an async JSON-payload HTTP request and return the raw response body.
+    Make an HTTP request and return the raw response body.
 
     Returns ``(body, content_type)`` without assuming the response is JSON;
     request semantics and error mapping match request_json.
@@ -119,23 +157,17 @@ async def _request_body(
 
     Raises LivepeerGatewayError on HTTP/network errors.
     """
-    resolved_method, req_headers, body = _json_request_parts(
-        url,
-        method=method,
-        payload=payload,
-        headers=headers,
-    )
-
     try:
-        client_timeout = aiohttp.ClientTimeout(total=timeout)
-        async with aiohttp.ClientSession(timeout=client_timeout) as session:
-            async with session.request(resolved_method, url, data=body, headers=req_headers) as resp:
-                raw = await resp.read()
+        session, resp = await _open_request(
+            url, method=method, payload=payload, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=timeout), handshake_timeout=timeout,
+        )
+        async with session:
+            try:
+                raw = await resp.content.read() if isinstance(payload, _StreamState) else await resp.read()
                 content_type = resp.content_type or ""
-                if resp.status >= 400:
-                    _raise_http_json_error(
-                        resp.status, url, raw.decode(errors="replace")
-                    )
+            finally:
+                await _close_response(resp)
     except (SignerRefreshRequired, SkipPaymentCycle, LivepeerGatewayError):
         raise
     except ConnectionRefusedError as e:
@@ -159,6 +191,9 @@ async def _request_body(
         raise LivepeerGatewayError(
             f"HTTP JSON error: unexpected error: {e.__class__.__name__}: {e} (url={url})"
         ) from e
+    finally:
+        if isinstance(payload, _StreamState):
+            await payload.finish_attempt()
 
     return raw, content_type
 
@@ -197,7 +232,7 @@ async def open_stream(
     url: str,
     *,
     method: str | None = None,
-    payload: dict[str, Any] | None = None,
+    payload: RunnerPayload | _StreamState = None,
     headers: dict[str, str] | None = None,
     connect_timeout: float = 10.0,
 ) -> tuple[aiohttp.ClientSession, aiohttp.ClientResponse]:
@@ -206,31 +241,53 @@ async def open_stream(
     body, for streaming responses (SSE, chunked). The caller owns both and must close
     them.
 
-    No total timeout (streams run indefinitely) only connect/first-byte are bounded.
+    No total/read timeout; bounds connection and optional 100-continue handshake.
     Raises LivepeerHTTPError on >= 400 (e.g. the 402 payment retry).
     """
-    resolved_method, req_headers, body = _json_request_parts(
-        url,
-        method=method,
-        payload=payload,
-        headers=headers,
-    )
-
-    timeout = aiohttp.ClientTimeout(total=None, sock_connect=connect_timeout, sock_read=None)
-    session = aiohttp.ClientSession(timeout=timeout)
     try:
-        resp = await session.request(resolved_method, url, data=body, headers=req_headers)
+        return await _open_request(
+            url, method=method, payload=payload, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=None, sock_connect=connect_timeout, sock_read=None),
+            handshake_timeout=connect_timeout,
+        )
     except (TimeoutError, aiohttp.ClientError) as e:
-        await session.close()
         raise LivepeerGatewayError(
             f"HTTP stream error: failed to reach endpoint: {getattr(e, 'message', e)} (url={url})"
         ) from e
-    if resp.status >= 400:
-        raw = await resp.text()
-        resp.release()
-        await session.close()
-        _raise_http_json_error(resp.status, url, raw)
-    return session, resp
+
+
+async def _open_request(
+    url: str,
+    *,
+    method: str | None,
+    payload: RunnerPayload | _StreamState,
+    headers: dict[str, str] | None,
+    timeout: aiohttp.ClientTimeout,
+    handshake_timeout: float,
+) -> tuple[aiohttp.ClientSession, aiohttp.ClientResponse]:
+    method, headers, body = _request_parts(url, method=method, payload=payload, headers=headers)
+    session, options = _request_session(payload, timeout, handshake_timeout)
+    if payload is None:
+        # aiohttp otherwise adds application/octet-stream even for an empty POST.
+        options["skip_auto_headers"] = {"Content-Type"}
+    resp = None
+    try:
+        resp = await session.request(method, url, data=body, headers=headers, **options)
+        if _request_failed(resp.status, payload):
+            # Read before cancelling the writer: aiohttp 3.13 closes the socket
+            # on cancellation, which can discard a fragmented payment challenge.
+            raw = (await resp.content.read()).decode(errors="replace")
+            _raise_http_json_error(resp.status, url, raw)
+        return session, resp
+    except BaseException:
+        try:
+            if resp is not None:
+                await _close_response(resp)
+        finally:
+            await session.close()
+            if isinstance(payload, _StreamState):
+                await payload.finish_attempt()
+        raise
 
 
 async def post_json(

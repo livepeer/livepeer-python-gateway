@@ -59,6 +59,7 @@ include = [
   "/CHANGELOG.md",
   "/LICENSE",
   "/README",
+  "/docs",
   "/examples",
   "/pyproject.toml",
   "/src",

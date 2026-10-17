@@ -80,8 +80,8 @@ asyncio.run(main("<base64-token>"))
 ```
 
 For single-shot apps, use `runner_selector()` and `await cursor.next()`, or
-`call_runner()` for a known runner URL. Paid runners support `hour`, `seconds`,
-and `fixed` pricing through a remote signer.
+`call_runner()` for a known runner URL. See [Calling runners](docs/runner-payloads.md)
+for request options, streaming uploads and responses, payment, and retries.
 
 Read demuxed packets without decoding, using the output channel URL returned
 by the app:

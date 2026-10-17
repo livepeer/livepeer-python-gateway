@@ -254,7 +254,7 @@ class TestLiveRunnerSession:
             runner_id="runner-1",
             mode="persistent",
             orchestrator_url="https://service.example.com",
-            raw={"label": "echo"},
+            raw={"app": "livepeer-sample/echo"},
         )
 
         def _request_body(

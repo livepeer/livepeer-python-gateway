@@ -1,6 +1,5 @@
 [[Runners]]
 ID = "story-runner"
-Label = "story-runner"
 App = "livepeer/read-story"
 RunnerURL = "http://127.0.0.1:8990"
 HealthURL = "http://127.0.0.1:8990/healthz"

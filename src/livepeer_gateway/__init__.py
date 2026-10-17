@@ -46,6 +46,7 @@ from .live_runner import (
 )
 from .discovery import discover_orchestrators, discover_runners
 from .remote_signer import LivePaymentChallenge, LivePaymentSession
+from .runner_payload import RunnerPayload, StreamPayload
 from .selection import (
     RunnerSelectionCursor,
     runner_selector,
@@ -79,6 +80,8 @@ __all__ = [
     "LivePaymentChallenge",
     "LivePaymentSession",
     "LiveRunnerProxy",
+    "RunnerPayload",
+    "StreamPayload",
     "LivepeerGatewayError",
     "LivepeerHTTPError",
     "NoRunnerAvailableError",

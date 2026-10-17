@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Flexible request body types on call_runner and selectors.
+
 ### Changed
 
 - `discover_orchestrators` is now asynchronous and must be awaited, including
@@ -13,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- The unused `label` option from `register_runner` and `LiveRunnerRegistration`.
 - Synchronous HTTP helpers `request_json_sync`, `get_json_sync`, and
   `post_json_sync`. All HTTP requests now use the asynchronous transport.
 - TLS certificate-verification bypasses in HTTP requests, streaming responses,
