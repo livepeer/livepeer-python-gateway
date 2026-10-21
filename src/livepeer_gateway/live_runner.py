@@ -86,6 +86,7 @@ class LiveRunnerSessionEvent:
 
 
 LiveRunnerSessionCallback = Callable[[LiveRunnerSessionEvent], None | Awaitable[None]]
+LivePaymentSessionCallback = Callable[[LivePaymentSession], None | Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -761,7 +762,7 @@ async def call_runner(
     payment_unit: str | None = ...,
     timeout: float = ...,
     max_payment_challenge_retries: int = ...,
-    on_payment_session: Callable[[LivePaymentSession], None | Awaitable[None]] | None = ...,
+    on_payment_session: LivePaymentSessionCallback | None = ...,
     stream: Literal[False] = False,
 ) -> LiveRunnerCallResult:
     pass
@@ -779,7 +780,7 @@ async def call_runner(
     payment_unit: str | None = ...,
     timeout: float = ...,
     max_payment_challenge_retries: int = ...,
-    on_payment_session: Callable[[LivePaymentSession], None | Awaitable[None]] | None = ...,
+    on_payment_session: LivePaymentSessionCallback | None = ...,
     stream: Literal[True],
 ) -> LiveRunnerCallStream:
     pass
@@ -796,7 +797,7 @@ async def call_runner(
     payment_unit: str | None = None,
     timeout: float = 5.0,
     max_payment_challenge_retries: int = 3,
-    on_payment_session: Callable[[LivePaymentSession], None | Awaitable[None]] | None = None,
+    on_payment_session: LivePaymentSessionCallback | None = None,
     stream: bool = False,
 ) -> LiveRunnerCallResult | LiveRunnerCallStream:
     """Call a runner once and return its result (or a live stream if ``stream=True``).

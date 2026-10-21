@@ -27,6 +27,7 @@ from .media_output import (
 )
 from .errors import RunnerRejection
 from .live_runner import (
+    LivePaymentSessionCallback,
     LiveRunnerCallResult,
     LiveRunnerCallStream,
     LiveRunnerGPU,
@@ -78,6 +79,7 @@ __all__ = [
     "LiveRunnerSessionEvent",
     "LivePaymentChallenge",
     "LivePaymentSession",
+    "LivePaymentSessionCallback",
     "LiveRunnerProxy",
     "LivepeerGatewayError",
     "LivepeerHTTPError",
