@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - `call_runner(on_payment_session=...)` callback for each new payment session
 - `LivePaymentSession.manifest_id` for payment attribution
+- Flexible request body types on call_runner and selectors.
 
 ### Changed
 
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- The unused `label` option from `register_runner` and `LiveRunnerRegistration`.
 - Synchronous HTTP helpers `request_json_sync`, `get_json_sync`, and
   `post_json_sync`. All HTTP requests now use the asynchronous transport.
 - TLS certificate-verification bypasses in HTTP requests, streaming responses,

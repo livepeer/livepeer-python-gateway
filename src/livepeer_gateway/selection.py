@@ -21,6 +21,7 @@ from .live_runner import (
     _live_runner_price_info_from_json,
     call_runner,
 )
+from .runner_payload import RunnerPayload, _ReplayUnavailableError, _StreamState, _stream_state
 
 _LOG = logging.getLogger(__name__)
 
@@ -38,14 +39,19 @@ class RunnerSelectionCursor:
         self,
         candidates: Sequence[LiveRunnerInstance],
         *,
-        body: dict[str, Any] | None = None,
+        body: RunnerPayload = None,
+        content_type: str | None = None,
         method: str = "POST",
         signer_url: str | None = None,
         signer_headers: dict[str, str] | None = None,
         timeout: float = 5.0,
     ) -> None:
         self._candidates = list(candidates)
-        self._body = dict(body or {})
+        self._body = dict(body) if isinstance(body, dict) else body
+        self._content_type = content_type
+        self._payload_state: _StreamState | None = None
+        self._closed = False
+        self._next_running = False
         self._method = method
         self._signer_url = signer_url
         self._signer_headers = signer_headers
@@ -58,47 +64,84 @@ class RunnerSelectionCursor:
         return tuple(self._candidates)
 
     async def next(self) -> LiveRunnerCallResult:
-        while self._next_index < len(self._candidates):
-            runner = self._candidates[self._next_index]
-            self._next_index += 1
+        if self._closed:
+            raise LivepeerGatewayError("Runner selection cursor is closed")
+        if self._next_running:
+            raise LivepeerGatewayError("Runner selection cursor.next() is already running")
+        self._next_running = True
+        try:
+            if self._payload_state is None:
+                self._payload_state = _stream_state(self._body)
+            while self._next_index < len(self._candidates):
+                if self._payload_state is not None:
+                    self._payload_state.require_replayable()
+                runner = self._candidates[self._next_index]
+                self._next_index += 1
+                try:
+                    kwargs: dict[str, Any] = {
+                        "runner": runner,
+                        "payload": self._payload_state if self._payload_state is not None else self._body,
+                        "method": self._method,
+                        "timeout": self._timeout,
+                    }
+                    if self._content_type is not None:
+                        kwargs["content_type"] = self._content_type
+                    if self._signer_url is not None:
+                        kwargs["signer_url"] = self._signer_url
+                    if self._signer_headers is not None:
+                        kwargs["signer_headers"] = self._signer_headers
+                    result = await call_runner(**kwargs)
+                except _ReplayUnavailableError:
+                    raise
+                except Exception as e:
+                    reason = str(e)
+                    _LOG.debug(
+                        "select_runner candidate failed: %s (%s)",
+                        runner.url,
+                        reason,
+                    )
+                    self.rejections.append(RunnerRejection(url=runner.url, reason=reason))
+                    if self._payload_state is not None:
+                        self._payload_state.require_replayable(e)
+                    continue
+
+                _LOG.debug("select_runner selected: %s", runner.url)
+                return result
+
+            _LOG.debug(
+                "select_runner failed: all %d runners rejected",
+                len(self._candidates),
+            )
+            raise NoRunnerAvailableError(
+                f"All runners failed ({len(self.rejections)} tried)",
+                rejections=list(self.rejections),
+            )
+        except BaseException:
             try:
-                kwargs: dict[str, Any] = {
-                    "runner": runner,
-                    "payload": self._body,
-                    "method": self._method,
-                    "timeout": self._timeout,
-                }
-                if self._signer_url is not None:
-                    kwargs["signer_url"] = self._signer_url
-                if self._signer_headers is not None:
-                    kwargs["signer_headers"] = self._signer_headers
-                result = await call_runner(**kwargs)
-            except Exception as e:
-                reason = str(e)
-                _LOG.debug(
-                    "select_runner candidate failed: %s (%s)",
-                    runner.url,
-                    reason,
-                )
-                self.rejections.append(RunnerRejection(url=runner.url, reason=reason))
-                continue
+                await self.aclose()
+            except Exception:
+                _LOG.warning("Runner cursor cleanup failed", exc_info=True)
+            raise
+        finally:
+            self._next_running = False
 
-            _LOG.debug("select_runner selected: %s", runner.url)
-            return result
+    async def aclose(self) -> None:
+        """Release the replay cache without closing the caller's upload source."""
+        self._closed = True
+        if self._payload_state is not None:
+            await self._payload_state.aclose()
 
-        _LOG.debug(
-            "select_runner failed: all %d runners rejected",
-            len(self._candidates),
-        )
-        raise NoRunnerAvailableError(
-            f"All runners failed ({len(self.rejections)} tried)",
-            rejections=list(self.rejections),
-        )
+    async def __aenter__(self) -> RunnerSelectionCursor:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
 
 
 async def runner_selector(
     *,
-    body: dict[str, Any] | None = None,
+    body: RunnerPayload = None,
+    content_type: str | None = None,
     method: str = "POST",
     orchestrators: Sequence[str] | str | None = None,
     signer_url: str | None = None,
@@ -134,6 +177,7 @@ async def runner_selector(
     return RunnerSelectionCursor(
         candidates,
         body=body,
+        content_type=content_type,
         method=method,
         signer_url=signer_url,
         signer_headers=signer_headers,

@@ -254,7 +254,7 @@ class TestLiveRunnerSession:
             runner_id="runner-1",
             mode="persistent",
             orchestrator_url="https://service.example.com",
-            raw={"label": "echo"},
+            raw={"app": "livepeer-sample/echo"},
         )
 
         def _request_body(
@@ -639,7 +639,7 @@ class TestPaymentSessionCallback:
         reply = (
             (
                 SimpleNamespace(close=mock.AsyncMock()),
-                SimpleNamespace(status=200, headers={}, release=mock.Mock()),
+                SimpleNamespace(status=200, headers={}, _writer=None, close=mock.Mock()),
             )
             if stream
             else _json_data({"ok": True})

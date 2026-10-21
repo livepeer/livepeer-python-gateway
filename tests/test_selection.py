@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest import mock
 
 import pytest
@@ -51,7 +52,7 @@ class TestRunnerSelection:
         assert candidate.runner_id == "runner-c"
         assert candidate.mode == "persistent"
         assert candidate.orchestrator_url == "https://orch-b"
-        assert candidate.raw["label"] == "runner-c-label"
+        assert candidate.raw["metadata"] == "runner-c-metadata"
         assert candidate.price_info is not None
         assert candidate.price_info.price == 25
         assert candidate.price_info.currency == "wei"
@@ -499,7 +500,7 @@ def _discovery_entries() -> list[dict[str, object]]:
                     "app": "app-c",
                     "runner_id": "runner-c",
                     "mode": "persistent",
-                    "label": "runner-c-label",
+                    "metadata": "runner-c-metadata",
                     "price_info": {
                         "price": 25,
                         "currency": "wei",
@@ -510,3 +511,68 @@ def _discovery_entries() -> list[dict[str, object]]:
             address="https://orch-b",
         ),
     ]
+
+
+@pytest.mark.parametrize("body", [123, mock.Mock(read=mock.AsyncMock())])
+async def test_invalid_body_fails_before_attempting_candidates(body):
+    runner = LiveRunnerInstance("http://unused", "test", "runner", "single-shot", "http://unused", {})
+    cursor = selection.RunnerSelectionCursor([runner, runner], body=body)
+    with mock.patch.object(selection, "call_runner") as call:
+        with pytest.raises(TypeError):
+            await cursor.next()
+    call.assert_not_called()
+    assert cursor.rejections == []
+
+
+async def test_cursor_cleanup_failure_preserves_original_error():
+    cursor = selection.RunnerSelectionCursor([])
+    with mock.patch.object(cursor, "aclose", side_effect=RuntimeError("cleanup failed")):
+        with pytest.raises(NoRunnerAvailableError):
+            await cursor.next()
+
+
+async def test_overlapping_next_does_not_interrupt_or_advance_cursor():
+    runner = LiveRunnerInstance("http://unused", "test", "runner", "single-shot", "http://unused", {})
+    result = LiveRunnerCallResult({"ok": True}, runner_url=runner.url, runner=runner)
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def call(**kwargs):
+        started.set()
+        await finish.wait()
+        return result
+
+    async with selection.RunnerSelectionCursor([runner, runner]) as cursor:
+        with mock.patch.object(selection, "call_runner", side_effect=call) as request:
+            active = asyncio.create_task(cursor.next())
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                with pytest.raises(LivepeerGatewayError, match="already running"):
+                    await asyncio.wait_for(cursor.next(), 1)
+                assert not active.done()
+            finally:
+                finish.set()
+                assert await active is result
+            assert await cursor.next() is result
+    assert request.await_count == 2
+
+
+async def test_cursor_cancellation_closes_upload_cache():
+    async def source():
+        yield b"data"
+
+    started = asyncio.Event()
+    cursor = selection.RunnerSelectionCursor([LiveRunnerInstance("http://unused", "test", "runner", "single-shot", "http://unused", {})], body=source())
+
+    async def call(**kwargs):
+        assert await anext(kwargs["payload"].chunks()) == b"data"
+        started.set()
+        await asyncio.Future()
+
+    with mock.patch.object(selection, "call_runner", side_effect=call):
+        attempt = asyncio.create_task(cursor.next())
+        await asyncio.wait_for(started.wait(), 1)
+        cache = cursor._payload_state.cache
+        attempt.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await attempt
+    assert cache.closed and cursor._payload_state.closed

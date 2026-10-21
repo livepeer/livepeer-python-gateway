@@ -26,6 +26,7 @@ from urllib.parse import quote, urlparse, urlunparse
 import aiohttp
 from aiohttp.helpers import parse_mimetype
 
+from ._http_continue import _close_response
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
 from .http import _post_empty, _request_body, open_stream, post_json, request_json
@@ -35,6 +36,7 @@ from .remote_signer import (
     _freeze_headers,
     get_signer_info,
 )
+from .runner_payload import RunnerPayload, _StreamState, _stream_state
 
 _LOG = logging.getLogger(__name__)
 
@@ -188,6 +190,9 @@ class LiveRunnerCallStream:
     payment_session: LivePaymentSession | None
     _session: aiohttp.ClientSession = field(repr=False, compare=False)
     _response: aiohttp.ClientResponse = field(repr=False, compare=False)
+    _payload_state: _StreamState | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
     # True once the orchestrator reported the backing session gone.
     released: bool = False
     _payment_task: asyncio.Task[None] | None = field(
@@ -219,10 +224,16 @@ class LiveRunnerCallStream:
 
     async def aclose(self) -> None:
         # Stop funding first: don't pay for a stream we are about to drop.
-        await _stop_funding(self._payment_task)
-        self._payment_task = None
-        self._response.release()
-        await self._session.close()
+        try:
+            await _stop_funding(self._payment_task)
+        finally:
+            self._payment_task = None
+            try:
+                await _close_response(self._response)
+            finally:
+                await self._session.close()
+                if self._payload_state is not None:
+                    await self._payload_state.aclose()
 
     async def __aenter__(self) -> LiveRunnerCallStream:
         return self
@@ -274,7 +285,6 @@ class LiveRunnerRegistration:
         runner_id: str = "",
         mode: str = "persistent",
         proxy: bool = False,
-        label: str = "",
         version: str = "",
         metadata: str = "",
         status: str = "ready",
@@ -298,7 +308,6 @@ class LiveRunnerRegistration:
         self._mode = _normalize_runner_mode(mode)
         self._proxy = proxy
         self._price_info = price_info
-        self._label = label
         self._version = version
         self._metadata = metadata
         self._status = status
@@ -445,8 +454,6 @@ class LiveRunnerRegistration:
             payload["runner_id"] = self.runner_id
         if self._proxy:
             payload["proxy"] = True
-        if self._label:
-            payload["label"] = self._label
         if self._version:
             payload["version"] = self._version
         if self._metadata:
@@ -609,7 +616,6 @@ async def register_runner(
     runner_id: str = "",
     mode: str = "persistent",
     proxy: bool = False,
-    label: str = "",
     version: str = "",
     metadata: str = "",
     status: str = "ready",
@@ -634,7 +640,6 @@ async def register_runner(
         runner_id=runner_id,
         mode=mode,
         proxy=proxy,
-        label=label,
         version=version,
         metadata=metadata,
         status=status,
@@ -755,7 +760,8 @@ async def call_runner(
     runner_url: str = ...,
     *,
     runner: LiveRunnerInstance | None = ...,
-    payload: dict[str, Any] | None = ...,
+    payload: RunnerPayload = ...,
+    content_type: str | None = ...,
     method: str = ...,
     signer_url: str | None = ...,
     signer_headers: dict[str, str] | None = ...,
@@ -773,7 +779,8 @@ async def call_runner(
     runner_url: str = ...,
     *,
     runner: LiveRunnerInstance | None = ...,
-    payload: dict[str, Any] | None = ...,
+    payload: RunnerPayload = ...,
+    content_type: str | None = ...,
     method: str = ...,
     signer_url: str | None = ...,
     signer_headers: dict[str, str] | None = ...,
@@ -790,7 +797,8 @@ async def call_runner(
     runner_url: str = "",
     *,
     runner: LiveRunnerInstance | None = None,
-    payload: dict[str, Any] | None = None,
+    payload: RunnerPayload | _StreamState = None,
+    content_type: str | None = None,
     method: str = "POST",
     signer_url: str | None = None,
     signer_headers: dict[str, str] | None = None,
@@ -814,142 +822,158 @@ async def call_runner(
     (an image, ndjson) comes back unparsed in ``result.content`` + ``result.content_type``.
 
     The request asks for no particular format, so the app picks what it returns.
+
+    Dictionaries serialize to JSON; strings encode as UTF-8; bytes and streams
+    send raw data. ``content_type`` overrides the default ``application/json``
+    for dictionaries or ``application/octet-stream`` for other bodies.
+    Omitted/None payloads send an empty body. Bare files and async byte iterables
+    use StreamPayload defaults (100-continue and bounded replay buffering).
     """
-    runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
-    if not runner_url:
-        raise LivepeerGatewayError("Live runner call requires runner_url")
-    request_payload = payload or {}
-    payment_type = _runner_payment_type(runner, payment_unit) if signer_url else ""
-    max_price: LiveRunnerPriceInfo | None = None
-    if signer_url and runner is not None and runner.price_info is not None:
-        max_price = _pad_runner_price(runner.price_info)
-    payer_address = ""
-    if signer_url:
-        signer = await get_signer_info(signer_url, _freeze_headers(signer_headers))
-        payer_address = cast(str, signer.address)
-    challenge: LivePaymentChallenge | None = None
-    attempts = (max(0, int(max_payment_challenge_retries)) + 1) * 2
-    for attempt in range(attempts):
-        payment_session: LivePaymentSession | None = None
-        session_id = ""
-        needs_ongoing_funding = False
-        # No preferred format: the app, or the upstream it fronts, picks. Only
-        # control-plane calls ask for JSON.
-        request_headers: dict[str, str] = {"Accept": "*/*"}
+    state = _stream_state(payload)
+    owned = state is not None and not isinstance(payload, _StreamState)
+    payload = state if state is not None else payload
+    try:
+        runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
+        if not runner_url:
+            raise LivepeerGatewayError("Live runner call requires runner_url")
+        payment_type = _runner_payment_type(runner, payment_unit) if signer_url else ""
+        max_price: LiveRunnerPriceInfo | None = None
+        if signer_url and runner is not None and runner.price_info is not None:
+            max_price = _pad_runner_price(runner.price_info)
+        payer_address = ""
         if signer_url:
-            request_headers[_LIVE_RUNNER_PAYER_ADDRESS_HEADER] = payer_address
-        # Pending challenge means payment is needed.
-        if challenge is not None:
-            payment_session = LivePaymentSession(
-                signer_url=signer_url or "",
-                signer_headers=signer_headers,
-                type=payment_type,
-                challenge=challenge,
-                app=runner.app if runner is not None else None,
-                max_price=max_price.to_json() if max_price is not None else None,
-            )
-            try:
-                payment = await payment_session.get_payment()
-            except SignerRefreshRequired as e:
-                if attempt + 1 >= attempts:
-                    raise
-                # Could happen if embedded payment params expire; just retry in this case.
-                _LOG.info(
-                    "Live runner reservation payment challenge needs refresh; retrying with a fresh challenge: %s",
-                    e,
+            signer = await get_signer_info(signer_url, _freeze_headers(signer_headers))
+            payer_address = cast(str, signer.address)
+        challenge: LivePaymentChallenge | None = None
+        attempts = (max(0, int(max_payment_challenge_retries)) + 1) * 2
+        for attempt in range(attempts):
+            payment_session: LivePaymentSession | None = None
+            session_id = ""
+            needs_ongoing_funding = False
+            # No preferred format: the app, or the upstream it fronts, picks. Only
+            # control-plane calls ask for JSON.
+            request_headers: dict[str, str] = {"Accept": "*/*"}
+            if content_type is not None:
+                request_headers["Content-Type"] = content_type
+            if signer_url:
+                request_headers[_LIVE_RUNNER_PAYER_ADDRESS_HEADER] = payer_address
+            # Pending challenge means payment is needed.
+            if challenge is not None:
+                payment_session = LivePaymentSession(
+                    signer_url=signer_url or "",
+                    signer_headers=signer_headers,
+                    type=payment_type,
+                    challenge=challenge,
+                    app=runner.app if runner is not None else None,
+                    max_price=max_price.to_json() if max_price is not None else None,
                 )
-                challenge = None
-                continue
-            if on_payment_session is not None:
-                result = on_payment_session(payment_session)
-                if inspect.isawaitable(result):
-                    await result
-            request_headers["Livepeer-Payment"] = payment.payment
-            request_headers["Livepeer-Segment"] = payment.seg_creds
-            session_id = challenge.manifest_id
-
-            # Metered pricing bills for as long as the work runs.
-            needs_ongoing_funding = payment_type == "live"
-
-        try:
-            request_kwargs: dict[str, Any] = {"timeout": timeout}
-            if request_headers:
-                request_kwargs["headers"] = request_headers
-
-            if stream:
-                # Hand back the live response unbuffered. open_stream raises on a 402
-                # before any body, so the payment retry below still catches it.
-                session, resp = await open_stream(
-                    runner_url,
-                    method=method,
-                    payload=request_payload,
-                    headers=request_headers or None,
-                )
-                call_stream = LiveRunnerCallStream(
-                    resp.status,
-                    resp.headers,
-                    runner_url,
-                    runner,
-                    None if payment_type == "fixed" else payment_session,
-                    session,
-                    resp,
-                )
-                # The stream outlives this call, so it owns the funding.
-                if needs_ongoing_funding:
-                    call_stream._start_payments(cast(LivePaymentSession, payment_session))
-                return call_stream
-
-            # The request ends with this call, so the funding ends with it.
-            pay_task = (
-                _start_funding(cast(LivePaymentSession, payment_session))
-                if needs_ongoing_funding
-                else None
-            )
-            try:
-                body, content_type = await _request_body(
-                    runner_url,
-                    method=method,
-                    payload=request_payload,
-                    **request_kwargs,
-                )
-            finally:
-                await _stop_funding(pay_task)
-            # Non-JSON bodies (an image, ndjson) are handed back unparsed in `content`.
-            is_json = _is_json_content_type(content_type)
-            data: dict[str, Any] = {}
-            if is_json:
                 try:
-                    data = json.loads(body)
-                except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                    raise LivepeerGatewayError(
-                        f"HTTP JSON error: endpoint did not return valid JSON: {e} "
-                        f"(url={runner_url}, content_type={content_type})"
-                    ) from e
-                if not isinstance(data, dict):
-                    raise LivepeerGatewayError(
-                        f"Live runner call expected JSON object, got {type(data).__name__}"
+                    payment = await payment_session.get_payment()
+                except SignerRefreshRequired as e:
+                    if attempt + 1 >= attempts:
+                        raise
+                    # Could happen if embedded payment params expire; just retry in this case.
+                    _LOG.info(
+                        "Live runner reservation payment challenge needs refresh; retrying with a fresh challenge: %s",
+                        e,
                     )
-            return LiveRunnerCallResult(
-                data,
-                runner_url=runner_url,
-                runner=runner,
-                session_id=(
-                    session_id
-                    or (data["session_id"].strip() if isinstance(data.get("session_id"), str) else "")
-                ),
-                payment_session=None if payment_type == "fixed" else payment_session,
-                content=None if is_json else body,
-                content_type=content_type,
-            )
-        except LivepeerHTTPError as e:
-            if e.status_code != 402:
-                raise
-            if not signer_url:
-                raise LivepeerGatewayError("Live runner paid call requires signer_url") from e
-            challenge = _parse_runner_payment_challenge(e)
-            continue
+                    challenge = None
+                    continue
+                if on_payment_session is not None:
+                    result = on_payment_session(payment_session)
+                    if inspect.isawaitable(result):
+                        await result
+                request_headers["Livepeer-Payment"] = payment.payment
+                request_headers["Livepeer-Segment"] = payment.seg_creds
+                session_id = challenge.manifest_id
 
-    raise LivepeerGatewayError("Live runner call exhausted payment challenge retries")
+                # Metered pricing bills for as long as the work runs.
+                needs_ongoing_funding = payment_type == "live"
+
+            try:
+                if stream:
+                    # Payment challenges are handled before returning a live response.
+                    session, resp = await open_stream(
+                        runner_url,
+                        method=method,
+                        payload=payload,
+                        headers=request_headers or None,
+                        connect_timeout=timeout,
+                    )
+                    call_stream = LiveRunnerCallStream(
+                        resp.status,
+                        resp.headers,
+                        runner_url,
+                        runner,
+                        None if payment_type == "fixed" else payment_session,
+                        session,
+                        resp,
+                    )
+                    # The stream outlives this call, so it owns the funding.
+                    if needs_ongoing_funding:
+                        call_stream._start_payments(cast(LivePaymentSession, payment_session))
+                    if owned:
+                        call_stream._payload_state = state
+                        owned = False
+                    return call_stream
+
+                # The request ends with this call, so the funding ends with it.
+                pay_task = (
+                    _start_funding(cast(LivePaymentSession, payment_session))
+                    if needs_ongoing_funding
+                    else None
+                )
+                try:
+                    body, response_content_type = await _request_body(
+                        runner_url,
+                        method=method,
+                        payload=payload,
+                        headers=request_headers,
+                        timeout=timeout,
+                    )
+                finally:
+                    await _stop_funding(pay_task)
+                # Non-JSON bodies (an image, ndjson) are handed back unparsed in `content`.
+                is_json = _is_json_content_type(response_content_type)
+                data: dict[str, Any] = {}
+                if is_json:
+                    try:
+                        data = json.loads(body)
+                    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                        raise LivepeerGatewayError(
+                            f"HTTP JSON error: endpoint did not return valid JSON: {e} "
+                            f"(url={runner_url}, content_type={response_content_type})"
+                        ) from e
+                    if not isinstance(data, dict):
+                        raise LivepeerGatewayError(
+                            f"Live runner call expected JSON object, got {type(data).__name__}"
+                        )
+                return LiveRunnerCallResult(
+                    data,
+                    runner_url=runner_url,
+                    runner=runner,
+                    session_id=(
+                        session_id
+                        or (data["session_id"].strip() if isinstance(data.get("session_id"), str) else "")
+                    ),
+                    payment_session=None if payment_type == "fixed" else payment_session,
+                    content=None if is_json else body,
+                    content_type=response_content_type,
+                )
+            except LivepeerHTTPError as e:
+                if e.status_code != 402:
+                    raise
+                if not signer_url:
+                    raise LivepeerGatewayError("Live runner paid call requires signer_url") from e
+                if state is not None:
+                    state.require_replayable(e)
+                challenge = _parse_runner_payment_challenge(e)
+                continue
+
+        raise LivepeerGatewayError("Live runner call exhausted payment challenge retries")
+    finally:
+        if owned:
+            await state.aclose()
 
 
 def _parse_runner_payment_challenge(error: LivepeerHTTPError) -> LivePaymentChallenge:
