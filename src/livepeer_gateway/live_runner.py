@@ -85,6 +85,7 @@ class LiveRunnerSessionEvent:
     event: Literal["reserved", "released"]
     timestamp: str | None
     raw: dict[str, Any]
+    session_token: str = ""
 
 
 LiveRunnerSessionCallback = Callable[[LiveRunnerSessionEvent], None | Awaitable[None]]
@@ -318,7 +319,7 @@ class LiveRunnerRegistration:
         self._unregister_on_close = unregister_on_close
         self._on_session_reserve = on_session_reserve
         self._on_session_release = on_session_release
-        self._active_session_ids: list[str] = []
+        self._active_sessions: dict[str, str] = {}
         self.o2r_channel: LiveRunnerTrickleChannel | None = None
         self._o2r_reader: ChannelReader | None = None
         self._closed = False
@@ -332,8 +333,7 @@ class LiveRunnerRegistration:
 
     @property
     def active_session_ids(self) -> tuple[str, ...]:
-        # Return an immutable snapshot; internal storage stays list-backed to preserve reservation order.
-        return tuple(self._active_session_ids)
+        return tuple(self._active_sessions)
 
     async def close(self) -> None:
         self._closed = True
@@ -378,6 +378,23 @@ class LiveRunnerRegistration:
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         await self.close()
+
+    async def stop_session(self, session_id: str) -> None:
+        """Stop a reserved session using its cached token."""
+        session_id = session_id.strip()
+        token = self._active_sessions.get(session_id)
+        if not token:
+            raise LivepeerGatewayError(f"Live runner session {session_id!r} has no session token")
+        await _post_empty(
+            _join_endpoint(
+                self.orchestrator_url,
+                f"/runner/{quote(self.runner_id, safe='')}/session/{quote(session_id, safe='')}/stop",
+            ),
+            headers={"Livepeer-Session-Token": token},
+            timeout=self._timeout,
+        )
+        if self._active_sessions.get(session_id) == token:
+            self._release_session_id(session_id)
 
     async def create_trickle_channels(
         self,
@@ -570,8 +587,12 @@ class LiveRunnerRegistration:
 
         session_id = session_id.strip()
         typed_event = cast(Literal["reserved", "released"], event)
+        session_token = ""
         if typed_event == "reserved":
-            self._reserve_session_id(session_id)
+            token = message.get("session_token")
+            session_token = token.strip() if isinstance(token, str) else ""
+            if session_token or session_id not in self._active_sessions:
+                self._active_sessions[session_id] = session_token
         else:
             self._release_session_id(session_id)
 
@@ -585,6 +606,7 @@ class LiveRunnerRegistration:
             event=typed_event,
             timestamp=timestamp if isinstance(timestamp, str) else None,
             raw=message,
+            session_token=session_token,
         )
         try:
             result = callback(session_event)
@@ -593,14 +615,8 @@ class LiveRunnerRegistration:
         except Exception:
             _LOG.exception("Live runner %s callback failed for session %s", typed_event, session_id)
 
-    def _reserve_session_id(self, session_id: str) -> None:
-        if session_id not in self._active_session_ids:
-            self._active_session_ids.append(session_id)
-
     def _release_session_id(self, session_id: str) -> None:
-        try:
-            self._active_session_ids.remove(session_id)
-        except ValueError:
+        if self._active_sessions.pop(session_id, None) is None:
             _LOG.debug("Live runner session %s was already released", session_id)
 
 

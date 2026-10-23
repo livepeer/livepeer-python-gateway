@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `LiveRunnerRegistration.stop_session()` to stop reserved sessions
+- `LiveRunnerSessionEvent.session_token` field for session management
 - `call_runner(on_payment_session=...)` callback for each new payment session
 - `LivePaymentSession.manifest_id` for payment attribution
 - Flexible request body types on call_runner and selectors.

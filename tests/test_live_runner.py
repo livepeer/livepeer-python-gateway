@@ -857,7 +857,97 @@ class _FakeO2RReader:
         await asyncio.gather(self._task, return_exceptions=True)
 
 
+def _registration(*, runner_id: str = "runner-1", **kwargs) -> LiveRunnerRegistration:
+    return LiveRunnerRegistration(
+        orchestrator_url="http://localhost:8935",
+        secret="secret",
+        runner_id=runner_id,
+        runner_url="http://localhost:9000",
+        app="test",
+        price_info=LiveRunnerPriceInfo(0),
+        **kwargs,
+    )
+
+
 class TestLiveRunnerRegistration:
+    async def test_reserve_callback_can_stop_before_application_request(self) -> None:
+        released_events: list[LiveRunnerSessionEvent] = []
+
+        async def on_reserve(event: LiveRunnerSessionEvent) -> None:
+            assert event.session_token == "session-token"
+            await reg.stop_session(event.session_id)
+
+        reg = _registration(
+            runner_id="runner/1",
+            timeout=12.0,
+            on_session_reserve=on_reserve,
+            on_session_release=released_events.append,
+        )
+        reg.orchestrator_url = "https://service.example.com/api"
+        stop = mock.AsyncMock()
+        with mock.patch.object(live_runner, "_post_empty", stop):
+            await reg._handle_o2r_message(
+                {"event": "reserved", "session": " session/1 ", "session_token": " session-token "}
+            )
+            stop.assert_awaited_once_with(
+                "https://service.example.com/api/runner/runner%2F1/session/session%2F1/stop",
+                headers={"Livepeer-Session-Token": "session-token"},
+                timeout=12.0,
+            )
+            assert reg.active_session_ids == ()
+            assert released_events == []
+            await reg._handle_o2r_message({"event": "released", "session": "session/1"})
+
+        assert [event.session_id for event in released_events] == ["session/1"]
+        assert released_events[0].session_token == ""
+
+    async def test_stop_session_failure_retains_credentials(self) -> None:
+        reg = _registration()
+        await reg._handle_o2r_message(
+            {"event": "reserved", "session": "session-1", "session_token": "token"}
+        )
+        with (
+            mock.patch.object(live_runner, "_post_empty", side_effect=LivepeerHTTPError(503, "url", "unavailable")),
+            pytest.raises(LivepeerHTTPError),
+        ):
+            await reg.stop_session("session-1")
+        assert reg._active_sessions == {"session-1": "token"}
+
+    async def test_stop_session_preserves_replacement_reservation(self) -> None:
+        reg = _registration()
+        await reg._handle_o2r_message(
+            {"event": "reserved", "session": "session-1", "session_token": "old-token"}
+        )
+
+        async def replace_before_response(*args, **kwargs):
+            await reg._handle_o2r_message({"event": "released", "session": "session-1"})
+            await reg._handle_o2r_message(
+                {"event": "reserved", "session": "session-1", "session_token": "new-token"}
+            )
+
+        with mock.patch.object(live_runner, "_post_empty", side_effect=replace_before_response):
+            await reg.stop_session("session-1")
+        assert reg._active_sessions == {"session-1": "new-token"}
+
+    @pytest.mark.parametrize(
+        "token_fields", [None, {}, {"session_token": " "}],
+        ids=["unknown-session", "missing-token", "blank-token"],
+    )
+    async def test_stop_session_requires_token(
+        self, token_fields: dict[str, object] | None
+    ) -> None:
+        reg = _registration()
+        if token_fields is not None:
+            await reg._handle_o2r_message(
+                {"event": "reserved", "session": "session-1", **token_fields}
+            )
+        with (
+            mock.patch.object(live_runner, "_post_empty") as stop,
+            pytest.raises(LivepeerGatewayError, match="has no session token"),
+        ):
+            await reg.stop_session("session-1")
+        stop.assert_not_awaited()
+
     async def test_initial_heartbeat_starts_o2r_channel_reader_callback_once(
         self,
     ) -> None:
@@ -984,12 +1074,17 @@ class TestLiveRunnerRegistration:
                 {
                     "event": "reserved",
                     "session": "session-b",
+                    "session_token": "original-token",
                     "timestamp": "2026-05-20T17:00:00Z",
                 }
             )
             await on_event({"event": "reserved", "session": "session-a"})
+            await on_event(
+                {"event": "reserved", "session": "session-b", "session_token": "refreshed-token"}
+            )
             await on_event({"event": "reserved", "session": "session-b"})
             assert reg.active_session_ids == ("session-b", "session-a")
+            assert reg._active_sessions["session-b"] == "refreshed-token"
 
             await on_event(
                 {
@@ -1013,6 +1108,7 @@ class TestLiveRunnerRegistration:
         assert [event.session_id for event in sync_events] == [
             "session-b",
             "session-a",
+            "session-b",
             "session-b",
         ]
         assert sync_events[0].event == "reserved"
