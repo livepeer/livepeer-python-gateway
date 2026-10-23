@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, replace
-from typing import Any, Optional
+from typing import Any
 
 from .async_cache import async_lru_cache
 from .errors import (
@@ -21,7 +21,7 @@ PAYMENT_INTERVAL_S = 3.0
 @dataclass(frozen=True)
 class GetPaymentResponse:
     payment: str
-    seg_creds: Optional[str] = None
+    seg_creds: str | None = None
 
 
 @dataclass(frozen=True)
@@ -48,15 +48,15 @@ class SignerMaterial:
 class RemoteSignerError(LivepeerGatewayError):
     signer_url: str
     message: str
-    cause: Optional[BaseException] = None
+    cause: BaseException | None = None
 
     def __str__(self) -> str:
         return f"Remote signer error: {self.message} (url={self.signer_url})"
 
 
 def _freeze_headers(
-    headers: Optional[dict[str, str]],
-) -> Optional[frozenset[tuple[str, str]]]:
+    headers: dict[str, str] | None,
+) -> frozenset[tuple[str, str]] | None:
     """Convert a headers dict to a hashable cache key."""
     if headers is None:
         return None

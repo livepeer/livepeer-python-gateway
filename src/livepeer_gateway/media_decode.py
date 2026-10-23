@@ -5,7 +5,6 @@ import threading
 import time
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Optional, Union
 
 import av
 
@@ -14,11 +13,11 @@ import av
 class DecodedMediaFrame:
     kind: str
     stream_index: int
-    frame: Union[av.VideoFrame, av.AudioFrame]
-    pts: Optional[int]
-    time_base: Optional[Fraction]
+    frame: av.VideoFrame | av.AudioFrame
+    pts: int | None
+    time_base: Fraction | None
     # pts_time: presentation timestamp in seconds (pts * time_base). Not wall-clock time.
-    pts_time: Optional[float]
+    pts_time: float | None
     demuxed_at: float
     decoded_at: float
 
@@ -27,15 +26,15 @@ class DecodedMediaFrame:
 class VideoDecodedMediaFrame(DecodedMediaFrame):
     width: int
     height: int
-    pix_fmt: Optional[str]
+    pix_fmt: str | None
 
 
 @dataclass(frozen=True)
 class AudioDecodedMediaFrame(DecodedMediaFrame):
-    sample_rate: Optional[int]
-    layout: Optional[str]
-    format: Optional[str]
-    samples: Optional[int]
+    sample_rate: int | None
+    layout: str | None
+    format: str | None
+    samples: int | None
 
 
 @dataclass(frozen=True)
@@ -43,11 +42,11 @@ class DemuxedMediaPacket:
     kind: str
     stream_index: int
     packet: av.Packet
-    pts: Optional[int]
-    dts: Optional[int]
-    time_base: Optional[Fraction]
-    pts_time: Optional[float]
-    dts_time: Optional[float]
+    pts: int | None
+    dts: int | None
+    time_base: Fraction | None
+    pts_time: float | None
+    dts_time: float | None
     is_keyframe: bool
     size: int
     demuxed_at: float
@@ -120,7 +119,7 @@ class _BlockingByteStream:
     def __init__(self) -> None:
         # TODO: add backpressure (bounded queue + blocking feed) to avoid unbounded
         # memory growth if the decoder thread can't keep up with the producer.
-        self._queue: "queue.Queue[object]" = queue.Queue()
+        self._queue: queue.Queue[object] = queue.Queue()
         self._buffer = bytearray()
         self._closed = False
         self._total_chunks_fed = 0
@@ -207,7 +206,7 @@ class _DecoderError:
         self.error = error
 
 
-def _fraction_from_time_base(time_base: object) -> Optional[Fraction]:
+def _fraction_from_time_base(time_base: object) -> Fraction | None:
     numerator = getattr(time_base, "numerator", None)
     denominator = getattr(time_base, "denominator", None)
     if numerator is not None and denominator is not None:
@@ -221,7 +220,7 @@ def _fraction_from_time_base(time_base: object) -> Optional[Fraction]:
         return None
 
 
-def _time_from_pts(pts: Optional[int], time_base: Optional[Fraction]) -> Optional[float]:
+def _time_from_pts(pts: int | None, time_base: Fraction | None) -> float | None:
     if pts is None or time_base is None:
         return None
     try:
@@ -231,7 +230,7 @@ def _time_from_pts(pts: Optional[int], time_base: Optional[Fraction]) -> Optiona
 
 
 def _build_decoded_frame(
-    frame: Union[av.VideoFrame, av.AudioFrame],
+    frame: av.VideoFrame | av.AudioFrame,
     *,
     stream_index: int,
     demuxed_at: float,
@@ -280,7 +279,7 @@ def _stream_kind(packet: av.Packet) -> str:
     return "unknown"
 
 
-def _packet_time_base(packet: av.Packet) -> Optional[Fraction]:
+def _packet_time_base(packet: av.Packet) -> Fraction | None:
     time_base = getattr(packet, "time_base", None)
     if time_base is None:
         stream = getattr(packet, "stream", None)
@@ -313,7 +312,7 @@ def _build_demuxed_packet(
     )
 
 
-def _item_pts_time(item: object) -> Optional[float]:
+def _item_pts_time(item: object) -> float | None:
     if isinstance(item, (DecodedMediaFrame, DemuxedMediaPacket)):
         return item.pts_time
     return None
@@ -323,16 +322,16 @@ class _MpegTsOutputWorker:
     def __init__(self, *, thread_name: str) -> None:
         self._reader = _BlockingByteStream()
         # TODO: add backpressure here too (bounded queue) if callers are slow to consume.
-        self._output: "queue.Queue[object]" = queue.Queue()
+        self._output: queue.Queue[object] = queue.Queue()
         self._total_output_items_enqueued = 0
         self._total_output_items_dequeued = 0
         self._output_wait_s = 0.0
         # Aggregate source-PTS media-time watermarks across all streams for
         # output-queue telemetry. Best-effort snapshots updated from producer
         # (decoder thread) and consumer (get()) without per-op locks.
-        self._max_pts_time_enqueued: Optional[float] = None
-        self._max_pts_time_dequeued: Optional[float] = None
-        self._min_pts_time_dequeued: Optional[float] = None
+        self._max_pts_time_enqueued: float | None = None
+        self._max_pts_time_dequeued: float | None = None
+        self._min_pts_time_dequeued: float | None = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name=thread_name, daemon=True)
 
@@ -419,7 +418,7 @@ class MpegTsDecoder(_MpegTsOutputWorker):
         super().__init__(thread_name="MpegTsDecoder")
 
     def _run(self) -> None:
-        container: Optional[av.container.InputContainer] = None
+        container: av.container.InputContainer | None = None
         try:
             container = av.open(self._reader, format="mpegts", mode="r")
             for packet in container.demux():
@@ -459,7 +458,7 @@ class MpegTsPacketDemuxer(_MpegTsOutputWorker):
         super().__init__(thread_name="MpegTsPacketDemuxer")
 
     def _run(self) -> None:
-        container: Optional[av.container.InputContainer] = None
+        container: av.container.InputContainer | None = None
         try:
             container = av.open(self._reader, format="mpegts", mode="r")
             for packet in container.demux():
@@ -488,7 +487,7 @@ def is_decoder_end(item: object) -> bool:
     return item is _END
 
 
-def decoder_error(item: object) -> Optional[BaseException]:
+def decoder_error(item: object) -> BaseException | None:
     if isinstance(item, _DecoderError):
         return item.error
     return None

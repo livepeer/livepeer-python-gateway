@@ -9,7 +9,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import Optional, Set, Awaitable, Any, BinaryIO
+from typing import Any, BinaryIO
+from collections.abc import Awaitable
 
 import av
 from av.video.frame import PictureType
@@ -47,7 +48,7 @@ def _rescale_pts(pts: int, src_tb: Fraction, dst_tb: Fraction) -> int:
     return int(round(float((Fraction(pts) * src_tb) / dst_tb)))
 
 
-def _normalize_fps(fps: Optional[float]) -> int:
+def _normalize_fps(fps: float | None) -> int:
     if fps is None or not math.isfinite(fps) or fps <= 0:
         fps = 30.0
     return max(1, int(round(fps)))
@@ -69,7 +70,7 @@ class VideoOutputConfig:
     # Local queue depth for this track before frames are dropped.
     queue_size: int = 8
     # Target output FPS hint passed to the encoder.
-    fps: Optional[float] = None
+    fps: float | None = None
     # Target GOP/keyframe cadence used for segment boundaries.
     keyframe_interval_s: float = 2.0
     # FFmpeg/PyAV encoder name for this output stream.
@@ -96,9 +97,9 @@ class AudioOutputConfig:
     # FFmpeg/PyAV encoder name for this output stream.
     codec: str = "libopus"
     # Target output sample rate. None derives from first frame.
-    sample_rate: Optional[int] = None
+    sample_rate: int | None = None
     # Target output channel layout. None derives from first frame.
-    layout: Optional[str] = None
+    layout: str | None = None
     # Output sample format presented to the encoder.
     format: str = "flt"
 
@@ -218,12 +219,12 @@ class MediaPublishTrack:
 
     def __init__(
         self,
-        owner: "MediaPublish",
+        owner: MediaPublish,
         *,
         kind: str,
         config: VideoOutputConfig | AudioOutputConfig,
         index: int,
-        queue: "_FrameQueue",
+        queue: _FrameQueue,
         stats: dict[str, int],
     ) -> None:
         self._owner = owner
@@ -239,14 +240,14 @@ class MediaPublishTrack:
         self._label: str = ""
         self._stream: Any = None
         self._pending_frames: list[av.VideoFrame | av.AudioFrame] = []
-        self._first_frame: Optional[av.VideoFrame | av.AudioFrame] = None
-        self._audio_sample_rate: Optional[int] = None
-        self._audio_layout: Optional[str] = None
+        self._first_frame: av.VideoFrame | av.AudioFrame | None = None
+        self._audio_sample_rate: int | None = None
+        self._audio_layout: str | None = None
         self._dropped_timeout: bool = False
-        self._last_out_pts: Optional[int] = None
-        self._wallclock_start: Optional[float] = None
-        self._next_out_pts: Optional[int] = None
-        self._last_keyframe_time: Optional[float] = None
+        self._last_out_pts: int | None = None
+        self._wallclock_start: float | None = None
+        self._next_out_pts: int | None = None
+        self._last_keyframe_time: float | None = None
         self._stopped: bool = False
         self._audio_resampler: Any = None
 
@@ -290,9 +291,9 @@ class MediaPublish:
             config.mime_type,
         )
 
-        self._thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._segment_tasks: Set[asyncio.Task[None]] = set()
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._segment_tasks: set[asyncio.Task[None]] = set()
         self._segment_stream_lock = asyncio.Lock()
         self._start_lock = threading.Lock()
         self._track_wait_timeout_s = float(config.track_wait_timeout_s)
@@ -306,10 +307,10 @@ class MediaPublish:
             raise ValueError(
                 "MediaPublishConfig.segment_post_idle_timeout_s must be > 0"
             )
-        self._first_frame_arrived_at: Optional[float] = None
+        self._first_frame_arrived_at: float | None = None
 
         self._closed = False
-        self._error: Optional[BaseException] = None
+        self._error: BaseException | None = None
         self._started_at = time.time()
         self._stats: dict[str, int] = {
             "segments_started": 0,
@@ -380,9 +381,9 @@ class MediaPublish:
         self._next_state_index = 0
 
         # Encoder state (owned by the encoder thread).
-        self._container: Optional[av.container.OutputContainer] = None
+        self._container: av.container.OutputContainer | None = None
         self._active_segment: Any = None
-        self._active_segment_started_at: Optional[float] = None
+        self._active_segment_started_at: float | None = None
 
         # Drain bytes for the rest of the current PyAV segment.
         self._segment_draining: bool = False
@@ -393,7 +394,7 @@ class MediaPublish:
     def tracks(self) -> tuple[MediaPublishTrack, ...]:
         return tuple(self._tracks)
 
-    def get_tracks(self, kind: Optional[str] = None) -> list[MediaPublishTrack]:
+    def get_tracks(self, kind: str | None = None) -> list[MediaPublishTrack]:
         if kind is None:
             return list(self._tracks)
         normalized = kind.strip().lower()
@@ -599,7 +600,7 @@ class MediaPublish:
             for track in self._tracks:
                 track._stream = None
 
-    def _next_encoder_item(self) -> Optional[tuple[MediaPublishTrack, object]]:
+    def _next_encoder_item(self) -> tuple[MediaPublishTrack, object] | None:
         active = [t for t in self._tracks if not t._stopped]
         if not active:
             return None
@@ -890,8 +891,8 @@ class MediaPublish:
     def _compute_pts(
         self,
         track: MediaPublishTrack,
-        pts: Optional[int],
-        time_base: Optional[Fraction],
+        pts: int | None,
+        time_base: Fraction | None,
     ) -> tuple[float, int]:
         if pts is not None and time_base is not None:
             tb = _fraction_from_time_base(time_base)
@@ -979,11 +980,11 @@ class MediaPublish:
         # Timeout to rotate trickle segments if no bytes from PyAV.
         idle_timeout_s = self._segment_post_idle_timeout_s
 
-        segment_seq: Optional[int] = None
+        segment_seq: int | None = None
 
         # Keep one read in flight across idle timeouts so we eventually
         # receive late bytes, if any
-        pending_read: Optional[asyncio.Task[bytes]] = None
+        pending_read: asyncio.Task[bytes] | None = None
 
         # True after we've read payload bytes from this PyAV segment.
         pipe_past_keyframe = False
@@ -1006,7 +1007,7 @@ class MediaPublish:
                             asyncio.shield(pending_read),
                             timeout=idle_timeout_s,
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         # NB: This intentionally keeps trickle rolling
                         # accommodate long stalls / inactivity from the
                         # PyAV end, eg during model loading
@@ -1181,7 +1182,7 @@ class _FrameQueue:
         self._stats = stats
         self._debt_skip = debt_skip
         self._time_debt_s = 0.0
-        self._last_encoded_media_time_s: Optional[float] = None
+        self._last_encoded_media_time_s: float | None = None
         self._stop_after_current = False
         self._stop_enqueued = False
         # Source-PTS media-time watermarks for queue-span telemetry. These are
@@ -1189,9 +1190,9 @@ class _FrameQueue:
         # are not locked per op. They are only meaningful for frames that
         # expose pts + time_base; STOP sentinels and pts-less frames are
         # skipped.
-        self._last_put_media_time_s: Optional[float] = None
-        self._first_get_media_time_s: Optional[float] = None
-        self._last_get_media_time_s: Optional[float] = None
+        self._last_put_media_time_s: float | None = None
+        self._first_get_media_time_s: float | None = None
+        self._last_get_media_time_s: float | None = None
 
     def resize(self, maxsize: int) -> None:
         if not isinstance(maxsize, int) or isinstance(maxsize, bool):
@@ -1235,10 +1236,10 @@ class _FrameQueue:
         if item is not _STOP:
             self._stats["frames_dropped_overflow"] += 1
 
-    def get_nowait(self) -> Optional[object]:
+    def get_nowait(self) -> object | None:
         return self.get(timeout=0.0)
 
-    def get(self, timeout: Optional[float] = None) -> Optional[object]:
+    def get(self, timeout: float | None = None) -> object | None:
         if self._stop_after_current:
             self._stop_after_current = False
             return _STOP
@@ -1357,7 +1358,7 @@ class _FrameQueue:
         return media_advance_s >= self._time_debt_s
 
     @staticmethod
-    def _frame_media_time_s(frame: object) -> Optional[float]:
+    def _frame_media_time_s(frame: object) -> float | None:
         pts = getattr(frame, "pts", None)
         time_base = getattr(frame, "time_base", None)
         if pts is None or time_base is None:

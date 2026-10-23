@@ -12,7 +12,6 @@ import time
 from enum import Enum
 from contextlib import suppress
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection
-from typing import Optional
 
 from .errors import LivepeerGatewayError
 from .media_decode import (
@@ -71,8 +70,8 @@ class MediaOutputStats:
     # decoder: decode pipeline queue metrics, including the distinction between
     # queued_bytes in the cross-thread input queue and buffered_bytes already
     # staged in the internal bytearray used to satisfy read() calls.
-    decoder: Optional[DecoderQueueStats]
-    subscriber: Optional[TrickleSubscriberStats]
+    decoder: DecoderQueueStats | None
+    subscriber: TrickleSubscriberStats | None
 
     def __str__(self) -> str:
         return (
@@ -140,7 +139,7 @@ class MediaOutput:
         *,
         start_seq: int = -2,
         max_retries: int = 5,
-        max_segment_bytes: Optional[int] = None,
+        max_segment_bytes: int | None = None,
         connection_close: bool = False,
         chunk_size: int = 64 * 1024,
         max_segments: int = 5,
@@ -165,15 +164,15 @@ class MediaOutput:
         self.on_frame = on_frame
         self.on_packet = on_packet
 
-        self._sub: Optional[TrickleSubscriber] = None
+        self._sub: TrickleSubscriber | None = None
         self._segments: list[SegmentReader] = []
         self._lock = asyncio.Lock()
         self._eos = False
         self._next_local_seq = 0
         self._base_seq = 0
         self._started_at = time.time()
-        self._processor: Optional[MpegTsDecoder | MpegTsPacketDemuxer] = None
-        self._last_decoder_stats: Optional[DecoderQueueStats] = None
+        self._processor: MpegTsDecoder | MpegTsPacketDemuxer | None = None
+        self._last_decoder_stats: DecoderQueueStats | None = None
         self._bytes_callback_task: asyncio.Task[None] | None = None
         self._frame_callback_task: asyncio.Task[None] | None = None
         self._packet_callback_task: asyncio.Task[None] | None = None
@@ -481,7 +480,7 @@ class MediaOutput:
     async def _next_segment(
         self,
         seq: int,
-    ) -> Optional[SegmentReader]:
+    ) -> SegmentReader | None:
         """
         Return the segment at seq, lazily advancing the subscriber if needed.
         """
@@ -571,7 +570,7 @@ class MediaOutput:
         if self._callback_errors:
             raise self._callback_errors[0]
 
-    async def __aenter__(self) -> "MediaOutput":
+    async def __aenter__(self) -> MediaOutput:
         self.start_callbacks()
         return self
 
@@ -605,7 +604,7 @@ class MediaOutput:
         )
 
 
-def _normalize_content_type(value: Optional[str]) -> Optional[str]:
+def _normalize_content_type(value: str | None) -> str | None:
     if value is None:
         return None
     return value.split(";", 1)[0].strip().lower()
@@ -624,7 +623,7 @@ def _normalize_accepted_content_types(
     return normalized
 
 
-def _require_content_type(value: Optional[str], accepted: frozenset[str]) -> None:
+def _require_content_type(value: str | None, accepted: frozenset[str]) -> None:
     normalized = _normalize_content_type(value)
     if normalized not in accepted:
         raise LivepeerGatewayError(

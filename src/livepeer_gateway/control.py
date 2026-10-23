@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from .trickle_publisher import (
     TricklePublisher,
@@ -23,7 +23,7 @@ class Control:
         self.control_url = control_url
         self._publisher = TricklePublisher(control_url, mime_type)
         self._keepalive_interval_s = 10.0
-        self._keepalive_task: Optional[asyncio.Task[None]] = None
+        self._keepalive_task: asyncio.Task[None] | None = None
 
     async def write(self, msg: dict[str, Any]) -> None:
         """
@@ -58,7 +58,7 @@ class Control:
                 _LOG.exception("Control keepalive task failed during shutdown")
         await self._publisher.close()
 
-    def start_keepalive(self) -> Optional[asyncio.Task[None]]:
+    def start_keepalive(self) -> asyncio.Task[None] | None:
         """
         Start periodic keepalive messages.
 

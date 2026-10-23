@@ -267,7 +267,7 @@ class ChannelReader(_ChannelReaderCallback):
         """
         url = self.events_url
 
-        async def _read_all(segment: "SegmentReader", *, chunk_size: int = 33 * 1024) -> bytes:
+        async def _read_all(segment: SegmentReader, *, chunk_size: int = 33 * 1024) -> bytes:
             parts = []
             try:
                 reader = segment.make_reader()

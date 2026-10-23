@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Protocol
 
 import aiohttp
 
@@ -51,12 +51,12 @@ class _SegmentBuffer:
     """
     source: AsyncByteSource
     producer_read_size: int = 32 * 1024   # size of each source.read request
-    max_bytes: Optional[int] = None       # safety bound on TOTAL buffered bytes
+    max_bytes: int | None = None       # safety bound on TOTAL buffered bytes
 
     def __post_init__(self) -> None:
         self._buf = bytearray()
         self._eof = False
-        self._error: Optional[BaseException] = None
+        self._error: BaseException | None = None
         self._stats: dict[str, int] = {
             "chunks_read": 0,
             "bytes_read": 0,
@@ -111,7 +111,7 @@ class _SegmentBuffer:
 
                 self._cond.notify_all()
 
-    async def _read_for(self, cursor: int, n: int) -> Optional[bytes]:
+    async def _read_for(self, cursor: int, n: int) -> bytes | None:
         """
         Return up to n bytes starting at cursor.
         Returns None on EOF/closed.
@@ -162,7 +162,7 @@ class _SegmentCursor:
         self._w = writer
         self._pos = 0
 
-    async def read(self, chunk_size: int = 32 * 1024) -> Optional[bytes]:
+    async def read(self, chunk_size: int = 32 * 1024) -> bytes | None:
         out = await self._w._read_for(self._pos, chunk_size)
         if out is None:
             return None
@@ -181,7 +181,7 @@ class SegmentReader:
         self,
         response: aiohttp.ClientResponse,
         *,
-        max_bytes: Optional[int] = 10 * 1024 * 1024,
+        max_bytes: int | None = 10 * 1024 * 1024,
         producer_read_size: int = 32 * 1024,
     ):
         self.response = response
@@ -208,7 +208,7 @@ class SegmentReader:
         # Header-based end-of-segment marker (your existing behavior).
         return self.response.headers.get("Lp-Trickle-Closed") is not None
 
-    def headers(self) -> "aiohttp.typedefs.LooseHeaders":
+    def headers(self) -> aiohttp.typedefs.LooseHeaders:
         return self.response.headers
 
     async def close(self) -> None:

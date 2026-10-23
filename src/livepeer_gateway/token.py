@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from typing import Any, Optional
+from typing import Any
 
 from .errors import LivepeerGatewayError
 
@@ -43,7 +43,7 @@ def parse_token(token: str) -> dict[str, Any]:
     if orchestrators is not None and not isinstance(orchestrators, list):
         raise LivepeerGatewayError("Invalid token: orchestrators must be an array of strings")
 
-    normalized_orchestrators: Optional[list[str]] = None
+    normalized_orchestrators: list[str] | None = None
     if isinstance(orchestrators, list):
         normalized_orchestrators = []
         for item in orchestrators:

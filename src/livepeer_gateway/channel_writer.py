@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 from .trickle_publisher import SegmentWriter, TricklePublisher
 
@@ -31,12 +31,12 @@ class JSONLWriter:
         self.url = url
         self._publisher = TricklePublisher(url, mime_type)
         self._segment_interval = segment_interval
-        self._writer: Optional[SegmentWriter] = None
+        self._writer: SegmentWriter | None = None
         self._lock = asyncio.Lock()
-        self._rotation_task: Optional[asyncio.Task[None]] = None
+        self._rotation_task: asyncio.Task[None] | None = None
         self.start_rotation()
 
-    def start_rotation(self) -> Optional[asyncio.Task[None]]:
+    def start_rotation(self) -> asyncio.Task[None] | None:
         """
         Start periodic segment rotation if running in an event loop.
 

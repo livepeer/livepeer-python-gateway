@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 import logging
 import time
-from typing import Optional, AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable
 
 import aiohttp
 
@@ -63,8 +63,8 @@ class TrickleSegmentWriteError(TricklePublishError):
         message: str,
         *,
         seq: int,
-        url: Optional[str] = None,
-        status: Optional[int] = None,
+        url: str | None = None,
+        status: int | None = None,
     ) -> None:
         super().__init__(message)
         self.seq = seq
@@ -80,7 +80,7 @@ class TricklePublisherTerminalError(TricklePublishError):
         message: str,
         *,
         consecutive_failures: int,
-        url: Optional[str] = None,
+        url: str | None = None,
     ) -> None:
         super().__init__(message)
         self.consecutive_failures = consecutive_failures
@@ -116,19 +116,19 @@ class TricklePublisher:
         self.seq = int(start_seq)
 
         # Lazily initialized async runtime bits (safe to construct in sync code).
-        self._lock: Optional[asyncio.Lock] = None
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._lock: asyncio.Lock | None = None
+        self._session: aiohttp.ClientSession | None = None
         self._closing = False
         self._closed = False
 
         # Preconnected writer state for the next segment.
-        self._next_state: Optional[_SegmentPostState] = None
-        self._preconnect_task_handle: Optional[asyncio.Task[None]] = None
+        self._next_state: _SegmentPostState | None = None
+        self._preconnect_task_handle: asyncio.Task[None] | None = None
         self._post_tasks: set[asyncio.Task[None]] = set()
 
         # Terminal failure for the whole publisher. Once set, no new segments
         # should be opened or written.
-        self._terminal_error: Optional[TricklePublisherTerminalError] = None
+        self._terminal_error: TricklePublisherTerminalError | None = None
         self._consecutive_failures: int = 0
         self._started_at = time.time()
         self._stats: dict[str, int] = {
@@ -147,7 +147,7 @@ class TricklePublisher:
             "empty_segments_completed": 0,
         }
 
-    async def __aenter__(self) -> "TricklePublisher":
+    async def __aenter__(self) -> TricklePublisher:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> None:
@@ -201,9 +201,9 @@ class TricklePublisher:
         assert self._session is not None
 
         seq = seg_state.seq
-        final_exc: Optional[TrickleSegmentWriteError] = None
-        final_status: Optional[int] = None
-        final_body: Optional[str] = None
+        final_exc: TrickleSegmentWriteError | None = None
+        final_status: int | None = None
+        final_body: str | None = None
 
         for attempt in range(2):
             self._stats["post_attempts"] += 1
@@ -359,7 +359,7 @@ class TricklePublisher:
             _LOG.warning("Trickle /next request failed", exc_info=True)
         return -1
 
-    async def next(self) -> "SegmentWriter":
+    async def next(self) -> SegmentWriter:
         # Fail fast via the publisher error hierarchy, not a generic RuntimeError.
         if self._closing or self._closed:
             raise TricklePublisherTerminalError(
@@ -545,9 +545,9 @@ class _SegmentPostState:
 
     def __init__(self, seq: int, *, send_reset: bool = False) -> None:
         self.seq = seq
-        self.queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=1)
+        self.queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=1)
         # Failure for this one segment only, not necessarily terminal
-        self.error: Optional[TrickleSegmentWriteError] = None
+        self.error: TrickleSegmentWriteError | None = None
         self.data_consumed: bool = False
         self.send_reset: bool = send_reset
 
@@ -558,9 +558,9 @@ class SegmentWriter:
         self,
         seg_state: _SegmentPostState,
         *,
-        error_getter: Optional[Callable[[], Optional[TricklePublisherTerminalError]]] = None,
-        on_write_bytes: Optional[Callable[[int], None]] = None,
-        on_write_timeout: Optional[Callable[[], None]] = None,
+        error_getter: Callable[[], TricklePublisherTerminalError | None] | None = None,
+        on_write_bytes: Callable[[int], None] | None = None,
+        on_write_timeout: Callable[[], None] | None = None,
     ):
         self._seg_state = seg_state
         self.queue = seg_state.queue
@@ -583,7 +583,7 @@ class SegmentWriter:
             await asyncio.wait_for(self.queue.put(data), timeout=_SEGMENT_QUEUE_PUT_TIMEOUT_S)
             if self._on_write_bytes is not None:
                 self._on_write_bytes(len(data))
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             if self._on_write_timeout is not None:
                 self._on_write_timeout()
             if self._error_getter is not None:
@@ -605,7 +605,7 @@ class SegmentWriter:
         except BaseException:
             _LOG.warning("Trickle segment close suppressed seq=%s", self._seq, exc_info=True)
 
-    async def __aenter__(self) -> "SegmentWriter":
+    async def __aenter__(self) -> SegmentWriter:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> None:

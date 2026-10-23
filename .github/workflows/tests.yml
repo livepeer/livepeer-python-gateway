@@ -11,8 +11,6 @@ permissions:
 
 jobs:
   ruff:
-    # disabled until after a repo-wide ruff pass
-    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

@@ -4,7 +4,6 @@ import asyncio
 from dataclasses import dataclass
 import logging
 import time
-from typing import Optional
 
 import aiohttp
 
@@ -61,7 +60,7 @@ class TrickleSubscriber:
         start_seq: int = -2,
         max_retries: int = 5,
         connection_close: bool = False,
-        max_bytes: Optional[int] = None,
+        max_bytes: int | None = None,
     ):
         if max_bytes is not None and max_bytes <= 0:
             raise ValueError("max_bytes must be > 0")
@@ -71,13 +70,13 @@ class TrickleSubscriber:
         self._connection_close = connection_close
         self._max_bytes = max_bytes
 
-        self._pending_get: Optional[aiohttp.ClientResponse] = None
-        self._lock: Optional[asyncio.Lock] = None
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._pending_get: aiohttp.ClientResponse | None = None
+        self._lock: asyncio.Lock | None = None
+        self._session: aiohttp.ClientSession | None = None
         self._errored = False
         self._closing = False
         self._closed = False
-        self._prefetch_task: Optional[asyncio.Task[None]] = None
+        self._prefetch_task: asyncio.Task[None] | None = None
         self._started_at = time.time()
         self._stats: dict[str, int] = {
             "get_attempts": 0,
@@ -91,7 +90,7 @@ class TrickleSubscriber:
             "latest_seq": start_seq,
         }
 
-    async def __aenter__(self) -> "TrickleSubscriber":
+    async def __aenter__(self) -> TrickleSubscriber:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> None:
@@ -110,7 +109,7 @@ class TrickleSubscriber:
         return f"{self.base_url}/{seq}"
 
     @staticmethod
-    def _latest_seq(headers: "aiohttp.typedefs.LooseHeaders", current_seq: int) -> int:
+    def _latest_seq(headers: aiohttp.typedefs.LooseHeaders, current_seq: int) -> int:
         latest_header = headers.get("Lp-Trickle-Latest")
         if latest_header is None:
             return current_seq
@@ -119,7 +118,7 @@ class TrickleSubscriber:
         except ValueError:
             return current_seq
 
-    async def _preconnect(self) -> Optional[aiohttp.ClientResponse]:
+    async def _preconnect(self) -> aiohttp.ClientResponse | None:
         """
         Preconnect to the server by making a GET request to fetch the next segment.
 
@@ -203,7 +202,7 @@ class TrickleSubscriber:
         self._errored = True
         return None
 
-    async def next(self) -> Optional["SegmentReader"]:
+    async def next(self) -> SegmentReader | None:
         """Retrieve data from the current segment and set up the next segment concurrently."""
         if self._closing or self._closed:
             return None
