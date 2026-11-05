@@ -10,7 +10,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field, replace
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import (
     Any,
     Literal,
@@ -26,10 +26,9 @@ from urllib.parse import quote, urlparse, urlunparse
 import aiohttp
 from aiohttp.helpers import parse_mimetype
 
-from ._http_continue import _close_response
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
-from .http import _post_empty, _request_body, open_stream, post_json, request_json
+from .http import _close_response, _post_empty, _request_body, open_stream, post_json, request_json
 from .remote_signer import (
     LivePaymentChallenge,
     LivePaymentSession,
@@ -843,7 +842,10 @@ async def call_runner(
     send raw data. ``content_type`` overrides the default ``application/json``
     for dictionaries or ``application/octet-stream`` for other bodies.
     Omitted/None payloads send an empty body. Bare files and async byte iterables
-    use StreamPayload defaults (100-continue and bounded replay buffering).
+    use StreamPayload defaults (bounded replay buffering). For single-shot,
+    on-chain runners, an empty request acquires the payment challenge before
+    the source is read. A rejected on-chain upload may still consume input, so
+    retries require replayability.
     """
     state = _stream_state(payload)
     owned = state is not None and not isinstance(payload, _StreamState)
@@ -853,6 +855,7 @@ async def call_runner(
         if not runner_url:
             raise LivepeerGatewayError("Live runner call requires runner_url")
         payment_type = _runner_payment_type(runner, payment_unit) if signer_url else ""
+        probe_for_payment = state is not None and _is_onchain_single_shot(runner)
         max_price: LiveRunnerPriceInfo | None = None
         if signer_url and runner is not None and runner.price_info is not None:
             max_price = _pad_runner_price(runner.price_info)
@@ -907,6 +910,21 @@ async def call_runner(
                 needs_ongoing_funding = payment_type == "live"
 
             try:
+                if probe_for_payment and challenge is None:
+                    state.require_replayable()
+                    # A complete empty request can traverse tunnels without an
+                    # early continuation response releasing the upload source.
+                    await _request_body(
+                        runner_url,
+                        method=method,
+                        headers=request_headers,
+                        timeout=timeout,
+                        allow_redirects=False,
+                        read_response_body=False,
+                    )
+                    raise LivepeerGatewayError(
+                        f"Live runner payment challenge request expected HTTP 402 (url={runner_url})"
+                    )
                 if stream:
                     # Payment challenges are handled before returning a live response.
                     session, resp = await open_stream(
@@ -980,7 +998,7 @@ async def call_runner(
                 if e.status_code != 402:
                     raise
                 if not signer_url:
-                    raise LivepeerGatewayError("Live runner paid call requires signer_url") from e
+                    raise LivepeerGatewayError("Live runner on-chain call requires signer_url") from e
                 if state is not None:
                     state.require_replayable(e)
                 challenge = _parse_runner_payment_challenge(e)
@@ -1038,6 +1056,16 @@ async def _stop_funding(task: asyncio.Task[None] | None) -> None:
         task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+def _is_onchain_single_shot(runner: LiveRunnerInstance | None) -> bool:
+    if runner is None or runner.mode != "single-shot" or runner.price_info is None:
+        return False
+    try:
+        price = Decimal(str(runner.price_info.price).strip())
+    except InvalidOperation:
+        return False
+    return price.is_finite() and price > 0
 
 
 def _runner_payment_type(
