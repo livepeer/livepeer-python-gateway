@@ -12,9 +12,9 @@ from collections.abc import AsyncIterable, AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any, BinaryIO
 
+import aiohttp
 from aiohttp.payload import Payload
 
-from ._http_continue import _cancel_writer
 from .errors import LivepeerGatewayError
 
 _LOG = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ _CHUNK_SIZE = 64 * 1024
 
 @dataclass(frozen=True, kw_only=True)
 class StreamPayload:
-    """A caller-owned source with 100-continue and bounded replay buffering.
+    """A caller-owned source with bounded replay buffering.
 
     Limits are decimal bytes. Overflow or storage failure disables later retries
     without interrupting the upload. Seekable files rewind instead of buffering,
@@ -31,7 +31,6 @@ class StreamPayload:
     """
 
     source: AsyncIterable[bytes] | BinaryIO
-    expect100: bool = True
     retry_buffer: bool = True
     retry_buffer_memory_limit: int = 25_000_000
     retry_buffer_limit: int = 250_000_000
@@ -68,6 +67,17 @@ async def _file_io[T](operation: Callable[[], T], *, threaded: bool = True) -> T
         with contextlib.suppress(Exception):
             await task
         raise
+
+
+async def _cancel_writer(writer: asyncio.Task[None] | None) -> None:
+    if writer is not None:
+        writer.cancel()
+        # aiohttp 3.9 tries write_eof() on cancellation. Its failure after the
+        # peer closes must not mask a final response that was already received.
+        with contextlib.suppress(
+            asyncio.CancelledError, ConnectionError, aiohttp.ClientError
+        ):
+            await writer
 
 
 class _StreamState:

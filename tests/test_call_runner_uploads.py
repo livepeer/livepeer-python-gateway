@@ -11,6 +11,7 @@ import pytest
 
 from livepeer_gateway import (
     LiveRunnerInstance,
+    LiveRunnerPriceInfo,
     RunnerSelectionCursor,
     StreamPayload,
     call_runner,
@@ -20,6 +21,7 @@ from livepeer_gateway.errors import (
     LivepeerGatewayError,
     LivepeerHTTPError,
     NoRunnerAvailableError,
+    SignerRefreshRequired,
 )
 
 
@@ -89,10 +91,14 @@ async def serve(handler):
         raise errors[0]
 
 
-async def headers(reader):
+async def headers(reader, *, expected_request=None):
     raw = await reader.readuntil(b"\r\n\r\n")
     lines = raw.decode().split("\r\n")
-    return dict(line.split(": ", 1) for line in lines[1:] if line)
+    if expected_request is not None:
+        assert lines[0] == expected_request
+    result = dict(line.split(": ", 1) for line in lines[1:] if line)
+    assert "Expect" not in result
+    return result
 
 
 async def body(reader, request_headers):
@@ -132,11 +138,6 @@ async def respond(writer, status=200, data=None, *, fragment=False, location=Non
         await writer.drain()
 
 
-async def allow_upload(writer):
-    writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
-    await writer.drain()
-
-
 class Source:
     def __init__(self, *chunks):
         self.chunks = iter(chunks)
@@ -159,8 +160,11 @@ class Source:
         self.closed = True
 
 
-def candidate(url):
-    return LiveRunnerInstance(url, "test", "runner", "single-shot", url, {})
+def candidate(url, *, price=None, mode="single-shot"):
+    return LiveRunnerInstance(
+        url, "test", "runner", mode, url, {},
+        price_info=LiveRunnerPriceInfo(price, "wei", "fixed") if price is not None else None,
+    )
 
 
 CUSTOM_TYPE = "application/vnd.test+json; charset=utf-8"
@@ -186,14 +190,13 @@ CUSTOM_TYPE = "application/vnd.test+json; charset=utf-8"
 async def test_request_bodies(kwargs, expected, content_type, stream):
     async def handler(reader, writer):
         request_headers = await headers(reader)
-        assert "Expect" not in request_headers
         assert request_headers["Accept"] == "*/*"
         assert request_headers.get("Content-Type") == content_type
         assert await body(reader, request_headers) == expected
         await respond(writer)
 
     async with serve(handler) as url:
-        result = await call_runner(url, stream=stream, **kwargs)
+        result = await call_runner(url, runner=candidate(url, price=10), stream=stream, **kwargs)
         if stream:
             async with result:
                 assert json.loads(b"".join([chunk async for chunk in result.aiter_bytes()])) == {"ok": True}
@@ -202,40 +205,47 @@ async def test_request_bodies(kwargs, expected, content_type, stream):
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_early_payment_challenge_does_not_touch_source(
-    stream, signer, no_loop_errors
-):
+@pytest.mark.parametrize("refresh", [False, True])
+async def test_payment_challenge_does_not_touch_source(stream, refresh, signer, no_loop_errors):
     source = Source(b"one", b"two")
     attempts = 0
     sessions = []
 
+    async def sign(*args, **kwargs):
+        assert source.iterations == source.reads == 0
+        if refresh and signer.await_count == 1:
+            raise SignerRefreshRequired("refresh")
+        return signer.return_value
+
+    signer.side_effect = sign
+
     async def handler(reader, writer):
         nonlocal attempts
-        request_headers = await headers(reader)
+        request_headers = await headers(reader, expected_request="PATCH /upload?model=test HTTP/1.1")
         attempts += 1
-        assert request_headers["Expect"] == "100-continue"
-        if attempts == 1:
+        assert request_headers["Livepeer-Payer-Address"] == "payer"
+        if "Livepeer-Payment" not in request_headers:
             assert source.iterations == source.reads == 0
+            assert request_headers["Content-Length"] == "0"
+            assert "Transfer-Encoding" not in request_headers
+            assert await body(reader, request_headers) == b""
+            writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+            await writer.drain()
             await respond(writer, 402, CHALLENGE, fragment=True)
             assert await reader.read() == b""
             return
         assert request_headers["Livepeer-Payment"] == "paid"
+        assert request_headers["Livepeer-Segment"] == "segment"
         assert [session.manifest_id for session in sessions] == [CHALLENGE["manifest_id"]]
-        assert source.iterations == source.reads == 0
-        await allow_upload(writer)
         assert await body(reader, request_headers) == b"onetwo"
         await respond(writer)
 
     async with serve(handler) as url:
-        # Cancelling the upload writer as soon as final headers arrive can
-        # discard a fragmented 402 body on newer aiohttp. Bound the whole test
-        # so a regression fails rather than waiting forever for payment JSON.
         result = await asyncio.wait_for(
             call_runner(
-                url,
-                payload=StreamPayload(source=source, retry_buffer=False),
+                url + "/upload?model=test", runner=candidate("http://unused", price="10"),
+                payload=StreamPayload(source=source, retry_buffer=False), method="PATCH",
                 signer_url="http://signer.example",
-                payment_unit="fixed",
                 on_payment_session=sessions.append,
                 stream=stream,
             ),
@@ -243,16 +253,17 @@ async def test_early_payment_challenge_does_not_touch_source(
         )
         if stream:
             await result.aclose()
-    assert attempts == 2
+    assert attempts == (3 if refresh else 2)
     assert source.reads == 3
     assert not source.closed
-    signer.assert_awaited_once()
+    assert signer.await_count == (2 if refresh else 1)
     payment_request = signer.call_args.args[1]
     assert payment_request["orchestrator"] == CHALLENGE["payment_params"]
     assert payment_request["ManifestID"] == CHALLENGE["manifest_id"]
+    assert payment_request["maxPrice"] == {"price": 10.12, "currency": "wei", "unit": "fixed"}
 
 
-@pytest.mark.parametrize("status,kind", [(402, "nonseekable"), (503, "iterator"), (307, "file")])
+@pytest.mark.parametrize("status,kind", [(402, "nonseekable"), (503, "iterator"), (307, "file"), (200, "iterator")])
 async def test_early_rejection_preserves_source_for_next_candidate(tmp_path, status, kind):
     class NonSeekable(io.BytesIO):
         def seekable(self):
@@ -277,21 +288,20 @@ async def test_early_rejection_preserves_source_for_next_candidate(tmp_path, sta
                 assert source.tell() == (5 if kind == "file" else 0)
 
         async def reject(reader, writer):
-            await headers(reader)
+            request_headers = await headers(reader)
+            assert await body(reader, request_headers) == b""
             assert_unread()
             await respond(writer, status, location=second if status == 307 else None)
             assert await reader.read() == b""
 
         async def accept(reader, writer):
             request_headers = await headers(reader)
-            assert_unread()
-            await allow_upload(writer)
             assert await body(reader, request_headers) == b"body"
             await respond(writer)
 
         async with serve(reject) as first, serve(accept) as second:
             payload = source if kind == "file" else StreamPayload(source=source, retry_buffer=False)
-            async with RunnerSelectionCursor([candidate(first), candidate(second)], body=payload) as cursor:
+            async with RunnerSelectionCursor([candidate(first, price=10), candidate(second)], body=payload) as cursor:
                 result = await cursor.next()
                 assert result.data == {"ok": True} and result.runner_url == second
                 assert len(cursor.rejections) == 1
@@ -299,35 +309,62 @@ async def test_early_rejection_preserves_source_for_next_candidate(tmp_path, sta
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_expect_timeout_aborts_without_consumption(stream, no_loop_errors):
+@pytest.mark.parametrize("status,match", [(None, "failed to reach endpoint"), (200, "expected HTTP 402")])
+async def test_incomplete_challenge_leaves_source_unread(stream, status, match, no_loop_errors):
     source = Source(b"never")
 
     async def handler(reader, writer):
-        await headers(reader)
+        assert await body(reader, await headers(reader)) == b""
+        if status == 200:
+            writer.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+            await writer.drain()
         assert await reader.read() == b""
 
     async with serve(handler) as url:
-        with pytest.raises(LivepeerGatewayError):
+        with pytest.raises(LivepeerGatewayError, match=match):
             await asyncio.wait_for(
-                call_runner(url, payload=source, stream=stream, timeout=0.05), 1
+                call_runner(
+                    runner=candidate(url, price=10), payload=source, stream=stream,
+                    timeout=0.05 if status is None else 10,
+                ),
+                1,
             )
     assert source.iterations == source.reads == 0
     assert not source.closed
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_expect_can_be_disabled(stream):
+async def test_closed_source_is_rejected_before_challenge(stream, signer):
+    source = io.BytesIO(b"data")
+    source.close()
+    with mock.patch.object(live_runner, "_request_body", new_callable=mock.AsyncMock) as request:
+        with pytest.raises(LivepeerGatewayError, match="no longer replayable"):
+            await call_runner(
+                runner=candidate("http://unused", price=10), payload=source,
+                signer_url="http://signer.example", stream=stream,
+            )
+        request.assert_not_called()
+    signer.assert_not_called()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("price,mode", [
+    (None, "single-shot"), (0, "single-shot"), ("0.0", "single-shot"),
+    (-1, "single-shot"), ("unknown", "single-shot"), ("NaN", "single-shot"),
+    ("Infinity", "single-shot"), (10, "persistent"), (10, ""), (10, "unknown"),
+])
+async def test_ordinary_upload_starts_immediately(stream, price, mode):
     source = Source(b"direct")
 
     async def handler(reader, writer):
         request_headers = await headers(reader)
-        assert "Expect" not in request_headers
         assert await body(reader, request_headers) == b"direct"
         await respond(writer)
 
     async with serve(handler) as url:
         result = await call_runner(
-            url, payload=StreamPayload(source=source, expect100=False), stream=stream
+            runner=candidate(url, price=price, mode=mode),
+            payload=StreamPayload(source=source), stream=stream,
         )
         if stream:
             await result.aclose()
@@ -341,7 +378,6 @@ async def test_buffered_upload_can_be_reused_by_cursor_until_close():
     async def handler(reader, writer):
         request_headers = await headers(reader)
         assert request_headers["Content-Type"] == "video/test"
-        await allow_upload(writer)
         received.append(await body(reader, request_headers))
         await respond(writer)
 
@@ -368,7 +404,6 @@ async def test_seekable_file_replays_from_initial_position_without_buffering():
 
     async def handler(reader, writer):
         request_headers = await headers(reader)
-        await allow_upload(writer)
         received.append(await body(reader, request_headers))
         await respond(writer, 503 if len(received) == 1 else 200)
 
@@ -395,7 +430,6 @@ async def test_unreplayable_upload_finishes_but_stops_failover(options):
         nonlocal attempts
         attempts += 1
         request_headers = await headers(reader)
-        await allow_upload(writer)
         assert await body(reader, request_headers) == b"prefixover-limittail"
         await respond(writer, 503)
 
@@ -416,7 +450,6 @@ async def test_exhausted_cursor_releases_cache(success):
 
     async def handler(reader, writer):
         request_headers = await headers(reader)
-        await allow_upload(writer)
         await body(reader, request_headers)
         await respond(writer, 200 if success else 503)
 
@@ -457,14 +490,12 @@ async def test_disconnected_upload_failover_adopts_pending_source_read():
         nonlocal rejections
         rejections += 1
         await headers(reader)
-        await allow_upload(writer)
         assert await read_chunk(reader) == b"prefix"
         await read_started.wait()
 
     async def accept(reader, writer):
         request_headers = await headers(reader)
         assert not source_cancelled
-        await allow_upload(writer)
         assert await read_chunk(reader) == b"prefix"
         finish_read.set()
         assert await body(reader, request_headers) == b"middletail"
@@ -481,7 +512,8 @@ async def test_disconnected_upload_failover_adopts_pending_source_read():
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_partial_upload_payment_retry_replays_prefix(stream, signer):
+@pytest.mark.parametrize("known_onchain", [False, True])
+async def test_partial_upload_payment_retry_replays_prefix(stream, known_onchain, signer):
     read_started = asyncio.Event()
     finish_read = asyncio.Event()
     attempts = 0
@@ -496,9 +528,12 @@ async def test_partial_upload_payment_retry_replays_prefix(stream, signer):
         nonlocal attempts
         request_headers = await headers(reader)
         attempts += 1
-        await allow_upload(writer)
+        if known_onchain and attempts == 1:
+            assert await body(reader, request_headers) == b""
+            await respond(writer, 402, CHALLENGE, fragment=True)
+            return
         assert await read_chunk(reader) == b"prefix"
-        if attempts == 1:
+        if attempts == (2 if known_onchain else 1):
             await read_started.wait()
             await respond(writer, 402, CHALLENGE, fragment=True)
         else:
@@ -510,7 +545,7 @@ async def test_partial_upload_payment_retry_replays_prefix(stream, signer):
     async with serve(handler) as url:
         result = await asyncio.wait_for(
             call_runner(
-                url,
+                runner=candidate(url, price=10 if known_onchain else None),
                 payload=source(),
                 signer_url="http://signer.example",
                 payment_unit="fixed",
@@ -520,17 +555,21 @@ async def test_partial_upload_payment_retry_replays_prefix(stream, signer):
         )
         if stream:
             await result.aclose()
-    signer.assert_awaited_once()
-    assert attempts == 2
+    assert signer.await_count == (2 if known_onchain else 1)
+    assert attempts == (3 if known_onchain else 2)
 
 
 @pytest.mark.parametrize("mode", ["buffered", "stream", "cursor"])
-async def test_unbuffered_consumed_body_is_not_paid_or_retried(mode, signer):
+@pytest.mark.parametrize("known_onchain", [False, True])
+async def test_unbuffered_consumed_body_is_not_paid_again_or_retried(mode, known_onchain, signer):
     source = Source(b"data")
 
     async def handler(reader, writer):
         request_headers = await headers(reader)
-        await allow_upload(writer)
+        if known_onchain and "Livepeer-Payment" not in request_headers:
+            assert await body(reader, request_headers) == b""
+            await respond(writer, 402, CHALLENGE)
+            return
         assert await body(reader, request_headers) == b"data"
         await respond(writer, 402, CHALLENGE)
 
@@ -539,12 +578,13 @@ async def test_unbuffered_consumed_body_is_not_paid_or_retried(mode, signer):
             LivepeerGatewayError, match="no longer replayable"
         ) as error:
             payload = StreamPayload(source=source, retry_buffer=False)
+            runner = candidate(url, price=10 if known_onchain else None)
             if mode == "cursor":
-                await RunnerSelectionCursor([candidate(url)], body=payload, signer_url="http://signer.example").next()
+                await RunnerSelectionCursor([runner], body=payload, signer_url="http://signer.example").next()
             else:
-                await call_runner(url, payload=payload, signer_url="http://signer.example", payment_unit="fixed", stream=mode == "stream")
+                await call_runner(runner=runner, payload=payload, signer_url="http://signer.example", payment_unit="fixed", stream=mode == "stream")
         assert isinstance(error.value.__cause__, LivepeerHTTPError)
-    signer.assert_not_called()
+    assert signer.await_count == (1 if known_onchain else 0)
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -558,7 +598,6 @@ async def test_upload_cancellation_releases_cache(stream):
 
     async def handler(reader, writer):
         await headers(reader)
-        await allow_upload(writer)
         assert await read_chunk(reader) == b"prefix"
         await reader.read()
 
@@ -596,7 +635,6 @@ async def test_response_stream_owns_active_upload_until_close():
 
     async def handler(reader, writer):
         await headers(reader)
-        await allow_upload(writer)
         assert await read_chunk(reader) == b"prefix"
         await read_started.wait()
         # Send response headers while the request source is still live.
@@ -616,17 +654,13 @@ async def test_response_stream_owns_active_upload_until_close():
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_response_mode_controls_timeout_after_continue(stream):
+async def test_response_mode_controls_upload_timeout(stream):
     async def source():
         await asyncio.sleep(0.1)
         yield b"delayed"
 
     async def handler(reader, writer):
         request_headers = await headers(reader)
-        # Native aiohttp also accepts 103 as permission; exercise that here
-        # while checking that permission ends only the continue-wait deadline.
-        writer.write(b"HTTP/1.1 103 Early Hints\r\n\r\n")
-        await writer.drain()
         assert await body(reader, request_headers) == b"delayed"
         await respond(writer)
 

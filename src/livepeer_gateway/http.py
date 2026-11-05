@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import json
-from functools import partial
 from typing import Any
 from urllib.parse import ParseResult, urlparse
 
 import aiohttp
 
-from ._http_continue import _ContinueResponse, _close_response
-from .runner_payload import RunnerPayload, _StreamState, _UploadBody
+from .runner_payload import RunnerPayload, _StreamState, _UploadBody, _cancel_writer
 from .errors import (
     LivepeerHTTPError,
     LivepeerGatewayError,
@@ -84,27 +82,9 @@ def _request_parts(
     return resolved_method, req_headers, body
 
 
-def _request_session(
-    payload: RunnerPayload | _StreamState,
-    timeout: aiohttp.ClientTimeout,
-    handshake_timeout: float,
-) -> tuple[aiohttp.ClientSession, dict[str, Any]]:
-    if not isinstance(payload, _StreamState):
-        return aiohttp.ClientSession(timeout=timeout), {}
-    session = aiohttp.ClientSession(
-        timeout=timeout,
-        response_class=partial(_ContinueResponse, continue_timeout=handshake_timeout),
-    )
-    # aiohttp >= 3.10 may silently retry idempotent requests after disconnect.
-    # Stream resends are controlled by the SDK's replay state instead.
-    if hasattr(session, "_retry_connection"):
-        session._retry_connection = False
-    return session, {"expect100": payload.config.expect100, "allow_redirects": False}
-
-
-def _request_failed(status: int, payload: RunnerPayload | _StreamState) -> bool:
+def _request_failed(status: int, *, allow_redirects: bool) -> bool:
     return status >= 400 or (
-        isinstance(payload, _StreamState) and status in (301, 302, 303, 307, 308)
+        not allow_redirects and status in (301, 302, 303, 307, 308)
     )
 
 
@@ -139,6 +119,13 @@ def _ensure_json_object(data: Any, *, url: str) -> dict[str, Any]:
     return data
 
 
+async def _close_response(response: aiohttp.ClientResponse) -> None:
+    """Stop and join an attempt's writer before another attempt borrows its state."""
+    writer = response._writer
+    response.close()
+    await _cancel_writer(writer)
+
+
 async def _request_body(
     url: str,
     *,
@@ -146,6 +133,8 @@ async def _request_body(
     payload: RunnerPayload | _StreamState = None,
     headers: dict[str, str] | None = None,
     timeout: float = 5.0,
+    allow_redirects: bool = True,
+    read_response_body: bool = True,
 ) -> tuple[bytes, str]:
     """
     Make an HTTP request and return the raw response body.
@@ -160,11 +149,13 @@ async def _request_body(
     try:
         session, resp = await _open_request(
             url, method=method, payload=payload, headers=headers,
-            timeout=aiohttp.ClientTimeout(total=timeout), handshake_timeout=timeout,
+            timeout=aiohttp.ClientTimeout(total=timeout), allow_redirects=allow_redirects,
         )
         async with session:
             try:
-                raw = await resp.content.read() if isinstance(payload, _StreamState) else await resp.read()
+                raw = b""
+                if read_response_body:
+                    raw = await resp.content.read() if isinstance(payload, _StreamState) else await resp.read()
                 content_type = resp.content_type or ""
             finally:
                 await _close_response(resp)
@@ -241,14 +232,13 @@ async def open_stream(
     body, for streaming responses (SSE, chunked). The caller owns both and must close
     them.
 
-    No total/read timeout; bounds connection and optional 100-continue handshake.
+    No total/read timeout; bounds connection establishment only.
     Raises LivepeerHTTPError on >= 400 (e.g. the 402 payment retry).
     """
     try:
         return await _open_request(
             url, method=method, payload=payload, headers=headers,
             timeout=aiohttp.ClientTimeout(total=None, sock_connect=connect_timeout, sock_read=None),
-            handshake_timeout=connect_timeout,
         )
     except (TimeoutError, aiohttp.ClientError) as e:
         raise LivepeerGatewayError(
@@ -263,17 +253,24 @@ async def _open_request(
     payload: RunnerPayload | _StreamState,
     headers: dict[str, str] | None,
     timeout: aiohttp.ClientTimeout,
-    handshake_timeout: float,
+    allow_redirects: bool = True,
 ) -> tuple[aiohttp.ClientSession, aiohttp.ClientResponse]:
     method, headers, body = _request_parts(url, method=method, payload=payload, headers=headers)
-    session, options = _request_session(payload, timeout, handshake_timeout)
-    if payload is None:
-        # aiohttp otherwise adds application/octet-stream even for an empty POST.
-        options["skip_auto_headers"] = {"Content-Type"}
+    session = aiohttp.ClientSession(timeout=timeout)
+    if isinstance(payload, _StreamState):
+        allow_redirects = False
+        # aiohttp >= 3.10 may silently retry idempotent requests after disconnect.
+        # Stream resends are controlled by the SDK's replay state instead.
+        if hasattr(session, "_retry_connection"):
+            session._retry_connection = False
     resp = None
     try:
-        resp = await session.request(method, url, data=body, headers=headers, **options)
-        if _request_failed(resp.status, payload):
+        resp = await session.request(
+            method, url, data=body, headers=headers, allow_redirects=allow_redirects,
+            # aiohttp otherwise adds application/octet-stream even for an empty POST.
+            skip_auto_headers={"Content-Type"} if payload is None else None,
+        )
+        if _request_failed(resp.status, allow_redirects=allow_redirects):
             # Read before cancelling the writer: aiohttp 3.13 closes the socket
             # on cancellation, which can discard a fragmented payment challenge.
             raw = (await resp.content.read()).decode(errors="replace")
