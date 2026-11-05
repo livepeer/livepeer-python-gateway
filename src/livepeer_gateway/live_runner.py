@@ -35,6 +35,7 @@ from .remote_signer import (
     _freeze_headers,
     get_signer_info,
 )
+from .runner_contract import RunnerContractEnvelope
 from .runner_payload import RunnerPayload, _StreamState, _stream_state
 
 _LOG = logging.getLogger(__name__)
@@ -273,6 +274,12 @@ class LiveRunnerPriceInfo:
         }
 
 
+def _registration_metadata(metadata: str | RunnerContractEnvelope) -> str:
+    if isinstance(metadata, RunnerContractEnvelope):
+        return metadata.to_metadata()
+    return metadata
+
+
 class LiveRunnerRegistration:
     def __init__(
         self,
@@ -286,7 +293,7 @@ class LiveRunnerRegistration:
         mode: str = "persistent",
         proxy: bool = False,
         version: str = "",
-        metadata: str = "",
+        metadata: str | RunnerContractEnvelope = "",
         status: str = "ready",
         capacity: int = 1,
         gpu: LiveRunnerGPU | None = None,
@@ -309,7 +316,7 @@ class LiveRunnerRegistration:
         self._proxy = proxy
         self._price_info = price_info
         self._version = version
-        self._metadata = metadata
+        self._metadata = _registration_metadata(metadata)
         self._status = status
         self._capacity = capacity
         self._gpu = gpu
@@ -632,7 +639,7 @@ async def register_runner(
     mode: str = "persistent",
     proxy: bool = False,
     version: str = "",
-    metadata: str = "",
+    metadata: str | RunnerContractEnvelope = "",
     status: str = "ready",
     capacity: int = 1,
     gpu: LiveRunnerGPU | None = None,

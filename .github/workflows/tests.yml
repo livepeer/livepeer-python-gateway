@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - release
 
 permissions:
   contents: read
@@ -37,3 +38,26 @@ jobs:
         run: uv sync --locked --group test
       - name: Run pytest with coverage
         run: uv run --frozen --group test pytest --cov=livepeer_gateway --cov-branch --cov-report=term-missing
+
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Check exported OpenAPI document
+        run: |
+          uv run --frozen python -c "from livepeer_gateway.runner_contract import write_openapi; write_openapi('openapi.json')"
+          git diff --exit-code -- openapi.json
+      - name: Publish openapi.json
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release')
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: openapi
+          path: openapi.json
+          if-no-files-found: error

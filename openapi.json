@@ -1,0 +1,423 @@
+{
+  "components": {
+    "schemas": {
+      "RunnerContractCapacityGroup": {
+        "additionalProperties": false,
+        "description": "Registrations that share one GPU.",
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "slots": {
+            "minimum": 1,
+            "title": "Slots",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "slots"
+        ],
+        "title": "RunnerContractCapacityGroup",
+        "type": "object"
+      },
+      "RunnerContractChannels": {
+        "additionalProperties": false,
+        "description": "Persistent-runner channel names. The inbound registration key is in.",
+        "properties": {
+          "in": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "In"
+          },
+          "out": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Out"
+          }
+        },
+        "title": "RunnerContractChannels",
+        "type": "object"
+      },
+      "RunnerContractEndpoint": {
+        "additionalProperties": false,
+        "description": "One operation on the runner, named by a registry wire profile.",
+        "properties": {
+          "channels": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunnerContractChannels"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "drain_timeout_s": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Drain Timeout S"
+          },
+          "idle_timeout_s": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idle Timeout S"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "enum": [
+                  "GET",
+                  "POST",
+                  "PUT",
+                  "PATCH",
+                  "DELETE"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Method"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "pattern": "^/",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "profile": {
+            "pattern": "^[a-z][a-z0-9]*(\\.[a-z0-9]+(-[a-z0-9]+)*)+\\.v[1-9][0-9]*$",
+            "title": "Profile",
+            "type": "string"
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "pattern": "^/",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Stop"
+          }
+        },
+        "required": [
+          "profile"
+        ],
+        "title": "RunnerContractEndpoint",
+        "type": "object"
+      },
+      "RunnerContractEnvelope": {
+        "additionalProperties": false,
+        "description": "Runner contract v1 registration metadata.",
+        "properties": {
+          "admission": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission"
+          },
+          "attributes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "boolean"
+                          }
+                        ]
+                      },
+                      "type": "array"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Attributes"
+          },
+          "capacity_group": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunnerContractCapacityGroup"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "deployment_revision": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Deployment Revision",
+            "type": "string"
+          },
+          "endpoints": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RunnerContractEndpoint"
+            },
+            "title": "Endpoints",
+            "type": "object"
+          },
+          "limits": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limits"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunnerContractModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "runner_contract": {
+            "const": 1,
+            "default": 1,
+            "title": "Runner Contract",
+            "type": "integer"
+          },
+          "runner_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Runner Id"
+          },
+          "runtime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunnerContractRuntime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "deployment_revision",
+          "endpoints"
+        ],
+        "title": "RunnerContractEnvelope",
+        "type": "object"
+      },
+      "RunnerContractModel": {
+        "additionalProperties": false,
+        "description": "The model a runner serves. source is prefix:locator.",
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revision"
+          },
+          "source": {
+            "pattern": "^[a-z][a-z0-9-]*:.+$",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "source"
+        ],
+        "title": "RunnerContractModel",
+        "type": "object"
+      },
+      "RunnerContractRuntime": {
+        "additionalProperties": false,
+        "description": "True values about the runtime, omitted when unknown.",
+        "properties": {
+          "encoder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Encoder"
+          },
+          "image": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Image"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "versions": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Versions"
+          }
+        },
+        "title": "RunnerContractRuntime",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Live runner contract",
+    "version": "1"
+  },
+  "openapi": "3.1.0"
+}

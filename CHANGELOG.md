@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `call_runner(on_payment_session=...)` callback for each new payment session
 - `LivePaymentSession.manifest_id` for payment attribution
 - Flexible request body types on call_runner and selectors.
+- `RunnerContractEnvelope` builds runner contract v1 registration metadata, and `register_runner` accepts that object for `metadata`.
+- `openapi.json` is generated from that model. CI checks it on pull requests and publishes it on pushes to `main` and `release`, and version tags attach it to the GitHub release.
 
 ### Changed
 
