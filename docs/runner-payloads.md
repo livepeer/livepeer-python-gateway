@@ -16,7 +16,7 @@ All parameters except `runner_url` must be passed by keyword.
 | `payload` | `None` | Request body; see [body types](#body-types). |
 | `content_type` | `None` | Override the request's `Content-Type` header without changing its encoding. |
 | `method` | `"POST"` | HTTP request method. |
-| `signer_url` | `None` | Remote signer URL for automatic payment. Required for paid calls. |
+| `signer_url` | `None` | Remote signer URL for automatic payment. Required for on-chain calls. |
 | `signer_headers` | `None` | Dictionary of additional HTTP headers for signer requests. |
 | `payment_unit` | `None` | `"hour"`, `"seconds"`, or `"fixed"`. Defaults to the runner's pricing unit; an explicit value must agree with it. With neither, payment uses ongoing funding. |
 | `timeout` | `5.0` | Seconds per request attempt; see [timeouts](#timeouts) for streaming behavior. |
@@ -46,7 +46,6 @@ payload. Bare files and async iterables use the same defaults.
 | Field | Default | Meaning |
 |---|---|---|
 | `source` | Required | A binary file with a synchronous `read()` method, or an async iterable yielding `bytes`. |
-| `expect100` | `True` | Send headers first and wait for a continuation response before reading or sending input; see [when input is read](#when-input-is-read). Set to `False` for endpoints without this support. |
 | `retry_buffer` | `True` | Retain input from non-seekable files and async iterables so it can be sent again on a retry. |
 | `retry_buffer_memory_limit` | `25_000_000` | Bytes of retained input allowed in memory before using temporary disk storage (25 MB). |
 | `retry_buffer_limit` | `250_000_000` | Total bytes of input retained for retries (250 MB). |
@@ -60,39 +59,23 @@ Seekable files rewind for retries and do not use these limits.
 ### When input is read
 
 Creating a `StreamPayload` or discovering runners does not read the input.
-Reading begins during `call_runner()` or `cursor.next()`: with `expect100=True`,
-headers are sent first so the runner can request payment or reject the call
-before consuming input. The SDK uses aiohttp's native handling: `100 Continue`
-normally starts the upload, but other informational `1xx` responses except
-`101 Switching Protocols`, such as `102 Processing` or `103 Early Hints`, can
-also start it (unexpected informational responses like these are rare in
-practice). If waiting for this response times out, the request fails before
-reading or sending the body.
 
-With `expect100=False`, reading starts after the headers are sent. In either
-case, input is read as it uploads, starting at the file's current position.
-An early response or failure can leave it partly consumed.
+For streaming requests to on-chain single-shot runners, `call_runner(runner=discovered_runner, ...)`
+or `cursor.next()` first sends an empty request to the app URL to receive a
+`402 Payment Required` challenge. After obtaining payment from the signer,
+the SDK sends a second request with payment headers and the streamed body.
+Challenge acquisition and signing leave the body unread.
+
+A failed or rejected upload may leave the source partly consumed. Retrying
+requires either rewinding a seekable file or resending the consumed input
+from the retry buffer; resending may not be appropriate for all content types
+(eg, live video that should stay close to the edge). If resending is not
+possible, the SDK raises `LivepeerGatewayError`.
 
 You are responsible for closing files and managing generator resources. Keep
 inputs usable until the call finishes or the response/selector context closes,
 and do not read them elsewhere during the operation. The examples nest contexts
 to ensure this.
-
-For an endpoint without `100 Continue` support:
-
-```python
-from livepeer_gateway import StreamPayload, call_runner
-
-
-async def upload(runner_url, path):
-    with open(path, "rb") as audio:
-        return await call_runner(
-            runner_url,
-            payload=StreamPayload(source=audio, expect100=False),
-            content_type="audio/wav",
-            timeout=60,
-        )
-```
 
 ## Retries
 
@@ -116,11 +99,7 @@ must still be usable:
 - Non-seekable files and async iterables can resend the full body, including
   after a partial upload, if retry buffering remains available.
 - With `retry_buffer=False`, non-seekable input can only be retried before reading
-  starts—for example, after a payment challenge received before upload permission.
-
-Retry eligibility follows actual input consumption. If an informational response
-starts an unbuffered upload before a payment challenge, the consumed input can
-prevent an automatic retry.
+  starts.
 
 A required retry raises `LivepeerGatewayError` if the body cannot be sent again.
 This retry support lasts for one call or selector cursor. For a separate call,
@@ -139,10 +118,11 @@ For an app that accepts audio and returns text incrementally:
 from livepeer_gateway import call_runner
 
 
-async def transcribe(runner_url, path):
+async def transcribe(runner, signer_url, path):
     with open(path, "rb") as audio:
         async with await call_runner(
-            runner_url,
+            runner=runner,
+            signer_url=signer_url,
             payload=audio,
             content_type="audio/wav",
             stream=True,
@@ -160,7 +140,9 @@ payment funding. Errors while reading a returned response are not retried.
 | Response mode | What `timeout` bounds per attempt |
 |---|---|
 | `stream=False` | The whole HTTP request, including upload and response reading. Increase it for longer uploads or jobs. |
-| `stream=True` | Connection establishment and, with `expect100=True`, [waiting for a continuation response](#when-input-is-read). Uploads and response reading have no deadline after that response; with `expect100=False`, only connection establishment is bounded. |
+| `stream=True` | Connection establishment only. Uploads and response reading have no deadline. |
+
+Payment challenge requests use `timeout` for the complete request.
 
 Retries can make the overall operation take longer. Use `asyncio.timeout()`
 around the operation if you need an overall deadline.
