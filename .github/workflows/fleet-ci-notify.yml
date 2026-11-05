@@ -1,0 +1,61 @@
+name: Notify fleet builder
+
+# Disabled during the deployment freeze. This workflow dispatches builds only.
+# It never checks out the source run and never obtains GCP credentials.
+on:
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  notify:
+    if: >-
+      vars.FLEET_CI_NOTIFY_ENABLED == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check the source run before creating a builder token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CI_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$SOURCE_REPOSITORY/actions/runs/$CI_RUN_ID" > "$RUNNER_TEMP/source-run.json"
+          jq -e --arg repo "$SOURCE_REPOSITORY" --arg sha "$SOURCE_SHA" '
+            .repository.full_name == $repo and .head_repository.full_name == $repo and
+            .head_sha == $sha and .head_branch == "main" and .event == "push" and
+            .path == ".github/workflows/tests.yml" and
+            .status == "completed" and .conclusion == "success"
+          ' "$RUNNER_TEMP/source-run.json"
+      - name: Create a token for the builder repository only
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          app-id: ${{ vars.FLEET_CI_APP_ID }}
+          private-key: ${{ secrets.FLEET_CI_APP_PRIVATE_KEY }}
+          owner: livepeer
+          repositories: simple-infra
+          permission-actions: write
+      - name: Notify the central builder with the tested source revision
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          gh workflow run agent-fleet-build.yaml --repo livepeer/simple-infra --ref main \
+            --field source_repository="$SOURCE_REPOSITORY" \
+            --field source_sha="$SOURCE_SHA" \
+            --field ci_run_id="$CI_RUN_ID"
