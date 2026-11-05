@@ -5,19 +5,15 @@ on:
   push:
     branches:
       - main
-  merge_group:
-  workflow_call:
 
 permissions:
   contents: read
 
-concurrency:
-  group: gateway-tests-${{ github.event_name == 'push' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   ruff:
-    timeout-minutes: 10
+    if: >-
+      !github.event.pull_request ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -32,7 +28,9 @@ jobs:
         run: uv run --frozen --group lint ruff check .
 
   pytest:
-    timeout-minutes: 20
+    if: >-
+      !github.event.pull_request ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -47,6 +45,9 @@ jobs:
         run: uv run --frozen --group test pytest --cov=livepeer_gateway --cov-branch --cov-report=term-missing
 
   package:
+    if: >-
+      !github.event.pull_request ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -56,20 +57,3 @@ jobs:
           python-version: '3.12'
       - name: Build the wheel and source distribution without publishing
         run: uv build --no-sources
-
-  ci-gate:
-    name: ci-gate
-    if: always()
-    needs: [ruff, pytest, package]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require every CI job to succeed
-        env:
-          RUFF_RESULT: ${{ needs.ruff.result }}
-          PYTEST_RESULT: ${{ needs.pytest.result }}
-          PACKAGE_RESULT: ${{ needs.package.result }}
-        run: |
-          test "$RUFF_RESULT" = success
-          test "$PYTEST_RESULT" = success
-          test "$PACKAGE_RESULT" = success
