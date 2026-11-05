@@ -60,12 +60,11 @@ Seekable files rewind for retries and do not use these limits.
 
 Creating a `StreamPayload` or discovering runners does not read the input.
 
-For streaming requests to on-chain single-shot runners, `call_runner()` or
-
-`cursor.next()` first sends an empty request to the app URL to receive a
+For streaming requests to on-chain single-shot runners, `call_runner(runner=discovered_runner, ...)`
+or `cursor.next()` first sends an empty request to the app URL to receive a
 `402 Payment Required` challenge. After obtaining payment from the signer,
 the SDK sends a second request with payment headers and the streamed body.
-Challenge acquisition and signing leave the source unread.
+Challenge acquisition and signing leave the body unread.
 
 A failed or rejected upload may leave the source partly consumed. Retrying
 requires either rewinding a seekable file or resending the consumed input
