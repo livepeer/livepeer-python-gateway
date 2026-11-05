@@ -11,9 +11,6 @@ permissions:
 
 jobs:
   ruff:
-    if: >-
-      !github.event.pull_request ||
-      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -28,9 +25,6 @@ jobs:
         run: uv run --frozen --group lint ruff check .
 
   pytest:
-    if: >-
-      !github.event.pull_request ||
-      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -45,9 +39,6 @@ jobs:
         run: uv run --frozen --group test pytest --cov=livepeer_gateway --cov-branch --cov-report=term-missing
 
   package:
-    if: >-
-      !github.event.pull_request ||
-      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
