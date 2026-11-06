@@ -31,6 +31,8 @@ uv sync --locked --group test
 uv run --group test pytest
 ```
 
+To check the wheel and source distribution locally, run `uv build --no-sources`.
+
 ## Usage Examples
 
 Install the example dependencies:
