@@ -186,13 +186,13 @@
                       "type": "string"
                     },
                     {
+                      "type": "boolean"
+                    },
+                    {
                       "type": "integer"
                     },
                     {
                       "type": "number"
-                    },
-                    {
-                      "type": "boolean"
                     },
                     {
                       "items": {
@@ -201,13 +201,13 @@
                             "type": "string"
                           },
                           {
+                            "type": "boolean"
+                          },
+                          {
                             "type": "integer"
                           },
                           {
                             "type": "number"
-                          },
-                          {
-                            "type": "boolean"
                           }
                         ]
                       },
@@ -253,9 +253,11 @@
                 "additionalProperties": {
                   "anyOf": [
                     {
+                      "minimum": 0,
                       "type": "integer"
                     },
                     {
+                      "minimum": 0,
                       "type": "number"
                     }
                   ]

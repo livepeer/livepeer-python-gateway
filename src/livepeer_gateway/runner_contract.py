@@ -10,10 +10,20 @@ import hashlib
 import json
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+)
 
 from .errors import LivepeerGatewayError
 
@@ -82,8 +92,12 @@ class RunnerContractCapacityGroup(BaseModel):
     slots: Annotated[int, Field(ge=1)]
 
 
-def _number(value: object) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float))
+# Strict types: in lax mode pydantic turns True into 1 for an int, and NaN or infinity serialize
+# as JSON null. A limit or attribute must reach the orchestrator as the number the caller meant.
+_Number = StrictInt | Annotated[StrictFloat, Field(allow_inf_nan=False)]
+_Limit = Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0, allow_inf_nan=False)]
+_Scalar = StrictStr | StrictBool | _Number
+_Attribute = _Scalar | list[_Scalar]
 
 
 class RunnerContractEnvelope(BaseModel):
@@ -97,10 +111,10 @@ class RunnerContractEnvelope(BaseModel):
     endpoints: dict[str, RunnerContractEndpoint]
     runner_id: Annotated[str, Field(min_length=1)] | None = None
     runtime: RunnerContractRuntime | None = None
-    limits: dict[str, int | float] | None = None
+    limits: dict[str, _Limit] | None = None
     admission: str | None = None
     capacity_group: RunnerContractCapacityGroup | None = None
-    attributes: dict[str, str | int | float | bool | list[str | int | float | bool]] | None = None
+    attributes: dict[str, _Attribute] | None = None
 
     @field_validator("endpoints")
     @classmethod
@@ -114,24 +128,10 @@ class RunnerContractEnvelope(BaseModel):
 
     @field_validator("limits")
     @classmethod
-    def _limit_values(cls, value: dict[str, int | float] | None) -> dict[str, int | float] | None:
-        if value is None:
-            return None
-        for name, number in value.items():
+    def _limit_names(cls, value: dict[str, int | float] | None) -> dict[str, int | float] | None:
+        for name in value or {}:
             if _LIMIT_NAME.fullmatch(name) is None:
                 raise ValueError(f"invalid limit name {name!r}")
-            if not _number(number) or number < 0:
-                raise ValueError(f"limit {name!r} must be a non-negative number")
-        return value
-
-    @field_validator("attributes")
-    @classmethod
-    def _attribute_values(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        if value is None:
-            return None
-        for name, item in value.items():
-            if not _attribute_value(item):
-                raise ValueError(f"attribute {name!r} must be a string, number, boolean, or list of those")
         return value
 
     def to_metadata(self) -> str:
@@ -145,19 +145,11 @@ class RunnerContractEnvelope(BaseModel):
         return text
 
 
-def _attribute_value(value: object) -> bool:
-    if _number(value) or isinstance(value, (str, bool)):
-        return True
-    if isinstance(value, list):
-        return all(_number(item) or isinstance(item, (str, bool)) for item in value)
-    return False
-
-
 def deployment_revision(
     images: list[str],
     profiles: list[str],
     settings: dict[str, Any],
-    model: dict[str, Any] | None = None,
+    model: RunnerContractModel | Mapping[str, Any] | None = None,
 ) -> str:
     """Canonical ``sha256:`` identity from the runner-contract recipe."""
     obj: dict[str, Any] = {
@@ -166,9 +158,21 @@ def deployment_revision(
         "settings": settings,
     }
     if model is not None:
-        obj["model"] = {"source": model["source"], "revision": model.get("revision")}
+        obj["model"] = _model_identity(model)
     text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _model_identity(model: RunnerContractModel | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(model, RunnerContractModel):
+        source, revision = model.source, model.revision
+    else:
+        source, revision = model.get("source"), model.get("revision")
+    if not isinstance(source, str) or not source:
+        raise ValueError("deployment_revision needs the model's source")
+    # The recipe hashes an absent revision as null, not as an omitted key. comfystream's runner
+    # computes it the same way, and both must agree on one digest for one deployment.
+    return {"source": source, "revision": revision}
 
 
 def openapi_document() -> dict[str, Any]:
