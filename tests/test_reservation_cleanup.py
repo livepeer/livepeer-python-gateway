@@ -8,7 +8,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from livepeer_gateway import live_runner, selection
-from livepeer_gateway.errors import LivepeerGatewayError, NoRunnerAvailableError
+from livepeer_gateway.errors import NoRunnerAvailableError
 
 _SESSION_URLS = {"app_url": "https://orch.test/app", "control_url": "https://orch.test/control"}
 _ID_MISMATCH = "does not match payment manifest"
@@ -21,6 +21,7 @@ _ID_MISMATCH = "does not match payment manifest"
         ("onchain-id", [], "expected JSON object", ["onchain-id"]),
         ("onchain-id", b'{"huge":' + b"1" * 5000 + b"}", "did not return valid JSON", ["onchain-id"]),
         ("onchain-id", {}, "missing session_id", ["onchain-id"]),
+        ("onchain-id", {}, None, ["onchain-id"]),
         ("onchain-id", {**_SESSION_URLS, "session_id": "wrong-id"}, _ID_MISMATCH, ["onchain-id"]),
         ("onchain-id", {**_SESSION_URLS, "session_id": " onchain-id "}, _ID_MISMATCH, ["onchain-id"]),
         (" onchain-id ", {**_SESSION_URLS, "session_id": " onchain-id "}, _ID_MISMATCH, []),
@@ -45,12 +46,20 @@ async def test_malformed_reservation_cleanup(manifest_id, body, error, expected_
         stops.append(request.match_info["session_id"])
         return web.Response(status=503)
 
+    async def reserve_next(request: web.Request) -> web.Response:
+        assert stops == expected_stops
+        return web.json_response({**_SESSION_URLS, "session_id": "next-id"})
+
     app = web.Application()
     app.router.add_post("/apps/a/session", reserve)
     app.router.add_post("/apps/a/session/{session_id}/stop", stop)
+    app.router.add_post("/apps/next/session", reserve_next)
     async with TestServer(app) as server:
         base = str(server.make_url("/apps/a/session"))
         entries = [{"runners": [{"url": base, "app": "a", "price_info": {"price": "1", "unit": "fixed"}}]}]
+        if error is None:
+            entries[0]["runners"].append({"url": str(server.make_url("/apps/next/session")), "app": "a"})
+        signer_url = "https://signer.test" if manifest_id else None
         with (
             mock.patch.object(selection, "discover_runners", return_value=entries),
             mock.patch.object(live_runner, "get_signer_info", return_value=SimpleNamespace(address="payer")),
@@ -58,18 +67,15 @@ async def test_malformed_reservation_cleanup(manifest_id, body, error, expected_
                 live_runner.LivePaymentSession, "get_payment",
                 return_value=SimpleNamespace(payment="payment", seg_creds="segment"),
             ),
-            pytest.raises(LivepeerGatewayError) as raised,
         ):
-            await selection.reserve_session(signer_url="https://signer.test" if manifest_id else None)
-
-    failure = raised.value
-    if isinstance(body, (bytes, list)):
-        assert isinstance(failure, NoRunnerAvailableError)
-        reason = failure.rejections[0].reason
-    else:
-        assert type(failure) is LivepeerGatewayError
-        reason = str(failure)
-    assert error in reason
+            if error is None:
+                session = await selection.reserve_session(signer_url=signer_url)
+                assert session.session_id == "next-id"
+            else:
+                with pytest.raises(NoRunnerAvailableError) as raised:
+                    await selection.reserve_session(signer_url=signer_url)
+                assert len(raised.value.rejections) == 1
+                assert error in raised.value.rejections[0].reason
     assert stops == expected_stops
 
 

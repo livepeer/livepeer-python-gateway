@@ -209,22 +209,23 @@ async def reserve_session(
         gpu=gpu,
         timeout=timeout,
     )
-    result = await cursor.next(_reservation=True)
-    fields = {key: _string_value(result.data.get(key)) for key in ("session_id", "app_url", "control_url")}
-    try:
-        if missing := next((key for key, value in fields.items() if not value), None):
-            raise LivepeerGatewayError(f"runner session response missing {missing}")
-        if result.session_id and not (result.session_id == fields["session_id"] == result.data["session_id"]):
-            raise LivepeerGatewayError("runner session response session_id does not match payment manifest")
-        session = LiveRunnerSession(**fields, runner_url=result.runner_url, runner=result.runner)
-    except (LivepeerGatewayError, ValueError):
-        await _release_reservation(result.runner_url, result.session_id, result.runner)
-        raise
-
-    # No payment session means fixed price or offchain: nothing to fund.
-    if result.payment_session is not None:
-        session._start_payments(result.payment_session)
-    return session
+    while True:
+        result = await cursor.next(_reservation=True)
+        fields = {key: _string_value(result.data.get(key)) for key in ("session_id", "app_url", "control_url")}
+        try:
+            if missing := next((key for key, value in fields.items() if not value), None):
+                raise LivepeerGatewayError(f"runner session response missing {missing}")
+            if result.session_id and not (result.session_id == fields["session_id"] == result.data["session_id"]):
+                raise LivepeerGatewayError("runner session response session_id does not match payment manifest")
+            session = LiveRunnerSession(**fields, runner_url=result.runner_url, runner=result.runner)
+        except (LivepeerGatewayError, ValueError) as error:
+            await _release_reservation(result.runner_url, result.session_id, result.runner)
+            cursor.rejections.append(RunnerRejection(url=result.runner_url, reason=str(error)))
+        else:
+            # No payment session means fixed price or offchain: nothing to fund.
+            if result.payment_session is not None:
+                session._start_payments(result.payment_session)
+            return session
 
 
 def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list[LiveRunnerInstance]:

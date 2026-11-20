@@ -273,7 +273,7 @@ class TestReservationSelection:
         "bad_control_url",
         [None, "ftp://orch.example.com/session/bad"],
     )
-    async def test_invalid_control_url_fails_immediately(
+    async def test_invalid_control_url_tries_next_runner(
         self, bad_control_url: str | None
     ) -> None:
         cursor = _Cursor(
@@ -286,17 +286,7 @@ class TestReservationSelection:
             "runner_selector",
             new=mock.AsyncMock(return_value=cursor),
         ):
-            with pytest.raises(LivepeerGatewayError):
-                await selection.reserve_session()
+            session = await selection.reserve_session()
 
-        assert len(cursor.results) == 1
-
-    async def test_missing_control_url_is_contract_error(self) -> None:
-        cursor = _Cursor(_reservation("bad", control_url=None))
-        with mock.patch.object(
-            selection,
-            "runner_selector",
-            new=mock.AsyncMock(return_value=cursor),
-        ):
-            with pytest.raises(LivepeerGatewayError, match="missing control_url"):
-                await selection.reserve_session()
+        assert session.session_id == "session-good"
+        assert len(cursor.rejections) == 1
