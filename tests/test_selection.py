@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest import mock
 
 import pytest
 
-from livepeer_gateway import selection
+from livepeer_gateway import discovery, live_runner, selection
 from livepeer_gateway.errors import LivepeerGatewayError, NoRunnerAvailableError
 from livepeer_gateway.live_runner import LiveRunnerCallResult, LiveRunnerInstance
 
@@ -331,76 +332,41 @@ class TestRunnerSelection:
         with pytest.raises(LivepeerGatewayError):
             await selection.runner_selector(orchestrators="ftp://orch.example.com")
 
-    async def test_reserve_session_returns_session_from_call_result(self) -> None:
-        async def _call_runner(
-            *,
-            runner: LiveRunnerInstance,
-            payload: dict[str, object],
-            method: str,
-            timeout: float,
-            _reservation: bool,
-        ) -> LiveRunnerCallResult:
-            del payload, method, timeout
-            assert _reservation
-            return LiveRunnerCallResult(
-                {
-                    "session_id": "session-1",
-                    "app_url": "https://orch-a/apps/a/app",
-                    "control_url": "https://orch-a/apps/a/session/session-1",
-                },
-                runner_url=runner.url,
-                runner=runner,
-            )
-
+    @pytest.mark.parametrize(
+        "first_address,first_mode,first_url",
+        [
+            ("https://orch-a", "single-shot", "https://orch-a/apps/report/session"),
+            ("https:///mount", "persistent", "https://orch-a/mount/apps/report/session"),
+            ("https://orch-a:0", "persistent", "https://orch-a/apps/report/session"),
+        ],
+    )
+    async def test_reserve_session_uses_first_eligible_orchestrator(
+        self, first_address: str, first_mode: str, first_url: str,
+    ) -> None:
+        second = "https://orch-b/mount/apps/a/session"
+        body = {"session_id": " s1 ", "app_url": second + "/s1/app", "control_url": second + "/s1"}
         with (
             mock.patch.object(
-                selection,
+                discovery,
                 "discover_runners",
-                return_value=[
-                    _entry([{"url": "https://orch-a/apps/a/session", "app": "app-a"}])
+                side_effect=[
+                    [_entry([{"url": first_url, "app": "app-a", "mode": first_mode}], address=first_address)],
+                    [_entry([{"url": second, "app": "app-a", "mode": "persistent"}], address="orch-b:443/mount")],
                 ],
             ),
-            mock.patch.object(selection, "call_runner", side_effect=_call_runner),
-        ):
-            session = await selection.reserve_session(
-                discovery_url="https://example.com/discovery", app="app-a"
-            )
-
-        assert session.session_id == "session-1"
-        assert session.app_url == "https://orch-a/apps/a/app"
-        assert session.runner_url == "https://orch-a/apps/a/session"
-        assert session.runner is not None
-        assert session.runner.app == "app-a"
-
-    async def test_reserve_session_rejects_non_session_json(self) -> None:
-        async def _call_runner(
-            *,
-            runner: LiveRunnerInstance,
-            payload: dict[str, object],
-            method: str,
-            timeout: float,
-            _reservation: bool,
-        ) -> LiveRunnerCallResult:
-            del runner, payload, method, timeout
-            assert _reservation
-            return LiveRunnerCallResult(
-                {"ok": True}, runner_url="https://orch-a/apps/a/app"
-            )
-
-        with (
             mock.patch.object(
-                selection,
-                "discover_runners",
-                return_value=[
-                    _entry([{"url": "https://orch-a/apps/a/app", "app": "app-a"}])
-                ],
-            ),
-            mock.patch.object(selection, "call_runner", side_effect=_call_runner),
+                live_runner, "_request_body", return_value=(json.dumps(body).encode(), "application/json")
+            ) as request,
         ):
-            with pytest.raises(LivepeerGatewayError):
-                await selection.reserve_session(
-                    discovery_url="https://example.com/discovery", app="app-a"
-                )
+            session = await selection.reserve_session(orchestrators=["https://orch-a", "https://orch-b"])
+
+        assert session.session_id == "s1"
+        assert session.app_url == body["app_url"]
+        assert session.control_url == body["control_url"]
+        assert session.runner_url == second
+        assert session.runner is not None and session.runner.app == "app-a"
+        request.assert_awaited_once()
+        assert request.call_args.args[0] == second
 
     async def test_runner_selector_supports_single_shot_url(self) -> None:
         async def _call_runner(

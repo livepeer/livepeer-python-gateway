@@ -247,15 +247,29 @@ class TestLiveRunnerSession:
         with pytest.raises(LivepeerGatewayError):
             await stop_runner_session(request)
 
-    async def test_call_runner_can_attach_runner_instance(self) -> None:
+    @pytest.mark.parametrize(
+        "mode,override",
+        [
+            ("persistent", ""),
+            ("single-shot", ""),
+            ("single-shot", "https://SERVICE.example.com:443/apps/runner-1/session/?format=json"),
+        ],
+    )
+    async def test_call_runner_can_attach_runner_instance(self, mode: str, override: str) -> None:
         runner = LiveRunnerInstance(
             url="https://service.example.com/apps/runner-1/session",
             app="livepeer-sample/echo",
             runner_id="runner-1",
-            mode="persistent",
+            mode=mode,
             orchestrator_url="https://service.example.com",
             raw={"app": "livepeer-sample/echo"},
         )
+
+        data = {
+            "session_id": "session-1",
+            "app_url": "https://service.example.com/app",
+            "control_url": "https://service.example.com/control",
+        } if mode == "persistent" else {"ok": True}
 
         def _request_body(
             url: str,
@@ -267,17 +281,13 @@ class TestLiveRunnerSession:
         ) -> tuple[bytes, str]:
             del method, payload, timeout
             assert headers == {"Accept": "*/*"}
-            return _json_data(
-                {
-                    "session_id": "session-1",
-                    "app_url": "https://service.example.com/app",
-                }
-            )
+            return _json_data(data)
 
         with mock.patch.object(live_runner, "_request_body", side_effect=_request_body):
-            result = await call_runner(runner=runner)
+            result = await call_runner(override, runner=runner)
 
         assert result.runner is runner
+        assert result.data == data
 
     async def test_paid_call_retries_with_payment_headers(self) -> None:
         calls: list[
@@ -432,6 +442,7 @@ class TestLiveRunnerSession:
                 {
                     "session_id": "fixed-manifest",
                     "app_url": "https://service.example.com/app",
+                    "control_url": "https://service.example.com/control",
                 }
             )
 
@@ -503,8 +514,9 @@ class TestLiveRunnerSession:
             if headers and "Livepeer-Payment" in headers:
                 return _json_data(
                     {
-                        "session_id": "session-2",
+                        "session_id": "manifest-2",
                         "app_url": "https://service.example.com/app",
+                        "control_url": "https://service.example.com/control",
                     }
                 )
             unpaid_count += 1
@@ -532,7 +544,7 @@ class TestLiveRunnerSession:
                 signer_url="https://signer.example.com",
             )
 
-        assert result.data["session_id"] == "session-2"
+        assert result.data["session_id"] == "manifest-2"
         assert result.session_id == "manifest-2"
         assert result.payment_session is payment_sessions[1]
         challenge_headers = {

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest import mock
+from urllib.parse import urljoin
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from livepeer_gateway import live_runner, selection
-from livepeer_gateway.errors import NoRunnerAvailableError
+from livepeer_gateway.errors import LivepeerGatewayError, NoRunnerAvailableError
 
 _SESSION_URLS = {"app_url": "https://orch.test/app", "control_url": "https://orch.test/control"}
 _ID_MISMATCH = "does not match payment manifest"
@@ -22,6 +23,7 @@ _ID_MISMATCH = "does not match payment manifest"
         ("onchain-id", b'{"huge":' + b"1" * 5000 + b"}", "did not return valid JSON", ["onchain-id"]),
         ("onchain-id", {}, "missing session_id", ["onchain-id"]),
         ("onchain-id", {}, None, ["onchain-id"]),
+        ("onchain-id", {**_SESSION_URLS, "session_id": "onchain-id", "control_url": "https://orch.test:bad/s1"}, None, ["onchain-id"]),
         ("onchain-id", {**_SESSION_URLS, "session_id": "wrong-id"}, _ID_MISMATCH, ["onchain-id"]),
         ("onchain-id", {**_SESSION_URLS, "session_id": " onchain-id "}, _ID_MISMATCH, ["onchain-id"]),
         (" onchain-id ", {**_SESSION_URLS, "session_id": " onchain-id "}, _ID_MISMATCH, []),
@@ -80,18 +82,46 @@ async def test_malformed_reservation_cleanup(manifest_id, body, error, expected_
 
 
 @pytest.mark.parametrize(
-    "prefix,path,should_stop",
+    "prefix,path,is_session",
     [
         ("", "/apps/a/app/apps/b/session", False),
         ("/mount", "/apps/a/session", False),
         ("", "/apps/a/session;other", False),
+        ("", "https://proxy.test/apps/a/session", False),
+        ("", "https://ORCH.test:443/apps/a/session", True),
         ("/mount", "/mount/apps/a/session", True),
         ("/mount;v=2", "/mount/apps/a/session", False),
         ("/mount;v=2", "/mount;v=2/apps/a/session", True),
     ],
 )
-async def test_cleanup_only_targets_discovered_reservation_route(prefix, path, should_stop):
-    runner = SimpleNamespace(orchestrator_url="https://orch.test" + prefix)
-    with mock.patch.object(live_runner, "_request_body") as request:
-        await live_runner._release_reservation("https://orch.test" + path, "onchain-id", runner)
-    assert request.await_count == int(should_stop)
+def test_session_endpoint_matches_the_discovery_mount(prefix, path, is_session):
+    runner = SimpleNamespace(mode="persistent", orchestrator_url="https://orch.test" + prefix)
+    assert live_runner._is_session_endpoint(urljoin("https://orch.test", path), runner) is is_session
+
+
+def test_session_endpoint_requires_http_origin():
+    for url in ("/apps/a/session", "ftp://orch.test/apps/a/session", "https://orch.test:0/apps/a/session"):
+        assert not live_runner._is_session_endpoint(url, None)
+
+
+@pytest.mark.parametrize(
+    "body,error",
+    [
+        (b"{}", "missing session_id"),
+        (b'{"session_id":"s1","app_url":"https://orch.test/app","control_url":"https://orch.test:bad/s1"}', "Invalid orchestrator URL"),
+    ],
+)
+async def test_call_runner_validates_session_with_implicit_post(body, error):
+    runner = live_runner.LiveRunnerInstance(
+        url="https://orch.test/apps/proxy/session",
+        app="proxy",
+        runner_id="proxy",
+        mode="single-shot",
+        orchestrator_url="https://orch.test",
+        raw={},
+    )
+    with mock.patch.object(live_runner, "_request_body", return_value=(body, "application/json")) as request:
+        with pytest.raises(LivepeerGatewayError, match=error):
+            await live_runner.call_runner("https://orch.test/apps/a/session", runner=runner, method="", payload={})
+
+    assert request.call_args.kwargs["method"] == "POST"

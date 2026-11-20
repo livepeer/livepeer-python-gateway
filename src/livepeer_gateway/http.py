@@ -323,14 +323,10 @@ async def _post_empty(
     *,
     headers: dict[str, str] | None = None,
     timeout: float = 5.0,
+    allow_redirects: bool = True,
 ) -> None:
     """POST an empty body to ``url`` and discard the response."""
-    await _request_body(
-        url,
-        method="POST",
-        headers=headers,
-        timeout=timeout,
-    )
+    await _request_body(url, method="POST", headers=headers, timeout=timeout, allow_redirects=allow_redirects)
 
 
 def _parse_http_url(url: str, *, context: str = "URL") -> ParseResult:

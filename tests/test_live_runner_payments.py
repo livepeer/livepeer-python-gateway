@@ -220,73 +220,18 @@ class TestStopRunnerSession:
         post_empty.assert_not_awaited()
 
 
-class _Cursor:
-    def __init__(self, *results: LiveRunnerCallResult) -> None:
-        self.results = list(results)
-        self.rejections = []
-
-    async def next(self, *, _reservation: bool = False) -> LiveRunnerCallResult:
-        if self.results:
-            return self.results.pop(0)
-        raise AssertionError("unexpected extra runner selection")
-
-
-def _reservation(
-    name: str,
-    *,
-    control_url: str | None,
-    payment_session: object | None = None,
-) -> LiveRunnerCallResult:
-    data = {
-        "session_id": f"session-{name}",
-        "app_url": f"https://orch.example.com/session-{name}/app",
-    }
-    if control_url is not None:
-        data["control_url"] = control_url
-    return LiveRunnerCallResult(
-        data,
-        runner_url=f"https://orch.example.com/runner-{name}/session",
+async def test_onchain_reservation_starts_scoped_funding() -> None:
+    payment_session = _FundingSession()
+    expected = _session()
+    result = LiveRunnerCallResult(
+        {"app_url": expected.app_url, "control_url": expected.control_url},
+        runner_url=expected.runner_url,
+        session_id=expected.session_id,
         payment_session=payment_session,  # type: ignore[arg-type]
     )
+    cursor = mock.Mock(next=mock.AsyncMock(return_value=result))
+    with mock.patch.object(selection, "runner_selector", return_value=cursor):
+        session = await selection.reserve_session()
 
-
-class TestReservationSelection:
-    async def test_onchain_reservation_starts_scoped_funding(self) -> None:
-        payment_session = _FundingSession()
-        cursor = _Cursor(
-            _reservation(
-                "1",
-                control_url=_CONTROL_URL,
-                payment_session=payment_session,
-            )
-        )
-
-        with mock.patch.object(
-            selection, "runner_selector", new=mock.AsyncMock(return_value=cursor)
-        ):
-            session = await selection.reserve_session()
-
-        await asyncio.wait_for(payment_session.started.wait(), timeout=1.0)
-        await session.stop_payments()
-
-    @pytest.mark.parametrize(
-        "bad_control_url",
-        [None, "ftp://orch.example.com/session/bad"],
-    )
-    async def test_invalid_control_url_tries_next_runner(
-        self, bad_control_url: str | None
-    ) -> None:
-        cursor = _Cursor(
-            _reservation("bad", control_url=bad_control_url),
-            _reservation("good", control_url=_CONTROL_URL),
-        )
-
-        with mock.patch.object(
-            selection,
-            "runner_selector",
-            new=mock.AsyncMock(return_value=cursor),
-        ):
-            session = await selection.reserve_session()
-
-        assert session.session_id == "session-good"
-        assert len(cursor.rejections) == 1
+    await asyncio.wait_for(payment_session.started.wait(), timeout=1.0)
+    await session.stop_payments()

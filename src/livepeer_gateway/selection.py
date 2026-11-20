@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from .discovery import (
@@ -18,8 +18,8 @@ from .live_runner import (
     LiveRunnerCallResult,
     LiveRunnerInstance,
     LiveRunnerSession,
+    _is_session_endpoint,
     _live_runner_price_info_from_json,
-    _release_reservation,
     _string_value,
     call_runner,
 )
@@ -65,7 +65,7 @@ class RunnerSelectionCursor:
     def candidates(self) -> tuple[LiveRunnerInstance, ...]:
         return tuple(self._candidates)
 
-    async def next(self, *, _reservation: bool = False) -> LiveRunnerCallResult:
+    async def next(self) -> LiveRunnerCallResult:
         if self._closed:
             raise LivepeerGatewayError("Runner selection cursor is closed")
         if self._next_running:
@@ -85,7 +85,6 @@ class RunnerSelectionCursor:
                         "payload": self._payload_state if self._payload_state is not None else self._body,
                         "method": self._method,
                         "timeout": self._timeout,
-                        **({"_reservation": True} if _reservation else {}),
                     }
                     if self._content_type is not None:
                         kwargs["content_type"] = self._content_type
@@ -154,12 +153,14 @@ async def runner_selector(
     app: FilterValue | None = None,
     gpu: FilterValue | None = None,
     timeout: float = 5.0,
+    _matches: Callable[[LiveRunnerInstance], bool] = bool,
 ) -> RunnerSelectionCursor:
     if orchestrators is not None:
         entries = await discover_orchestrator_runners(
             orchestrators,
             app=app,
             gpu=gpu,
+            _has_runners=lambda entries: any(_matches(runner) for runner in _runner_candidates_from_discovery(entries)),
         )
     else:
         entries = await discover_runners(
@@ -171,7 +172,7 @@ async def runner_selector(
             gpu=gpu,
         )
 
-    candidates = _runner_candidates_from_discovery(entries)
+    candidates = [runner for runner in _runner_candidates_from_discovery(entries) if _matches(runner)]
 
     if not candidates:
         _LOG.debug("select_runner failed: empty runner list")
@@ -208,24 +209,13 @@ async def reserve_session(
         app=app,
         gpu=gpu,
         timeout=timeout,
+        _matches=lambda runner: _is_session_endpoint(runner.url, runner),
     )
-    while True:
-        result = await cursor.next(_reservation=True)
-        fields = {key: _string_value(result.data.get(key)) for key in ("session_id", "app_url", "control_url")}
-        try:
-            if missing := next((key for key, value in fields.items() if not value), None):
-                raise LivepeerGatewayError(f"runner session response missing {missing}")
-            if result.session_id and not (result.session_id == fields["session_id"] == result.data["session_id"]):
-                raise LivepeerGatewayError("runner session response session_id does not match payment manifest")
-            session = LiveRunnerSession(**fields, runner_url=result.runner_url, runner=result.runner)
-        except (LivepeerGatewayError, ValueError) as error:
-            await _release_reservation(result.runner_url, result.session_id, result.runner)
-            cursor.rejections.append(RunnerRejection(url=result.runner_url, reason=str(error)))
-        else:
-            # No payment session means fixed price or offchain: nothing to fund.
-            if result.payment_session is not None:
-                session._start_payments(result.payment_session)
-            return session
+    result = await cursor.next()
+    session = LiveRunnerSession(result.session_id, result.data["app_url"].strip(), result.runner_url, result.data["control_url"], result.runner)
+    if result.payment_session is not None:
+        session._start_payments(result.payment_session)
+    return session
 
 
 def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list[LiveRunnerInstance]:

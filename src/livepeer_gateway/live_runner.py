@@ -28,7 +28,7 @@ from aiohttp.helpers import parse_mimetype
 
 from .channel_reader import ChannelReader
 from .errors import LivepeerGatewayError, LivepeerHTTPError, SignerRefreshRequired
-from .http import _close_response, _post_empty, _request_body, open_stream, post_json, request_json
+from .http import _close_response, _parse_http_url, _post_empty, _request_body, open_stream, post_json, request_json
 from .remote_signer import (
     LivePaymentChallenge,
     LivePaymentSession,
@@ -785,7 +785,6 @@ async def call_runner(
     max_payment_challenge_retries: int = ...,
     on_payment_session: LivePaymentSessionCallback | None = ...,
     stream: Literal[False] = False,
-    _reservation: bool = False,
 ) -> LiveRunnerCallResult:
     pass
 
@@ -823,7 +822,6 @@ async def call_runner(
     max_payment_challenge_retries: int = 3,
     on_payment_session: LivePaymentSessionCallback | None = None,
     stream: bool = False,
-    _reservation: bool = False,
 ) -> LiveRunnerCallResult | LiveRunnerCallStream:
     """Call a runner once and return its result (or a live stream if ``stream=True``).
 
@@ -852,6 +850,7 @@ async def call_runner(
     state = _stream_state(payload)
     owned = state is not None and not isinstance(payload, _StreamState)
     payload = state if state is not None else payload
+    method = method or ("POST" if payload is not None else "GET")
     try:
         runner_url = runner_url.strip() or (runner.url.strip() if runner is not None else "")
         if not runner_url:
@@ -971,26 +970,32 @@ async def call_runner(
                     await _stop_funding(pay_task)
                 # Non-JSON bodies (an image, ndjson) are handed back unparsed in `content`.
                 is_json = _is_json_content_type(response_content_type)
-                data: dict[str, Any] = {}
-                if is_json:
-                    try:
-                        data = json.loads(body)
-                    except (ValueError, RecursionError) as e:
-                        await _release_reservation(runner_url, session_id, runner, method=method)
-                        raise LivepeerGatewayError(
-                            f"HTTP JSON error: endpoint did not return valid JSON: {e} "
-                            f"(url={runner_url}, content_type={response_content_type})"
-                        ) from e
+                is_session = method.upper() == "POST" and _is_session_endpoint(runner_url, runner)
+                try:
+                    data = json.loads(body) if is_json else {}
                     if not isinstance(data, dict):
-                        await _release_reservation(runner_url, session_id, runner, method=method)
-                        raise LivepeerGatewayError(
-                            f"Live runner call expected JSON object, got {type(data).__name__}"
-                        )
+                        raise LivepeerGatewayError(f"Live runner call expected JSON object, got {type(data).__name__}")
+                    if is_session:
+                        if missing := next((key for key in ("session_id", "app_url", "control_url") if not _string_value(data.get(key))), None):
+                            raise LivepeerGatewayError(f"runner session response missing {missing}")
+                        if session_id and not (session_id == data["session_id"] == data["session_id"].strip()):
+                            raise LivepeerGatewayError("runner session response session_id does not match payment manifest")
+                        _join_endpoint(data["control_url"], "stop")
+                except (LivepeerGatewayError, ValueError, RecursionError) as error:
+                    if is_session and re.fullmatch(r"[\w-]{1,128}", session_id, re.ASCII):
+                        with contextlib.suppress(Exception):
+                            await _post_empty(_join_endpoint(runner_url, f"{session_id}/stop"), allow_redirects=False)
+                    if isinstance(error, LivepeerGatewayError):
+                        raise
+                    raise LivepeerGatewayError(
+                        f"HTTP JSON error: endpoint did not return valid JSON: {error} "
+                        f"(url={runner_url}, content_type={response_content_type})"
+                    ) from error
                 return LiveRunnerCallResult(
                     data,
                     runner_url=runner_url,
                     runner=runner,
-                    session_id=session_id or ("" if _reservation else _string_value(data.get("session_id"))),
+                    session_id=session_id or _string_value(data.get("session_id")),
                     payment_session=None if payment_type == "fixed" else payment_session,
                     content=None if is_json else body,
                     content_type=response_content_type,
@@ -1123,11 +1128,18 @@ def _live_runner_price_info_from_json(value: object) -> LiveRunnerPriceInfo | No
     )
 
 
-async def _release_reservation(url: str, session_id: str, runner: LiveRunnerInstance | None, method: str = "POST") -> None:
-    with contextlib.suppress(Exception):
-        route = re.escape(urlsplit(runner.orchestrator_url if runner else "").path.rstrip("/")) + r"/apps/[\w-]+/session/?"
-        if method.upper() == "POST" and re.fullmatch(r"[\w-]{1,128}", session_id, re.ASCII) and re.fullmatch(route, urlsplit(url).path, re.ASCII):
-            await _request_body(_join_endpoint(url, f"{session_id}/stop"), method="POST", allow_redirects=False)
+def _is_session_endpoint(url: str, runner: LiveRunnerInstance | None) -> bool:
+    with contextlib.suppress(ValueError):
+        address = runner.orchestrator_url if runner else ""
+        base, target = urlsplit(address if "://" in address else f"https://{address}"), urlsplit(url)
+        default_port = 443 if target.scheme == "https" else 80
+        origin = target.scheme, target.hostname, target.port if target.port is not None else default_port
+        single_shot = urlsplit(runner.url) if runner is not None and runner.mode == "single-shot" else None
+        same_orchestrator = not address or origin == (base.scheme, base.hostname, base.port if base.port is not None else default_port)
+        same_single_shot = single_shot and target.path.rstrip("/") == single_shot.path.rstrip("/") and origin == (single_shot.scheme, single_shot.hostname, single_shot.port if single_shot.port is not None else default_port)
+        has_http_origin = target.scheme in ("http", "https") and target.hostname is not None and target.port != 0
+        return has_http_origin and same_orchestrator and not same_single_shot and re.fullmatch(re.escape(base.path.rstrip("/")) + r"/apps/[\w-]+/session/?", target.path, re.ASCII) is not None
+    return False
 
 
 async def stop_runner_session(
@@ -1175,13 +1187,13 @@ def detect_process_gpu() -> LiveRunnerGPU | None:
 
 
 def _normalize_http_base(url: str) -> str:
-    url = url.strip()
-    normalized = url if "://" in url else f"https://{url}"
-    parsed = urlparse(normalized)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise LivepeerGatewayError(f"Invalid orchestrator URL: {url!r}")
-    path = parsed.path.rstrip("/")
-    return urlunparse((parsed.scheme, parsed.netloc, path, "", parsed.query, ""))
+    try:
+        parsed = _parse_http_url(url)
+        if not parsed.hostname or parsed.port == 0:
+            raise ValueError("invalid hostname or port")
+    except ValueError as error:
+        raise LivepeerGatewayError(f"Invalid orchestrator URL: {url.strip()!r}") from error
+    return parsed._replace(path=parsed.path.rstrip("/"), params="", fragment="").geturl()
 
 
 def _join_endpoint(base_url: str, suffix: str) -> str:

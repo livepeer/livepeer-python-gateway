@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from .errors import LivepeerGatewayError
@@ -189,6 +189,7 @@ async def discover_orchestrator_runners(
     app: FilterValue | None = None,
     gpu: FilterValue | None = None,
     batch_size: int = _RUNNER_DISCOVERY_BATCH_SIZE,
+    _has_runners: Callable[[list[dict[str, Any]]], bool] = bool,
 ) -> list[dict[str, Any]]:
     first_error: Exception | None = None
     urls = orchestrator_discovery_urls(orchestrators)
@@ -204,7 +205,7 @@ async def discover_orchestrator_runners(
                     first_error = result
                 _LOG.debug("discover_orchestrator_runners failed: %s (%s)", discovery_url, result)
                 continue
-            if result:
+            if _has_runners(result):
                 return result
 
     if first_error is not None:
