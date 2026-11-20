@@ -8,9 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Release verified reservations when `reserve_session()` rejects a malformed response.
-  If cleanup fails, the validation error retains the session handle for retry. A missing
-  or conflicting identity may prevent cleanup; Node idle expiry can recover it when enabled.
+- Attempt to release sessions after malformed reservation responses when the route and ID are known.
 
 ### Added
 

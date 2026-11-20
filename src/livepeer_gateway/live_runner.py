@@ -21,7 +21,7 @@ from typing import (
     overload,
 )
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlsplit, urlunparse
 
 import aiohttp
 from aiohttp.helpers import parse_mimetype
@@ -172,6 +172,7 @@ class LiveRunnerCallResult:
     # Non-JSON responses (an image, say) arrive unparsed in `content`; `data` stays empty.
     content: bytes | None = field(default=None, repr=False)
     content_type: str = ""
+    _payment_manifest_id: str = field(default="", repr=False, compare=False)
 
 
 @dataclass
@@ -973,12 +974,14 @@ async def call_runner(
                 if is_json:
                     try:
                         data = json.loads(body)
-                    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                    except (ValueError, RecursionError) as e:
+                        await _release_reservation(runner_url, session_id, runner, method=method)
                         raise LivepeerGatewayError(
                             f"HTTP JSON error: endpoint did not return valid JSON: {e} "
                             f"(url={runner_url}, content_type={response_content_type})"
                         ) from e
                     if not isinstance(data, dict):
+                        await _release_reservation(runner_url, session_id, runner, method=method)
                         raise LivepeerGatewayError(
                             f"Live runner call expected JSON object, got {type(data).__name__}"
                         )
@@ -993,6 +996,7 @@ async def call_runner(
                     payment_session=None if payment_type == "fixed" else payment_session,
                     content=None if is_json else body,
                     content_type=response_content_type,
+                    _payment_manifest_id=session_id,
                 )
             except LivepeerHTTPError as e:
                 if e.status_code != 402:
@@ -1120,6 +1124,13 @@ def _live_runner_price_info_from_json(value: object) -> LiveRunnerPriceInfo | No
         currency=currency.strip().lower() if isinstance(currency, str) else "",
         unit=unit.strip().lower() if isinstance(unit, str) else "",
     )
+
+
+async def _release_reservation(url: str, session_id: object, runner: LiveRunnerInstance | None, method: str = "POST") -> None:
+    with contextlib.suppress(Exception):
+        route = re.escape(urlsplit(runner.orchestrator_url if runner else "").path.rstrip("/")) + r"/apps/[\w-]+/session/?"
+        if method.upper() == "POST" and isinstance(session_id, str) and re.fullmatch(r"[\w-]{1,128}", session_id, re.ASCII) and re.fullmatch(route, urlsplit(url).path, re.ASCII):
+            await _request_body(_join_endpoint(url, f"{session_id}/stop"), method="POST", allow_redirects=False)
 
 
 async def stop_runner_session(
