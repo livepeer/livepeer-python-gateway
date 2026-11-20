@@ -225,7 +225,7 @@ class _Cursor:
         self.results = list(results)
         self.rejections = []
 
-    async def next(self) -> LiveRunnerCallResult:
+    async def next(self, *, _reservation: bool = False) -> LiveRunnerCallResult:
         if self.results:
             return self.results.pop(0)
         raise AssertionError("unexpected extra runner selection")
@@ -251,7 +251,7 @@ def _reservation(
 
 
 class TestReservationSelection:
-    async def test_paid_reservation_starts_scoped_funding(self) -> None:
+    async def test_onchain_reservation_starts_scoped_funding(self) -> None:
         payment_session = _FundingSession()
         cursor = _Cursor(
             _reservation(

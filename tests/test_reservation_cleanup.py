@@ -10,35 +10,31 @@ from aiohttp.test_utils import TestServer
 from livepeer_gateway import live_runner, selection
 from livepeer_gateway.errors import LivepeerGatewayError, NoRunnerAvailableError
 
+_SESSION_URLS = {"app_url": "https://orch.test/app", "control_url": "https://orch.test/control"}
+_ID_MISMATCH = "does not match payment manifest"
+
 
 @pytest.mark.parametrize(
-    "paid,body,error,expected_stops",
+    "manifest_id,body,error,expected_stops",
     [
-        (True, b"{", "did not return valid JSON", ["paid-id"]),
-        (True, [], "expected JSON object", ["paid-id"]),
-        (True, b'{"huge":' + b"1" * 5000 + b"}", "did not return valid JSON", ["paid-id"]),
-        (True, {}, "missing session_id", ["paid-id"]),
-        (
-            True,
-            {"session_id": "wrong-id", "app_url": "https://orch.test/app", "control_url": "https://orch.test/control"},
-            "does not match payment manifest",
-            ["paid-id"],
-        ),
-        (False, {"session_id": "free-id"}, "missing app_url", ["free-id"]),
-        (False, {}, "missing session_id", []),
-        (False, {"session_id": "../other"}, "missing app_url", []),
-        (False, {"session_id": " free-id "}, "missing app_url", []),
-        (True, {"session_id": " paid-id "}, "missing app_url", ["paid-id"]),
-        (False, b"{", "did not return valid JSON", []),
+        ("onchain-id", b"{", "did not return valid JSON", ["onchain-id"]),
+        ("onchain-id", [], "expected JSON object", ["onchain-id"]),
+        ("onchain-id", b'{"huge":' + b"1" * 5000 + b"}", "did not return valid JSON", ["onchain-id"]),
+        ("onchain-id", {}, "missing session_id", ["onchain-id"]),
+        ("onchain-id", {**_SESSION_URLS, "session_id": "wrong-id"}, _ID_MISMATCH, ["onchain-id"]),
+        ("onchain-id", {**_SESSION_URLS, "session_id": " onchain-id "}, _ID_MISMATCH, ["onchain-id"]),
+        (" onchain-id ", {**_SESSION_URLS, "session_id": " onchain-id "}, _ID_MISMATCH, []),
+        ("", {"session_id": "offchain-id"}, "missing app_url", []),
+        ("", b"{", "did not return valid JSON", []),
     ],
 )
-async def test_malformed_reservation_cleanup(paid, body, error, expected_stops):
+async def test_malformed_reservation_cleanup(manifest_id, body, error, expected_stops):
     stops = []
 
     async def reserve(request: web.Request) -> web.Response:
-        if paid and not request.headers.get("Livepeer-Payment"):
+        if manifest_id and not request.headers.get("Livepeer-Payment"):
             return web.json_response(
-                {"manifest_id": "paid-id", "payment_params": "test", "payment_url": f"{base}/paid-id/payment"},
+                {"manifest_id": manifest_id, "payment_params": "test", "payment_url": f"{base}/onchain-id/payment"},
                 status=402,
             )
         if isinstance(body, bytes):
@@ -64,10 +60,15 @@ async def test_malformed_reservation_cleanup(paid, body, error, expected_stops):
             ),
             pytest.raises(LivepeerGatewayError) as raised,
         ):
-            await selection.reserve_session(signer_url="https://signer.test" if paid else None)
+            await selection.reserve_session(signer_url="https://signer.test" if manifest_id else None)
 
     failure = raised.value
-    reason = failure.rejections[0].reason if isinstance(failure, NoRunnerAvailableError) else str(failure)
+    if isinstance(body, (bytes, list)):
+        assert isinstance(failure, NoRunnerAvailableError)
+        reason = failure.rejections[0].reason
+    else:
+        assert type(failure) is LivepeerGatewayError
+        reason = str(failure)
     assert error in reason
     assert stops == expected_stops
 
@@ -86,5 +87,5 @@ async def test_malformed_reservation_cleanup(paid, body, error, expected_stops):
 async def test_cleanup_only_targets_discovered_reservation_route(prefix, path, should_stop):
     runner = SimpleNamespace(orchestrator_url="https://orch.test" + prefix)
     with mock.patch.object(live_runner, "_request_body") as request:
-        await live_runner._release_reservation("https://orch.test" + path, "paid-id", runner)
+        await live_runner._release_reservation("https://orch.test" + path, "onchain-id", runner)
     assert request.await_count == int(should_stop)

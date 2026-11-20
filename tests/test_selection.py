@@ -338,8 +338,10 @@ class TestRunnerSelection:
             payload: dict[str, object],
             method: str,
             timeout: float,
+            _reservation: bool,
         ) -> LiveRunnerCallResult:
             del payload, method, timeout
+            assert _reservation
             return LiveRunnerCallResult(
                 {
                     "session_id": "session-1",
@@ -348,7 +350,6 @@ class TestRunnerSelection:
                 },
                 runner_url=runner.url,
                 runner=runner,
-                session_id="session-1",
             )
 
         with (
@@ -378,8 +379,10 @@ class TestRunnerSelection:
             payload: dict[str, object],
             method: str,
             timeout: float,
+            _reservation: bool,
         ) -> LiveRunnerCallResult:
             del runner, payload, method, timeout
+            assert _reservation
             return LiveRunnerCallResult(
                 {"ok": True}, runner_url="https://orch-a/apps/a/app"
             )

@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Attempt to release sessions after malformed reservation responses when the route and ID are known.
+- Attempt to release onchain sessions when reservation responses are malformed or have mismatched IDs, if the Node route is known.
 
 ### Added
 

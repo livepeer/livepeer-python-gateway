@@ -172,7 +172,6 @@ class LiveRunnerCallResult:
     # Non-JSON responses (an image, say) arrive unparsed in `content`; `data` stays empty.
     content: bytes | None = field(default=None, repr=False)
     content_type: str = ""
-    _payment_manifest_id: str = field(default="", repr=False, compare=False)
 
 
 @dataclass
@@ -786,6 +785,7 @@ async def call_runner(
     max_payment_challenge_retries: int = ...,
     on_payment_session: LivePaymentSessionCallback | None = ...,
     stream: Literal[False] = False,
+    _reservation: bool = False,
 ) -> LiveRunnerCallResult:
     pass
 
@@ -823,6 +823,7 @@ async def call_runner(
     max_payment_challenge_retries: int = 3,
     on_payment_session: LivePaymentSessionCallback | None = None,
     stream: bool = False,
+    _reservation: bool = False,
 ) -> LiveRunnerCallResult | LiveRunnerCallStream:
     """Call a runner once and return its result (or a live stream if ``stream=True``).
 
@@ -989,14 +990,10 @@ async def call_runner(
                     data,
                     runner_url=runner_url,
                     runner=runner,
-                    session_id=(
-                        session_id
-                        or (data["session_id"].strip() if isinstance(data.get("session_id"), str) else "")
-                    ),
+                    session_id=session_id or ("" if _reservation else _string_value(data.get("session_id"))),
                     payment_session=None if payment_type == "fixed" else payment_session,
                     content=None if is_json else body,
                     content_type=response_content_type,
-                    _payment_manifest_id=session_id,
                 )
             except LivepeerHTTPError as e:
                 if e.status_code != 402:
@@ -1126,10 +1123,10 @@ def _live_runner_price_info_from_json(value: object) -> LiveRunnerPriceInfo | No
     )
 
 
-async def _release_reservation(url: str, session_id: object, runner: LiveRunnerInstance | None, method: str = "POST") -> None:
+async def _release_reservation(url: str, session_id: str, runner: LiveRunnerInstance | None, method: str = "POST") -> None:
     with contextlib.suppress(Exception):
         route = re.escape(urlsplit(runner.orchestrator_url if runner else "").path.rstrip("/")) + r"/apps/[\w-]+/session/?"
-        if method.upper() == "POST" and isinstance(session_id, str) and re.fullmatch(r"[\w-]{1,128}", session_id, re.ASCII) and re.fullmatch(route, urlsplit(url).path, re.ASCII):
+        if method.upper() == "POST" and re.fullmatch(r"[\w-]{1,128}", session_id, re.ASCII) and re.fullmatch(route, urlsplit(url).path, re.ASCII):
             await _request_body(_join_endpoint(url, f"{session_id}/stop"), method="POST", allow_redirects=False)
 
 
@@ -1483,3 +1480,7 @@ def _decode_maybe_bytes(value: object) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value or "")
+
+
+def _string_value(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""

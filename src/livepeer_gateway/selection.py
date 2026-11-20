@@ -20,6 +20,7 @@ from .live_runner import (
     LiveRunnerSession,
     _live_runner_price_info_from_json,
     _release_reservation,
+    _string_value,
     call_runner,
 )
 from .runner_payload import RunnerPayload, _ReplayUnavailableError, _StreamState, _stream_state
@@ -64,7 +65,7 @@ class RunnerSelectionCursor:
     def candidates(self) -> tuple[LiveRunnerInstance, ...]:
         return tuple(self._candidates)
 
-    async def next(self) -> LiveRunnerCallResult:
+    async def next(self, *, _reservation: bool = False) -> LiveRunnerCallResult:
         if self._closed:
             raise LivepeerGatewayError("Runner selection cursor is closed")
         if self._next_running:
@@ -84,6 +85,7 @@ class RunnerSelectionCursor:
                         "payload": self._payload_state if self._payload_state is not None else self._body,
                         "method": self._method,
                         "timeout": self._timeout,
+                        **({"_reservation": True} if _reservation else {}),
                     }
                     if self._content_type is not None:
                         kwargs["content_type"] = self._content_type
@@ -207,16 +209,16 @@ async def reserve_session(
         gpu=gpu,
         timeout=timeout,
     )
-    result = await cursor.next()
+    result = await cursor.next(_reservation=True)
     fields = {key: _string_value(result.data.get(key)) for key in ("session_id", "app_url", "control_url")}
     try:
         if missing := next((key for key, value in fields.items() if not value), None):
             raise LivepeerGatewayError(f"runner session response missing {missing}")
-        if result._payment_manifest_id and fields["session_id"] != result._payment_manifest_id:
+        if result.session_id and not (result.session_id == fields["session_id"] == result.data["session_id"]):
             raise LivepeerGatewayError("runner session response session_id does not match payment manifest")
         session = LiveRunnerSession(**fields, runner_url=result.runner_url, runner=result.runner)
     except (LivepeerGatewayError, ValueError):
-        await _release_reservation(result.runner_url, result._payment_manifest_id or result.data.get("session_id"), result.runner)
+        await _release_reservation(result.runner_url, result.session_id, result.runner)
         raise
 
     # No payment session means fixed price or offchain: nothing to fund.
@@ -252,7 +254,3 @@ def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list
                 )
             )
     return candidates
-
-
-def _string_value(value: object) -> str:
-    return value.strip() if isinstance(value, str) else ""
