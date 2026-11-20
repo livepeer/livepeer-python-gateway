@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Sequence
 from typing import Any
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import SplitResult, quote, unquote, urlsplit
 
 from .discovery import (
     FilterValue,
@@ -20,6 +21,7 @@ from .live_runner import (
     LiveRunnerCallResult,
     LiveRunnerInstance,
     LiveRunnerSession,
+    _join_endpoint,
     _live_runner_price_info_from_json,
     call_runner,
     stop_runner_session,
@@ -211,49 +213,99 @@ async def reserve_session(
     )
     result = await cursor.next()
     data = result.data if isinstance(result.data, dict) else {}
-    session_id = data.get("session_id")
-    app_url = data.get("app_url")
+    session_id = _string_value(data.get("session_id"))
+    app_url = _string_value(data.get("app_url"))
     control_url = _string_value(data.get("control_url"))
-    cleanup = None
-    sid = _string_value(session_id) or _string_value(result.session_id)
-    if sid:
-        # Retain a fallback before validating the server's response fields.
-        fallback = ""
-        base = urlsplit(result.runner_url)
-        if base.path.rstrip("/").endswith("/session"):
-            fallback = urlunsplit(base._replace(path=base.path.rstrip("/") + "/" + quote(sid, safe=""), fragment=""))
-        for candidate in (fallback, control_url):
-            if not candidate:
-                continue
-            try:
-                cleanup = LiveRunnerSession(
-                    session_id=sid, app_url="", runner_url=result.runner_url,
-                    control_url=candidate, runner=result.runner,
-                )
-            except LivepeerGatewayError:
-                continue
+    known_id = _string_value(result.session_id)
+    session = None
     try:
-        if not isinstance(session_id, str) or not session_id.strip():
+        if not session_id:
             raise LivepeerGatewayError("runner session response missing session_id")
-        if not isinstance(app_url, str) or not app_url.strip():
+        if known_id and session_id != known_id:
+            raise LivepeerGatewayError("runner session response session_id does not match payment manifest")
+        if not app_url:
             raise LivepeerGatewayError("runner session response missing app_url")
         if not control_url:
             raise LivepeerGatewayError("runner session response missing control_url")
-        session = LiveRunnerSession(
-            session_id=session_id.strip(),
-            app_url=app_url.strip(),
-            runner_url=result.runner_url,
-            control_url=control_url,
-            runner=result.runner,
-        )
-        cleanup = session
+        try:
+            session = LiveRunnerSession(session_id, app_url, result.runner_url, control_url, result.runner)
+        except ValueError as error:
+            raise LivepeerGatewayError("runner session response has invalid control_url") from error
         if result.payment_session is not None:
             session._start_payments(result.payment_session)
         return session
     except BaseException as error:
+        cleanup = session or _invalid_reservation_handle(result, known_id or session_id, control_url, app_url)
         if cleanup is not None:
             await _release_invalid_reservation(cleanup, error)
+        elif known_id or session_id or control_url:
+            error.add_note("Reservation cleanup unresolved: no verified stop route")
         raise
+
+
+def _invalid_reservation_handle(
+    result: LiveRunnerCallResult, session_id: str, control_url: str, app_url: str = "",
+) -> LiveRunnerSession | None:
+    runner_url = result.runner_url
+    try:
+        base = urlsplit(runner_url)
+    except ValueError:
+        return None
+    path = base.path.rstrip("/")
+    canonical = re.search(r"/apps/[^/]+/session$", path) is not None
+    payment = result.payment_session
+    body_id = _string_value(result.data.get("session_id")) if isinstance(result.data, dict) else ""
+    # On offchain calls result.session_id just repeats the body field.
+    manifest = getattr(payment, "manifest_id", "") or (result.session_id if result.session_id != body_id else "")
+
+    def verified(url: str) -> SplitResult | None:
+        try:
+            candidate = urlsplit(url)
+            if _origin(candidate) == _origin(base):
+                return candidate
+        except ValueError:
+            pass
+        return None
+
+    def handle(sid: str, url: str) -> LiveRunnerSession:
+        return LiveRunnerSession(sid, "", runner_url, url, result.runner)
+
+    try:
+        control = verified(control_url)
+        control_path = control.path.rstrip("/") if control is not None else ""
+        if not canonical and payment is not None and manifest and session_id == manifest:
+            payment_url = getattr(getattr(payment, "_challenge", None), "payment_url", "")
+            payment_route = verified(payment_url)
+            suffix = "/" + quote(manifest, safe="") + "/payment"
+            if payment_route and payment_route.path.endswith(suffix) and re.search(
+                r"/apps/[^/]+/session$", payment_route.path.removesuffix(suffix),
+            ):
+                path = payment_route.path.removesuffix("/payment")
+                stop_url = control_url if control_path == path else payment_route._replace(path=path).geturl()
+                return handle(manifest, stop_url)
+        match = re.search(r"(/apps/[^/]+/session)/([A-Za-z0-9_-]+)$", unquote(control_path))
+        if match and (not canonical or control_path.rsplit("/", 1)[0] == path):
+            control_id = match[2]
+            app = verified(app_url)
+            if app is not None and app.path.rstrip("/") == control_path + "/app" and (
+                not manifest or manifest == control_id
+            ):
+                return handle(control_id, control_url)
+            if session_id == control_id or (canonical and not session_id):
+                return handle(control_id, control_url)
+            if session_id and not manifest:
+                # The two offchain fields disagree without independent corroboration.
+                return None
+        if canonical and session_id:
+            return handle(session_id, _join_endpoint(runner_url, quote(session_id, safe="")))
+    except (ValueError, LivepeerGatewayError):
+        pass  # No usable stop identity in the response or request URL.
+    return None
+
+
+def _origin(url: SplitResult) -> tuple[str, str | None, int]:
+    default_port = 443 if url.scheme == "https" else 80
+    return url.scheme, url.hostname, url.port if url.port is not None else default_port
 
 
 async def _release_invalid_reservation(session: LiveRunnerSession, original: BaseException) -> None:
@@ -282,8 +334,12 @@ async def _release_invalid_reservation(session: LiveRunnerSession, original: Bas
     try:
         task.result()
     except Exception as error:
-        original.add_note(f"Reservation cleanup failed for session {session.session_id}: {error}")
+        note = f"Reservation cleanup failed for session {session.session_id}: {error}"
+        original.add_note(note)
         original.cleanup_session = session
+        if cancellation is not None:
+            cancellation.add_note(note)
+            cancellation.cleanup_session = session
         _LOG.error("Invalid reservation cleanup failed for session %s", session.session_id, exc_info=True)
     if cancellation is not None:
         raise cancellation from original
