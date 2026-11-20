@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from .discovery import (
     FilterValue,
@@ -20,6 +22,7 @@ from .live_runner import (
     LiveRunnerSession,
     _live_runner_price_info_from_json,
     call_runner,
+    stop_runner_session,
 )
 from .runner_payload import RunnerPayload, _ReplayUnavailableError, _StreamState, _stream_state
 
@@ -207,27 +210,83 @@ async def reserve_session(
         timeout=timeout,
     )
     result = await cursor.next()
-    session_id = result.data.get("session_id")
-    app_url = result.data.get("app_url")
-    control_url = _string_value(result.data.get("control_url"))
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise LivepeerGatewayError("runner session response missing session_id")
-    if not isinstance(app_url, str) or not app_url.strip():
-        raise LivepeerGatewayError("runner session response missing app_url")
-    if not control_url:
-        raise LivepeerGatewayError("runner session response missing control_url")
-    session = LiveRunnerSession(
-        session_id=session_id.strip(),
-        app_url=app_url.strip(),
-        runner_url=result.runner_url,
-        control_url=control_url,
-        runner=result.runner,
-    )
+    data = result.data if isinstance(result.data, dict) else {}
+    session_id = data.get("session_id")
+    app_url = data.get("app_url")
+    control_url = _string_value(data.get("control_url"))
+    cleanup = None
+    sid = _string_value(session_id) or _string_value(result.session_id)
+    if sid:
+        # Retain a fallback before validating the server's response fields.
+        fallback = ""
+        base = urlsplit(result.runner_url)
+        if base.path.rstrip("/").endswith("/session"):
+            fallback = urlunsplit(base._replace(path=base.path.rstrip("/") + "/" + quote(sid, safe=""), fragment=""))
+        for candidate in (fallback, control_url):
+            if not candidate:
+                continue
+            try:
+                cleanup = LiveRunnerSession(
+                    session_id=sid, app_url="", runner_url=result.runner_url,
+                    control_url=candidate, runner=result.runner,
+                )
+            except LivepeerGatewayError:
+                continue
+    try:
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise LivepeerGatewayError("runner session response missing session_id")
+        if not isinstance(app_url, str) or not app_url.strip():
+            raise LivepeerGatewayError("runner session response missing app_url")
+        if not control_url:
+            raise LivepeerGatewayError("runner session response missing control_url")
+        session = LiveRunnerSession(
+            session_id=session_id.strip(),
+            app_url=app_url.strip(),
+            runner_url=result.runner_url,
+            control_url=control_url,
+            runner=result.runner,
+        )
+        cleanup = session
+        if result.payment_session is not None:
+            session._start_payments(result.payment_session)
+        return session
+    except BaseException as error:
+        if cleanup is not None:
+            await _release_invalid_reservation(cleanup, error)
+        raise
 
-    # No payment session means fixed price or offchain: nothing to fund.
-    if result.payment_session is not None:
-        session._start_payments(result.payment_session)
-    return session
+
+async def _release_invalid_reservation(session: LiveRunnerSession, original: BaseException) -> None:
+    async def release() -> None:
+        for attempt in range(3):
+            try:
+                await stop_runner_session(session, timeout=5.0)
+                return
+            except Exception as error:
+                status = getattr(error, "status_code", None)
+                if status in (404, 410):
+                    return
+                if attempt == 2 or status is not None and status not in (408, 429) and not 500 <= status < 600:
+                    raise
+                await asyncio.sleep(0.25 * 2**attempt)
+
+    task = asyncio.create_task(release())
+    cancellation = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            cancellation = error
+        except Exception:
+            break
+    try:
+        task.result()
+    except Exception as error:
+        original.add_note(f"Reservation cleanup failed for session {session.session_id}: {error}")
+        original.cleanup_session = session
+        _LOG.error("Invalid reservation cleanup failed for session %s", session.session_id, exc_info=True)
+    if cancellation is not None:
+        raise cancellation from original
 
 
 def _runner_candidates_from_discovery(entries: Sequence[dict[str, Any]]) -> list[LiveRunnerInstance]:

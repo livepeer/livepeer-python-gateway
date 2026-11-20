@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Release identifiable reservations when `reserve_session()` rejects a malformed
+  response. Cleanup retries transient failures and survives cancellation; an
+  exhausted cleanup preserves the validation error and retains its session handle.
+
 ### Added
 
 - `LiveRunnerRegistration.stop_session()` to stop reserved sessions

@@ -251,6 +251,11 @@ def _reservation(
 
 
 class TestReservationSelection:
+    @pytest.fixture(autouse=True)
+    def stop_invalid_reservation(self):
+        with mock.patch.object(selection, "stop_runner_session", new=mock.AsyncMock()):
+            yield
+
     async def test_paid_reservation_starts_scoped_funding(self) -> None:
         payment_session = _FundingSession()
         cursor = _Cursor(
