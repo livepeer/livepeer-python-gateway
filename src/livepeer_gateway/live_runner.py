@@ -324,6 +324,7 @@ class LiveRunnerRegistration:
         self._closed = False
         self._task: asyncio.Task[None] | None = None
         self._o2r_task: asyncio.Task[None] | None = None
+        self._heartbeat_lock = asyncio.Lock()
 
     async def start(self) -> LiveRunnerRegistration:
         await self._send_heartbeat()
@@ -495,6 +496,19 @@ class LiveRunnerRegistration:
                 _LOG.warning("Live runner heartbeat failed; retrying on next interval", exc_info=True)
 
     async def _send_heartbeat(self) -> None:
+        # A re-registration and its reader replacement must be one operation.
+        async with self._heartbeat_lock:
+            if self._closed:
+                return
+            await self._send_heartbeat_locked()
+
+    async def _send_heartbeat_locked(self) -> None:
+        # A 404/EOF ends ChannelReader normally; errors also finish its callback
+        # task. Re-register on the next heartbeat instead of advertising a runner
+        # whose reservation events can no longer arrive.
+        if self._o2r_task is not None and self._o2r_task.done():
+            _LOG.warning("Live runner O2R reader ended; registering a fresh channel")
+            self._heartbeat_secret = None
         is_initial_heartbeat = self._heartbeat_secret is None
         auth = self._heartbeat_secret or self._bootstrap_secret
         request_orchestrator_url = self.orchestrator_url
@@ -547,8 +561,9 @@ class LiveRunnerRegistration:
         elif is_initial_heartbeat:
             raise LivepeerGatewayError("Live runner heartbeat response missing heartbeat_secret")
 
-        if is_initial_heartbeat:
-            self._start_o2r(data.get("o2r"))
+        if self._closed:
+            return
+        await self._start_o2r(data.get("o2r"))
 
     async def _post_heartbeat(self, auth: str) -> dict[str, Any]:
         return await post_json(
@@ -558,8 +573,8 @@ class LiveRunnerRegistration:
             timeout=self._timeout,
         )
 
-    def _start_o2r(self, value: object) -> None:
-        if self._closed or self._o2r_reader is not None:
+    async def _start_o2r(self, value: object) -> None:
+        if self._closed:
             return
         if not _is_trickle_channel_response(value):
             if value is not None:
@@ -568,6 +583,27 @@ class LiveRunnerRegistration:
         channel = cast(LiveRunnerTrickleChannel, value)
         url = channel.get("url", "").strip()
         if not url:
+            return
+        if (
+            self._o2r_reader is not None
+            and self.o2r_channel is not None
+            and self.o2r_channel.get("url", "").strip() == url
+            and self._o2r_task is not None
+            and not self._o2r_task.done()
+        ):
+            return
+        old_reader = self._o2r_reader
+        # Keep ownership until close completes. If this operation is cancelled,
+        # shutdown or the next heartbeat must still be able to close the reader.
+        if old_reader is not None:
+            try:
+                await old_reader.close(wait_callback=False)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # An already-failed reader must not block its replacement.
+                _LOG.exception("Live runner old O2R reader failed during replacement")
+        if self._closed:
             return
         self.o2r_channel = channel
         reader = ChannelReader(url, start_seq=0, on_event=self._handle_o2r_message)
