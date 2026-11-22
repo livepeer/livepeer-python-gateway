@@ -305,6 +305,8 @@ class TrickleSubscriber:
         cancel_deadline: float | None = None
         loop = asyncio.get_running_loop()
         while True:
+            if cancel_deadline is not None and loop.time() >= cancel_deadline:
+                raise asyncio.CancelledError
             try:
                 cleanup = asyncio.shield(self._close_task)
                 if cancel_deadline is None:
