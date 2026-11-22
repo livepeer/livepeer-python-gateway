@@ -318,3 +318,129 @@ async def test_repeated_cancel_and_shutdown_share_transport_cleanup_task():
         await reg.close()
         if Subscriber.instance is not None and Subscriber.instance.session is not None:
             await Subscriber.instance.session.close()
+
+
+@pytest.mark.parametrize("ending", ["eof", "error"])
+async def test_natural_subscriber_cleanup_finishes_before_replacement_attaches(ending):
+    from livepeer_gateway import channel_reader
+    from livepeer_gateway.trickle_subscriber import TrickleSubscriber
+
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    subscribers = []
+
+    class Subscriber(TrickleSubscriber):
+        async def __aenter__(self):
+            await self._ensure_runtime()
+            self.owned_session = self._session
+            real_close = self.owned_session.close
+
+            async def slow_close():
+                cleanup_started.set()
+                await cleanup_release.wait()
+                await real_close()
+
+            self.owned_session.close = slow_close
+            subscribers.append(self)
+            return self
+
+        async def next(self):
+            if ending == "error":
+                raise RuntimeError("subscription ended")
+            return None  # Real ChannelReader enters natural EOF cleanup.
+
+    reg = registration()
+    try:
+        with (
+            mock.patch.object(
+                live_runner, "ChannelReader", channel_reader.ChannelReader
+            ),
+            mock.patch.object(channel_reader, "TrickleSubscriber", Subscriber),
+            mock.patch.object(
+                reg, "_post_heartbeat", side_effect=[response("old"), response("new")]
+            ),
+        ):
+            await reg._send_heartbeat()
+            await asyncio.wait_for(cleanup_started.wait(), 1)
+            old_reader = reg._o2r_reader
+            replacement = asyncio.create_task(reg._send_heartbeat())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert not replacement.done()
+            assert (
+                reg._o2r_reader is old_reader
+                and not subscribers[0].owned_session.closed
+            )
+            cleanup_release.set()
+            await asyncio.wait_for(replacement, 1)
+            assert subscribers[0].owned_session.closed
+            assert reg._o2r_reader is not old_reader
+            await reg.close()
+    finally:
+        cleanup_release.set()
+        await reg.close()
+        for subscriber in subscribers:
+            await subscriber.owned_session.close()
+
+
+async def test_subscriber_cancel_grace_is_bounded_and_cleanup_remains_owned():
+    from livepeer_gateway import trickle_subscriber
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class Subscriber(trickle_subscriber.TrickleSubscriber):
+        async def _close_transport(self):
+            started.set()
+            await release.wait()
+            await super()._close_transport()
+
+    subscriber = Subscriber("http://unused.invalid")
+    await subscriber._ensure_runtime()
+    session = subscriber._session
+    try:
+        with mock.patch.object(trickle_subscriber, "_CLOSE_CANCEL_GRACE_S", 0.01):
+            closing = asyncio.create_task(subscriber.close())
+            await asyncio.wait_for(started.wait(), 1)
+            closing.cancel()
+            await asyncio.sleep(0)
+            closing.cancel()
+            done, _ = await asyncio.wait([closing], timeout=1)
+            assert closing in done
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+            assert not session.closed and not subscriber._close_task.done()
+            release.set()
+            await asyncio.wait_for(subscriber.close(), 1)
+            assert session.closed
+    finally:
+        release.set()
+        await subscriber.close()
+        await session.close()
+
+
+async def test_session_callback_can_close_registration_without_self_await():
+    class CallbackReader(Reader):
+        def __init__(self, url, **kwargs):
+            super().__init__(url, **kwargs)
+            self.task.cancel()
+            self.task = asyncio.create_task(
+                self.on_event({"event": "reserved", "session": "session"})
+            )
+
+    reg = registration()
+
+    async def on_reserve(event):
+        await reg.close()
+
+    reg._on_session_reserve = on_reserve
+    with (
+        mock.patch.object(live_runner, "ChannelReader", CallbackReader),
+        mock.patch.object(reg, "_post_heartbeat", return_value=response("channel")),
+    ):
+        await reg._send_heartbeat()
+        reader = reg._o2r_reader
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(reader.task), 1)
+        await asyncio.wait_for(reg.close(), 1)
+        assert reg._closed and reg._o2r_reader is None and reader.closed
