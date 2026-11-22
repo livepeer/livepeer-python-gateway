@@ -325,6 +325,7 @@ class LiveRunnerRegistration:
         self._task: asyncio.Task[None] | None = None
         self._o2r_task: asyncio.Task[None] | None = None
         self._heartbeat_lock = asyncio.Lock()
+        self._o2r_needs_registration = False
 
     async def start(self) -> LiveRunnerRegistration:
         await self._send_heartbeat()
@@ -506,7 +507,7 @@ class LiveRunnerRegistration:
         # A 404/EOF ends ChannelReader normally; errors also finish its callback
         # task. Re-register on the next heartbeat instead of advertising a runner
         # whose reservation events can no longer arrive.
-        if self._o2r_task is not None and self._o2r_task.done():
+        if self._o2r_needs_registration or (self._o2r_task is not None and self._o2r_task.done()):
             _LOG.warning("Live runner O2R reader ended; registering a fresh channel")
             self._heartbeat_secret = None
         is_initial_heartbeat = self._heartbeat_secret is None
@@ -599,6 +600,10 @@ class LiveRunnerRegistration:
             try:
                 await old_reader.close(wait_callback=False)
             except asyncio.CancelledError:
+                # The new heartbeat secret may already be installed, while the
+                # old reader is still alive. A retry must request the channel
+                # again even if ordinary heartbeat responses omit it.
+                self._o2r_needs_registration = True
                 raise
             except Exception:
                 # An already-failed reader must not block its replacement.
@@ -609,6 +614,7 @@ class LiveRunnerRegistration:
         reader = ChannelReader(url, start_seq=0, on_event=self._handle_o2r_message)
         self._o2r_reader = reader
         self._o2r_task = reader.callback_task()
+        self._o2r_needs_registration = False
 
     async def _handle_o2r_message(self, message: dict[str, Any]) -> None:
         if message.get("keep") == "alive":

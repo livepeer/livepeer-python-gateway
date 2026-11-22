@@ -162,7 +162,7 @@ async def test_cancelled_replacement_can_recover_on_next_heartbeat():
         reg,
         "_post_heartbeat",
         side_effect=[response("old"), response("new"), response("new")],
-    ):
+    ) as post:
         await reg._send_heartbeat()
         Reader.close_started = asyncio.Event()
         Reader.close_release = asyncio.Event()
@@ -173,6 +173,8 @@ async def test_cancelled_replacement_can_recover_on_next_heartbeat():
             await update
         Reader.close_release.set()
         await reg._send_heartbeat()
+        assert post.call_args.args == ("bootstrap",)
+        assert Reader.instances[0].closed
         assert len(Reader.instances) == 2
         await reg.close()
 
