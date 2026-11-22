@@ -130,8 +130,29 @@ async def test_ended_reader_reregisters_even_when_heartbeat_auth_would_still_wor
 
 async def test_same_live_channel_and_concurrent_heartbeats_keep_one_reader():
     reg = registration()
-    with mock.patch.object(reg, "_post_heartbeat", return_value=response("same")):
-        await asyncio.gather(*(reg._send_heartbeat() for _ in range(8)))
+    inflight = maximum = 0
+    first_entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def heartbeat(auth):
+        nonlocal inflight, maximum
+        inflight += 1
+        maximum = max(maximum, inflight)
+        first_entered.set()
+        try:
+            await release.wait()
+            await asyncio.sleep(0)
+            return response("same")
+        finally:
+            inflight -= 1
+
+    with mock.patch.object(reg, "_post_heartbeat", side_effect=heartbeat):
+        requests = [asyncio.create_task(reg._send_heartbeat()) for _ in range(8)]
+        await asyncio.wait_for(first_entered.wait(), 1)
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(*requests)
+        assert maximum == 1 and inflight == 0
         assert len(Reader.instances) == 1
         await reg.close()
         await reg._send_heartbeat()
@@ -218,3 +239,82 @@ async def test_real_channel_404_ends_reader_and_next_heartbeat_registers_again()
     finally:
         await reg.close()
         await server.cleanup()
+
+
+async def test_repeated_cancel_and_shutdown_share_transport_cleanup_task():
+    import aiohttp
+    from livepeer_gateway import channel_reader
+
+    opened = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    cleanup_done = asyncio.Event()
+
+    class Subscriber:
+        instance = None
+
+        def __init__(self, *args, **kwargs):
+            Subscriber.instance = self
+            self.session = None
+            self.close_calls = 0
+            self.cancellations = 0
+
+        async def __aenter__(self):
+            self.session = aiohttp.ClientSession()
+            opened.set()
+            return self
+
+        async def next(self):
+            await asyncio.Event().wait()
+
+        async def __aexit__(self, *exc):
+            self.close_calls += 1
+            cleanup_started.set()
+            try:
+                # Model a subscriber waiting for its cancelled prefetch task
+                # before closing its actual HTTP session.
+                await cleanup_release.wait()
+                await self.session.close()
+                cleanup_done.set()
+            except asyncio.CancelledError:
+                self.cancellations += 1
+                raise
+
+    reg = registration()
+    try:
+        with (
+            mock.patch.object(
+                live_runner, "ChannelReader", channel_reader.ChannelReader
+            ),
+            mock.patch.object(channel_reader, "TrickleSubscriber", Subscriber),
+            mock.patch.object(
+                reg, "_post_heartbeat", side_effect=[response("old"), response("new")]
+            ),
+        ):
+            await reg._send_heartbeat()
+            await asyncio.wait_for(opened.wait(), 1)
+            subscriber = Subscriber.instance
+            replacement = asyncio.create_task(reg._send_heartbeat())
+            await asyncio.wait_for(cleanup_started.wait(), 1)
+            replacement.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await replacement
+            closing = asyncio.create_task(reg.close())
+            await asyncio.sleep(0)
+            closing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+            retry_close = asyncio.create_task(reg.close())
+            await asyncio.sleep(0)
+            assert subscriber.close_calls == 1 and subscriber.cancellations == 0
+            assert not subscriber.session.closed
+            cleanup_release.set()
+            await asyncio.wait_for(retry_close, 1)
+            assert cleanup_done.is_set() and subscriber.session.closed
+            assert subscriber.close_calls == 1 and subscriber.cancellations == 0
+            assert reg._o2r_reader is None
+    finally:
+        cleanup_release.set()
+        await reg.close()
+        if Subscriber.instance is not None and Subscriber.instance.session is not None:
+            await Subscriber.instance.session.close()

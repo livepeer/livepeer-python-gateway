@@ -326,6 +326,8 @@ class LiveRunnerRegistration:
         self._o2r_task: asyncio.Task[None] | None = None
         self._heartbeat_lock = asyncio.Lock()
         self._o2r_needs_registration = False
+        self._o2r_closing_reader: ChannelReader | None = None
+        self._o2r_close_task: asyncio.Task[None] | None = None
 
     async def start(self) -> LiveRunnerRegistration:
         await self._send_heartbeat()
@@ -341,9 +343,9 @@ class LiveRunnerRegistration:
         o2r_reader = self._o2r_reader
         self._o2r_reader = None
         self._o2r_task = None
-        if o2r_reader is not None:
+        if o2r_reader is not None or self._o2r_close_task is not None:
             try:
-                await o2r_reader.close(wait_callback=False)
+                await self._close_o2r_reader(o2r_reader)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -574,6 +576,21 @@ class LiveRunnerRegistration:
             timeout=self._timeout,
         )
 
+    async def _close_o2r_reader(self, reader: ChannelReader | None) -> None:
+        # Closing cancels the callback once. Keep that cleanup task alive if a
+        # replacement or shutdown waiter is cancelled, and reuse it on retry.
+        if reader is not None and reader is not self._o2r_closing_reader:
+            async def finish() -> None:
+                try:
+                    await reader.close(wait_callback=False)
+                except Exception:
+                    _LOG.exception("Live runner O2R reader failed during cleanup")
+
+            self._o2r_closing_reader = reader
+            self._o2r_close_task = asyncio.create_task(finish())
+        if self._o2r_close_task is not None:
+            await asyncio.shield(self._o2r_close_task)
+
     async def _start_o2r(self, value: object) -> None:
         if self._closed:
             return
@@ -586,7 +603,8 @@ class LiveRunnerRegistration:
         if not url:
             return
         if (
-            self._o2r_reader is not None
+            not self._o2r_needs_registration
+            and self._o2r_reader is not None
             and self.o2r_channel is not None
             and self.o2r_channel.get("url", "").strip() == url
             and self._o2r_task is not None
@@ -598,7 +616,7 @@ class LiveRunnerRegistration:
         # shutdown or the next heartbeat must still be able to close the reader.
         if old_reader is not None:
             try:
-                await old_reader.close(wait_callback=False)
+                await self._close_o2r_reader(old_reader)
             except asyncio.CancelledError:
                 # The new heartbeat secret may already be installed, while the
                 # old reader is still alive. A retry must request the channel
