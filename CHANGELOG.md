@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `LivePaymentSession.manifest_id` for payment attribution
 - Flexible request body types on call_runner and selectors.
 
+### Fixed
+
+- Live runners replace their reservation-event reader when re-registration
+  returns a new channel. An ended or failed reader triggers registration on the
+  next heartbeat, including after an orchestrator restart.
+- Trickle subscriber transport cleanup survives callback cancellation, including
+  cancellation during natural end-of-stream cleanup. Caller cancellation has a
+  bounded cleanup grace period; repeated close calls reuse the same teardown.
+
 ### Changed
 
 - `discover_orchestrators` is now asynchronous and must be awaited, including

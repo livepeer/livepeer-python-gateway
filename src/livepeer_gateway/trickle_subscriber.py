@@ -11,6 +11,7 @@ from .segment_reader import SegmentReader
 
 
 _LOG = logging.getLogger(__name__)
+_CLOSE_CANCEL_GRACE_S = 10.0
 
 @dataclass(frozen=True)
 class TrickleSubscriberStats:
@@ -76,6 +77,7 @@ class TrickleSubscriber:
         self._errored = False
         self._closing = False
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
         self._prefetch_task: asyncio.Task[None] | None = None
         self._started_at = time.time()
         self._stats: dict[str, int] = {
@@ -290,7 +292,41 @@ class TrickleSubscriber:
                 self._pending_get = next_conn
 
     async def close(self) -> None:
-        """Close the session when done."""
+        """Keep transport cleanup owned when callers are cancelled.
+
+        Natural EOF cleanup can overlap reader shutdown. Both await the same
+        teardown, so cancelling the callback cannot abandon its HTTP session.
+        Cancellation waits at most ten seconds; cleanup continues if it needs
+        longer, and a later close can await the same task.
+        """
+        if self._close_task is None:
+            self._closing = True
+            self._close_task = asyncio.create_task(self._close_transport())
+        cancel_deadline: float | None = None
+        loop = asyncio.get_running_loop()
+        while True:
+            if cancel_deadline is not None and loop.time() >= cancel_deadline:
+                raise asyncio.CancelledError
+            try:
+                cleanup = asyncio.shield(self._close_task)
+                if cancel_deadline is None:
+                    await cleanup
+                else:
+                    await asyncio.wait_for(cleanup, max(0.0, cancel_deadline - loop.time()))
+                break
+            except asyncio.CancelledError:
+                if self._close_task.cancelled():
+                    raise
+                if cancel_deadline is None:
+                    cancel_deadline = loop.time() + _CLOSE_CANCEL_GRACE_S
+            except TimeoutError:
+                # Propagate cancellation without abandoning the owned cleanup.
+                # A later close() can still await the same task.
+                raise asyncio.CancelledError from None
+        if cancel_deadline is not None:
+            raise asyncio.CancelledError
+
+    async def _close_transport(self) -> None:
         if self._closed:
             return
 
