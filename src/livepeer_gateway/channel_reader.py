@@ -238,6 +238,7 @@ class ChannelReader(_ChannelReaderCallback):
         consumption starts immediately. If no loop is running, call
         start_callback() later from async code or use async with the reader.
         """
+        self._subscriber: TrickleSubscriber | None = None
         self._init_callback(
             events_url,
             start_seq=start_seq,
@@ -291,6 +292,7 @@ class ChannelReader(_ChannelReaderCallback):
                     max_retries=max_retries,
                     max_bytes=max_event_bytes,
                 ) as subscriber:
+                    self._subscriber = subscriber
                     while (segment := await subscriber.next()) is not None:
                         payload = await _read_all(segment)
                         if not payload.strip():
