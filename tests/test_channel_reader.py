@@ -167,6 +167,7 @@ class TestChannelReader:
         order: list[str] = []
 
         async def _on_event(_event: dict[str, object]) -> None:
+            assert reader._subscriber is _FakeSubscriber.instances[0]
             order.append("start")
             await asyncio.sleep(0)
             order.append("done")

@@ -1381,9 +1381,8 @@ class TestLiveRunnerRegistration:
         ) -> dict[str, object]:
             calls.append((url, payload, headers))
             if headers["Authorization"] == "heartbeat-token":
-                if state != "live":
-                    pending = SimpleNamespace(headers={"Lp-Trickle-Closed": ""}) if state == "eos" else None
-                    _FakeO2RReader.instances[0]._subscriber = SimpleNamespace(_closing=state == "closing", _errored=state == "errored", _pending_get=pending)
+                pending = SimpleNamespace(headers={"Lp-Trickle-Closed": ""} if state == "eos" else {})
+                _FakeO2RReader.instances[0]._subscriber = SimpleNamespace(_closing=state == "closing", _errored=state == "errored", _pending_get=pending)
                 raise LivepeerHTTPError(401, url, "any body")
             channel = {1: "old", 3: new_channel}.get(len(calls), "ignored")
             if len(calls) >= 4:
