@@ -324,6 +324,7 @@ class LiveRunnerRegistration:
         self._closed = False
         self._task: asyncio.Task[None] | None = None
         self._o2r_task: asyncio.Task[None] | None = None
+        self._retired_o2r_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> LiveRunnerRegistration:
         await self._send_heartbeat()
@@ -559,7 +560,7 @@ class LiveRunnerRegistration:
         )
 
     def _start_o2r(self, value: object) -> None:
-        if self._closed or self._o2r_reader is not None:
+        if self._closed:
             return
         if not _is_trickle_channel_response(value):
             if value is not None:
@@ -570,6 +571,14 @@ class LiveRunnerRegistration:
         if not url:
             return
         self.o2r_channel = channel
+        if (old_reader := self._o2r_reader) and (old_task := self._o2r_task) and not old_task.done():
+            if (sub := old_reader._subscriber) is None or not sub._closing:
+                ended = sub and (sub._errored or sub._pending_get and "Lp-Trickle-Closed" in sub._pending_get.headers)
+                if not ended and old_reader.events_url.rstrip("/") == url.rstrip("/"):
+                    return
+                old_task.cancel()
+            self._retired_o2r_tasks.add(old_task)
+            old_task.add_done_callback(self._retired_o2r_tasks.discard)
         reader = ChannelReader(url, start_seq=0, on_event=self._handle_o2r_message)
         self._o2r_reader = reader
         self._o2r_task = reader.callback_task()
@@ -613,6 +622,8 @@ class LiveRunnerRegistration:
                 await result
         except Exception:
             _LOG.exception("Live runner %s callback failed for session %s", typed_event, session_id)
+        if asyncio.current_task() in self._retired_o2r_tasks:
+            raise asyncio.CancelledError
 
     def _release_session_id(self, session_id: str) -> None:
         if self._active_sessions.pop(session_id, None) is None:

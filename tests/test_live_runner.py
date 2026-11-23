@@ -832,6 +832,7 @@ def _json_data(data: dict[str, object]) -> tuple[bytes, str]:
 
 class _FakeO2RReader:
     instances: list[_FakeO2RReader] = []
+    _subscriber: SimpleNamespace | None = None
 
     def __init__(
         self,
@@ -1365,7 +1366,9 @@ class TestLiveRunnerRegistration:
                     auto_detect_gpu=False,
                 )
 
-    async def test_heartbeat_resets_auth_after_invalid_authorization(self) -> None:
+    @pytest.mark.parametrize(("new_channel", "state"), [("old/", "live"), ("new", "live"), ("old", "closing"), ("old", "errored"), ("old", "eos")])
+    async def test_heartbeat_resets_auth_after_invalid_authorization(self, new_channel: str, state: str) -> None:
+        _FakeO2RReader.instances = []
         calls: list[tuple[str, dict[str, object], dict[str, str]]] = []
         auth_refreshed = asyncio.Event()
 
@@ -1375,11 +1378,15 @@ class TestLiveRunnerRegistration:
             *,
             headers: dict[str, str],
             timeout: float,
-        ) -> dict[str, str]:
+        ) -> dict[str, object]:
             calls.append((url, payload, headers))
             if headers["Authorization"] == "heartbeat-token":
+                if state != "live":
+                    pending = SimpleNamespace(headers={"Lp-Trickle-Closed": ""}) if state == "eos" else None
+                    _FakeO2RReader.instances[0]._subscriber = SimpleNamespace(_closing=state == "closing", _errored=state == "errored", _pending_get=pending)
                 raise LivepeerHTTPError(401, url, "any body")
-            if len(calls) >= 3:
+            channel = {1: "old", 3: new_channel}.get(len(calls), "ignored")
+            if len(calls) >= 4:
                 auth_refreshed.set()
             return {
                 "runner_id": "runner-1",
@@ -1387,9 +1394,18 @@ class TestLiveRunnerRegistration:
                 "heartbeat_secret": (
                     "heartbeat-token" if len(calls) == 1 else "fresh-heartbeat-token"
                 ),
+                "o2r": {
+                    "name": "o2r",
+                    "channel_name": "updated" if len(calls) >= 3 else "initial",
+                    "url": f"https://service.example.com/trickle/{channel}",
+                    "mime_type": "application/json",
+                },
             }
 
-        with mock.patch.object(live_runner, "post_json", side_effect=_post_json):
+        with (
+            mock.patch.object(live_runner, "post_json", side_effect=_post_json),
+            mock.patch.object(live_runner, "ChannelReader", _FakeO2RReader),
+        ):
             reg = await register_runner(
                 "http://localhost:8935",
                 secret="secret-token",
@@ -1400,13 +1416,25 @@ class TestLiveRunnerRegistration:
                 heartbeat_interval_s=0.01,
                 unregister_on_close=False,
             )
-            await asyncio.wait_for(auth_refreshed.wait(), timeout=1.0)
-            await reg.close()
+            try:
+                await asyncio.wait_for(auth_refreshed.wait(), timeout=1.0)
+                assert len(_FakeO2RReader.instances) == (1 if new_channel == "old/" else 2)
+                reader = _FakeO2RReader.instances[-1]
+                assert reader.events_url.endswith(f"/{new_channel.rstrip('/')}")
+                assert reg.o2r_channel["channel_name"] == "updated"
+                assert _FakeO2RReader.instances[0].callback_task().cancelling() == (new_channel == "new" or state in {"errored", "eos"})
+                await reader.on_event({"event": "reserved", "session": "fresh"})
+                assert reg.active_session_ids == ("fresh",)
+            finally:
+                await reg.close()
+                if state == "closing":
+                    await _FakeO2RReader.instances[0].close()
 
-        assert [headers for _, _, headers in calls[:3]] == [
+        assert [headers for _, _, headers in calls[:4]] == [
             {"Authorization": "secret-token"},
             {"Authorization": "heartbeat-token"},
             {"Authorization": "secret-token"},
+            {"Authorization": "fresh-heartbeat-token"},
         ]
         assert calls[2][1]["runner_id"] == "runner-1"
 
